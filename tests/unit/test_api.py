@@ -1,0 +1,48 @@
+from importlib.metadata import version
+from unittest.mock import Mock
+
+import pytest
+
+from ray_doris import __version__, read_doris
+
+
+def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
+    read_datasource = Mock(return_value="dataset")
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read_datasource)
+    result = read_doris(
+        table="db.table",
+        host="fe",
+        http_scheme="https",
+        flight_scheme="grpc+tls",
+        connect_timeout=3.5,
+        concurrency=2,
+        override_num_blocks=4,
+        ray_remote_args={"num_cpus": 0.25},
+    )
+    assert result == "dataset"
+    datasource = read_datasource.call_args.args[0]
+    assert datasource.config.http_scheme == "https"
+    assert datasource.config.flight_scheme == "grpc+tls"
+    assert datasource.config.connect_timeout == 3.5
+    assert read_datasource.call_args.kwargs == {
+        "concurrency": 2,
+        "override_num_blocks": 4,
+        "ray_remote_args": {"num_cpus": 0.25},
+    }
+
+
+def test_read_doris_unknown_parameter_fails_fast() -> None:
+    with pytest.raises(TypeError):
+        read_doris(table="db.table", host="fe", overrid_num_blocks=4)
+
+
+def test_package_does_not_import_ray_internal_modules() -> None:
+    from pathlib import Path
+
+    source = Path(__file__).parents[2] / "src" / "ray_doris"
+    for path in source.glob("*.py"):
+        assert "ray.data._internal" not in path.read_text()
+
+
+def test_package_version_matches_distribution_metadata() -> None:
+    assert __version__ == version("ray-doris")

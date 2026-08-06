@@ -1,0 +1,57 @@
+name: ray-doris-it
+
+services:
+  fe:
+    build:
+      context: ./docker
+      dockerfile: fe.Dockerfile
+    hostname: fe
+    networks:
+      doris:
+        ipv4_address: 172.31.127.2
+    ports:
+      - "127.0.0.1:${DORIS_HTTP_PORT:-18030}:8030"
+      - "127.0.0.1:${DORIS_MYSQL_PORT:-19030}:9030"
+      - "127.0.0.1:${DORIS_FLIGHT_PORT:-18070}:8070"
+    environment:
+      FE_SERVERS: fe1:172.31.127.2:9010
+      FE_ID: "1"
+    volumes:
+      - fe-data:/opt/apache-doris/fe/doris-meta
+    mem_limit: 3g
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+  be:
+    build:
+      context: ./docker
+      dockerfile: be.Dockerfile
+    hostname: be
+    depends_on: [fe]
+    networks:
+      doris:
+        ipv4_address: 172.31.127.3
+    ports:
+      - "127.0.0.1:18050:8050"
+    environment:
+      FE_SERVERS: fe1:172.31.127.2:9010
+      BE_ADDR: 172.31.127.3:9050
+    volumes:
+      - be-data:/opt/apache-doris/be/storage
+    mem_limit: 2g
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+networks:
+  doris:
+    ipam:
+      config:
+        - subnet: 172.31.127.0/24
+
+volumes:
+  fe-data:
+  be-data:

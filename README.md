@@ -1,0 +1,289 @@
+# ray-doris
+
+`ray-doris` is an independent, community-maintained Apache Doris datasource for Ray Data. It plans reads with
+Doris FE's `_query_plan` endpoint and streams each tablet group through the MySQL protocol
+or Arrow Flight SQL. The implementation uses only Ray's public `Datasource`, `ReadTask`, and
+`read_datasource()` APIs.
+
+The project is alpha software. The tested compatibility window is:
+
+| Python | Ray | Doris |
+|---|---|---|
+| 3.9 | 2.49.2 | Unit and compatibility tests |
+| 3.10 | 2.55.1 | Unit and compatibility tests |
+| 3.12 | 2.56.1 | Doris 4.0.6 required IT |
+
+Doris 4.0.6 is the fixed compatibility target for both required and opt-in distributed integration
+tests. The distributed suite runs Ray 2.55.1 so local and dedicated runners can reuse that exact
+cached image without changing the tested version.
+This project is not maintained or endorsed by the Ray or Apache Doris projects.
+
+## Installation
+
+Install the default MySQL transport:
+
+```bash
+pip install ray-doris
+```
+
+Install optional Flight SQL support:
+
+```bash
+pip install "ray-doris[flight]"
+```
+
+Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
+Python 3.9. Python 3.9 remains supported with the default MySQL transport.
+
+## Quick start
+
+```python
+from ray_doris import read_doris
+
+dataset = read_doris(
+    table="analytics.events",
+    host="doris-fe.example.com",
+    user="ray_reader",
+    password="...",
+    columns=["event_id", "created_at", "score"],
+    filter="score >= 80",
+    tablet_size=32,
+    override_num_blocks=64,
+)
+
+print(dataset.schema())
+print(dataset.take(5))
+```
+
+`table` must be an exact `database.table` reference in Doris's internal catalog. External
+catalog tables, joins, and multi-table query planning are not supported. `filter` is a trusted
+SQL scalar expression: do not pass untrusted user input. Doris uses the `WHERE` expression for
+tablet pruning, so the number of splits can change with the filter. A complex expression such as
+a subquery can be executed through the configured single-task fallback, but it cannot use tablet
+parallelism.
+
+`tablet_size=1` provides the finest split granularity. Tables with thousands of tablets should
+start with a larger value such as `tablet_size=32` and use `override_num_blocks` to tune Ray's
+output blocks without creating one scheduling task per tablet.
+
+## API
+
+```python
+read_doris(
+    *,
+    table,
+    host,
+    mysql_port=9030,
+    http_port=8030,
+    flight_port=8070,
+    http_scheme="http",
+    flight_scheme="grpc",
+    user="root",
+    password="",
+    columns=None,
+    filter=None,
+    transport="mysql",
+    on_query_plan_error="single_task",
+    tablet_size=1,
+    batch_size=10_000,
+    connect_timeout=10.0,
+    client_kwargs=None,
+    flight_options=None,
+    concurrency=None,
+    override_num_blocks=None,
+    ray_remote_args=None,
+)
+```
+
+`http_scheme` accepts `http` or `https`. HTTPS requires an HTTPS endpoint, commonly a TLS reverse
+proxy in front of the Doris FE HTTP API. `flight_scheme` accepts `grpc` or `grpc+tls`; configure
+certificates and other ADBC settings with `flight_options`.
+
+`connect_timeout` is passed to the `_query_plan` HTTP request and each PyMySQL connection attempt.
+It does not set a deadline for an established MySQL socket read or a Flight SQL query/fetch RPC.
+Configure those limits explicitly when required:
+
+```python
+dataset = read_doris(
+    table="analytics.events",
+    host="doris-fe.example.com",
+    transport="auto",
+    connect_timeout=10.0,
+    client_kwargs={"read_timeout": 300, "write_timeout": 30},
+    flight_options={
+        "adbc.flight.sql.rpc.timeout_seconds.query": "300",
+        "adbc.flight.sql.rpc.timeout_seconds.fetch": "300",
+    },
+)
+```
+
+`client_kwargs` otherwise contains PyMySQL connection options such as TLS configuration.
+`connect_timeout` is managed by the public parameter and cannot be repeated in `client_kwargs`.
+
+`tablet_size` is a soft tablet grouping target. `batch_size` is a hard row-fetch bound for MySQL
+and a hard row bound for Arrow blocks emitted to Ray by Flight. It cannot constrain the size of a
+RecordBatch already produced or prefetched by Doris and ADBC. `concurrency` limits simultaneous
+Ray read tasks, while `override_num_blocks` controls Ray's output block planning.
+
+The function returns a `ray.data.Dataset`. Configuration failures raise `DorisConfigurationError`,
+unsupported schemas raise `DorisSchemaError`, and query planning failures raise
+`DorisPlanningError`. Authentication and authorization failures use the more specific
+`DorisAuthenticationError` and `DorisPermissionError`. Worker transport and conversion failures
+raise `DorisReadError`. Explicit Flight without its optional dependency raises `ImportError` with
+an installation command.
+
+## Transports
+
+The default `transport="mysql"` uses a PyMySQL server-side cursor and `fetchmany()`; it never
+materializes the complete result in the worker. `transport="flight"` requires the Flight extra
+and fails with an installation hint if it is missing. Flight RecordBatches are streamed and sliced
+into Ray blocks of at most `batch_size` rows, but their server-side size and ADBC prefetch memory
+are controlled by Doris and ADBC.
+
+`transport="auto"` attempts Flight only when the driver is installed. It falls back to MySQL only
+when dependency loading, connection creation, cursor creation, query setup, or protocol negotiation
+fails with a connection, timeout, or unsupported status. Once a Flight reader exists, stream, SQL,
+schema, authentication, and permission errors never trigger transport fallback.
+
+Doris schema discovery always uses `DESCRIBE` through the MySQL port. Supported scalar types are
+mapped to an explicit Arrow schema. Nested and aggregate-state types fail closed rather than being
+silently stringified. Decimal precision up to 38 uses Arrow decimal128 and precision up to 76 uses
+decimal256; `DATETIMEV2` is represented as `timestamp[us]`.
+
+## Query-plan failures
+
+Doris normally returns HTTP 200 even for `_query_plan` errors. `ray-doris` classifies the Doris
+body envelope (`code`, inner `status`, and `exception`) rather than assuming that HTTP status is
+the application result. Invalid credentials and `Access denied` responses fail immediately.
+Other planning failures follow `on_query_plan_error`:
+
+- `single_task` (default) removes the `TABLET` hint and executes one query;
+- `error` raises `DorisPlanningError`.
+
+Successful predicate pruning with an empty `partitions` object is a valid empty read and does not
+fall back to a full-table query.
+
+## Advanced Ray usage
+
+`DorisDatasource` is public for callers that need to invoke `ray.data.read_datasource()` directly.
+Only pass keyword arguments documented by your installed Ray version to that function. The
+convenience `read_doris()` entry point exposes the common cross-version arguments
+`concurrency`, `override_num_blocks`, and `ray_remote_args`; unknown keyword arguments fail fast.
+
+Ray serializes datasource configuration to workers. Passwords and transport option values are
+redacted from representations and logs, but they still exist in serialized task state. Use this
+package only on a trusted Ray cluster and private network, and inject secrets at runtime. Configure
+MySQL TLS through `client_kwargs`, set `http_scheme="https"` for a protected query-plan endpoint,
+and set `flight_scheme="grpc+tls"` with the required certificate `flight_options` for Flight TLS.
+The defaults are unencrypted and must only be used on a trusted private network.
+
+The Doris reader account needs access to the FE MySQL and HTTP ports and `SELECT` on the target
+internal-catalog table. Flight reads additionally need the FE Flight SQL port. The `_query_plan`
+endpoint itself performs the table authorization check.
+
+Tablet planning and task execution do not provide snapshot isolation. Concurrent Doris writes can
+therefore produce a result that reflects different moments across splits. If a Ray task fails after
+reading part of a split, Ray can retry the whole task; the connector does not resume a partial split.
+
+The required Doris 4.0.6 integration suite uses the default HTTP endpoint. The distributed suite
+uses the same fixed Doris version, validates native MySQL TLS, and validates certificate-checked
+HTTPS through an HAProxy ingress that forwards to the FE HTTP endpoint. It does not enable Doris
+4.0.6 native FE HTTPS because that release has a Jetty WebSocket startup regression. Doris 4.0.6
+advertises plaintext Flight `grpc` endpoints rather than native Flight TLS endpoints, so the suite
+keeps Flight on an isolated Compose network and does not claim a positive `grpc+tls` server test.
+Deployments that provide a compatible Flight TLS endpoint must validate their certificates and ADBC
+options separately.
+
+## Troubleshooting
+
+- `DorisAuthenticationError`: verify the same credentials work on both the FE MySQL and query-plan
+  endpoints. An HTTPS proxy must forward the `Authorization` header.
+- `DorisPermissionError`: grant `SELECT_PRIV` on the internal-catalog table. The connector does not
+  use administrator-only `SHOW TABLETS` fallback.
+- `DorisPlanningError`: use `on_query_plan_error="single_task"` for a trusted complex filter that
+  Doris can execute but `_query_plan` cannot represent, or use `error` to diagnose the body status.
+- Flight connection failures: verify the FE and BE Flight ports, URI scheme, certificates, and ADBC
+  options. Explicit Flight never silently switches transports.
+- Slow or hung reads: `connect_timeout` covers planning HTTP requests and MySQL connection setup,
+  not query execution. Configure PyMySQL `read_timeout`/`write_timeout` or the ADBC Flight SQL
+  query/fetch timeout options when an execution deadline is required.
+- Schema failures: project only supported scalar columns; nested and aggregate-state types fail
+  closed by design.
+
+## Development
+
+Create the environment and run the unit gate:
+
+```bash
+uv venv --python 3.12
+uv pip install -e ".[dev,flight]"
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/python -m pytest tests/unit
+```
+
+Run the required real Doris integration suite:
+
+```bash
+docker compose -f tests/integration/docker-compose.yml up -d --build
+.venv/bin/python -m pytest tests/integration
+docker compose -f tests/integration/docker-compose.yml down -v --rmi local
+```
+
+The integration fixture can use an existing isolated Doris instance when the `DORIS_*` connection
+variables are set. It creates and removes only the `ray_doris_it` database and its two test users.
+
+### Slow distributed integration
+
+The opt-in slow suite runs the following isolated topology:
+
+- one Ray head with no scheduling CPUs and three one-CPU Ray workers;
+- one Doris 4.0.6 FE and three Doris 4.0.6 BEs;
+- one HAProxy ingress for HTTPS, FE MySQL/Flight routing, and BE Flight routing through Doris
+  `public_host` and `arrow_flight_sql_proxy_port`;
+- a 48-tablet, single-replica table distributed across all BEs;
+- a 48-tablet, three-replica table used for BE failure recovery;
+- certificate-verified HTTPS query planning at the ingress and native Doris MySQL TLS;
+- explicit Arrow Flight SQL reads, with no automatic MySQL fallback;
+- per-BE Flight session and byte counters proving that all three BE services receive traffic;
+- a Ray worker failure after the first Flight block and a retry on another worker;
+- a Doris BE failure, proxy health removal, and a complete read from surviving replicas;
+- 10,000 rows by default and repeated checksum-validated Flight reads for at least five seconds.
+
+It is excluded from the default pytest discovery paths and from the regular CI workflow. Run it
+manually on a Docker host with at least 16 GiB of available memory:
+
+```bash
+tests/slow_integration/run.sh
+```
+
+The script automatically reuses a local `ray-cluster:2.55.1` image when present. Otherwise, the
+Dockerfile uses the fixed public base `rayproject/ray:2.55.1-py312-cpu`. You can select another
+trusted local image with `RAY_BASE_IMAGE`; the build verifies `ray.__version__` before installing
+this project:
+
+```bash
+RAY_BASE_IMAGE=ray-cluster:2.55.1 tests/slow_integration/run.sh
+```
+
+The default profile is a functional distributed integration test, not a load test. On a dedicated
+host, use `RAY_DORIS_ROW_COUNT`, `RAY_DORIS_STRESS_SECONDS`, and
+`RAY_DORIS_BE_MEMORY_LIMIT` to opt into a larger load or extended soak. For example:
+
+```bash
+RAY_DORIS_ROW_COUNT=1000000 \
+RAY_DORIS_STRESS_SECONDS=300 \
+RAY_DORIS_BE_MEMORY_LIMIT=4g \
+tests/slow_integration/run.sh
+```
+
+Size the dedicated host for the requested container limits. The script refuses to reuse an
+existing `ray-doris-it` Compose project, preserves pytest, Ray, Doris, and HAProxy logs, and removes
+only the resources created by that exact project.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete checks.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [CHANGELOG.md](CHANGELOG.md).

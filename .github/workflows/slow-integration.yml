@@ -1,0 +1,48 @@
+name: Slow distributed integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      row_count:
+        description: Rows loaded into each slow integration table
+        required: true
+        default: "10000"
+        type: string
+      stress_seconds:
+        description: Minimum duration of repeated Flight SQL reads
+        required: true
+        default: "5"
+        type: string
+      be_memory_limit:
+        description: Memory limit for each Doris BE container
+        required: true
+        default: "2g"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slow-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  distributed:
+    name: Ray and Doris distributed slow integration
+    runs-on: [self-hosted, linux, x64, ray-doris-slow-it]
+    timeout-minutes: 30
+    env:
+      RAY_DORIS_ROW_COUNT: ${{ inputs.row_count }}
+      RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds }}
+      RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit }}
+      RAY_DORIS_SLOW_LOG_DIR: ${{ runner.temp }}/ray-doris-slow-it
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run distributed cluster scenario
+        run: tests/slow_integration/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ray-doris-slow-it-logs
+          path: ${{ runner.temp }}/ray-doris-slow-it/*.log
+          if-no-files-found: warn

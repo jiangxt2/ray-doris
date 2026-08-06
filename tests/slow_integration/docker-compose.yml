@@ -1,0 +1,245 @@
+name: ray-doris-it
+
+x-ray-common: &ray-common
+  image: ray-doris-it-ray:local
+  build:
+    context: ../..
+    dockerfile: tests/slow_integration/docker/ray.Dockerfile
+    args:
+      RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-rayproject/ray:2.55.1-py312-cpu}"
+      UV_DEFAULT_INDEX: "${UV_DEFAULT_INDEX:-https://pypi.org/simple}"
+  environment:
+    DORIS_HOST: flight-proxy
+    DORIS_MYSQL_PORT: "19030"
+    DORIS_HTTPS_PORT: "18443"
+    DORIS_FLIGHT_PORT: "18070"
+    DORIS_FLIGHT_PROXY_STATS_URL: "http://flight-proxy:8404/stats;csv"
+    DORIS_TLS_CA: /tls/ca.pem
+    RAY_DORIS_ROW_COUNT: "${RAY_DORIS_ROW_COUNT:-10000}"
+    RAY_DORIS_STRESS_SECONDS: "${RAY_DORIS_STRESS_SECONDS:-5}"
+    RAY_WORKER_IPS: 172.31.128.11,172.31.128.12,172.31.128.13
+    RAY_USAGE_STATS_ENABLED: "0"
+    PYTHONPATH: /workspace/tests/slow_integration
+    SSL_CERT_FILE: /tls/ca.pem
+  networks: [doris]
+  volumes:
+    - tls:/tls:ro
+    - ray-state:/state
+  shm_size: 1gb
+  mem_limit: 2g
+  ulimits:
+    nofile:
+      soft: 200000
+      hard: 200000
+
+services:
+  tls-init:
+    <<: *ray-common
+    user: root
+    command:
+      - /bin/bash
+      - -c
+      - |
+        /workspace/tests/slow_integration/docker/generate-tls.sh /tls
+        chmod 1777 /state
+    volumes:
+      - tls:/tls
+      - ray-state:/state
+    restart: "no"
+
+  fe:
+    build:
+      context: ./docker
+      dockerfile: fe.Dockerfile
+    hostname: fe
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+    networks:
+      doris:
+        ipv4_address: 172.31.128.2
+    environment:
+      FE_SERVERS: fe1:172.31.128.2:9010
+      FE_ID: "1"
+    volumes:
+      - fe-data:/opt/apache-doris/fe/doris-meta
+      - tls:/tls:ro
+    mem_limit: 3g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mysql -uroot -h127.0.0.1 -P9030 -N -e 'SHOW FRONTENDS'
+          2>/dev/null | grep -w '172.31.128.2' >/dev/null
+      interval: 2s
+      timeout: 2s
+      retries: 90
+      start_period: 10s
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+  be-1:
+    build:
+      context: ./docker
+      dockerfile: be.Dockerfile
+    hostname: be-1
+    depends_on:
+      fe:
+        condition: service_healthy
+    networks:
+      doris:
+        ipv4_address: 172.31.128.3
+    environment:
+      FE_SERVERS: fe1:172.31.128.2:9010
+      BE_ADDR: 172.31.128.3:9050
+    volumes:
+      - be-1-data:/opt/apache-doris/be/storage
+    mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+  be-2:
+    build:
+      context: ./docker
+      dockerfile: be.Dockerfile
+    hostname: be-2
+    depends_on:
+      fe:
+        condition: service_healthy
+    networks:
+      doris:
+        ipv4_address: 172.31.128.4
+    environment:
+      FE_SERVERS: fe1:172.31.128.2:9010
+      BE_ADDR: 172.31.128.4:9050
+    volumes:
+      - be-2-data:/opt/apache-doris/be/storage
+    mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+  be-3:
+    build:
+      context: ./docker
+      dockerfile: be.Dockerfile
+    hostname: be-3
+    depends_on:
+      fe:
+        condition: service_healthy
+    networks:
+      doris:
+        ipv4_address: 172.31.128.5
+    environment:
+      FE_SERVERS: fe1:172.31.128.2:9010
+      BE_ADDR: 172.31.128.5:9050
+    volumes:
+      - be-3-data:/opt/apache-doris/be/storage
+    mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+
+  flight-proxy:
+    image: haproxy:3.2.21-alpine
+    hostname: flight-proxy
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+      fe:
+        condition: service_healthy
+      be-1:
+        condition: service_started
+      be-2:
+        condition: service_started
+      be-3:
+        condition: service_started
+    networks:
+      doris:
+        ipv4_address: 172.31.128.6
+    volumes:
+      - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - tls:/tls:ro
+    mem_limit: 256m
+
+  ray-head:
+    <<: *ray-common
+    hostname: ray-head
+    depends_on: [fe, be-1, be-2, be-3, flight-proxy]
+    networks:
+      doris:
+        ipv4_address: 172.31.128.10
+    command:
+      - ray
+      - start
+      - --head
+      - --node-ip-address=172.31.128.10
+      - --port=6379
+      - --dashboard-host=0.0.0.0
+      - --num-cpus=0
+      - --block
+
+  ray-worker-1:
+    <<: *ray-common
+    hostname: ray-worker-1
+    depends_on: [ray-head]
+    networks:
+      doris:
+        ipv4_address: 172.31.128.11
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        until ray start --address=ray-head:6379
+        --node-ip-address=172.31.128.11 --num-cpus=1 --block;
+        do sleep 2; done
+
+  ray-worker-2:
+    <<: *ray-common
+    hostname: ray-worker-2
+    depends_on: [ray-head]
+    networks:
+      doris:
+        ipv4_address: 172.31.128.12
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        until ray start --address=ray-head:6379
+        --node-ip-address=172.31.128.12 --num-cpus=1 --block;
+        do sleep 2; done
+
+  ray-worker-3:
+    <<: *ray-common
+    hostname: ray-worker-3
+    depends_on: [ray-head]
+    networks:
+      doris:
+        ipv4_address: 172.31.128.13
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        until ray start --address=ray-head:6379
+        --node-ip-address=172.31.128.13 --num-cpus=1 --block;
+        do sleep 2; done
+
+networks:
+  doris:
+    ipam:
+      config:
+        - subnet: 172.31.128.0/24
+
+volumes:
+  tls:
+  ray-state:
+  fe-data:
+  be-1-data:
+  be-2-data:
+  be-3-data:

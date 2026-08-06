@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Python ${{ matrix.python }} / Ray ${{ matrix.ray }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.9"
+            ray: "2.49.2"
+          - python: "3.10"
+            ray: "2.55.1"
+          - python: "3.12"
+            ray: "2.56.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv venv --python ${{ matrix.python }}
+      - run: uv pip install -e ".[test]" "ray[data]==${{ matrix.ray }}"
+      - run: .venv/bin/python -m pytest tests/unit --cov=ray_doris --cov-report=term-missing
+
+  quality:
+    name: Static quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[dev]" "ray[data]==2.56.1"
+      - run: .venv/bin/ruff format --check .
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/mypy
+      - run: .venv/bin/pre-commit run --all-files
+
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --max-retries 3
+            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+
+  integration:
+    name: Doris 4.0.6 integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[test,flight]" "ray[data]==2.56.1"
+      - run: docker compose -f tests/integration/docker-compose.yml up -d --build
+      - run: .venv/bin/python -m pytest tests/integration -v
+      - name: Capture Doris logs
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml logs --no-color > doris-it.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: doris-it-log
+          path: doris-it.log
+      - name: Stop Doris
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v --rmi local
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12
+      - run: uv pip install build twine
+      - run: .venv/bin/python -m build
+      - run: .venv/bin/twine check dist/*
+      - run: uv venv --python 3.12 .venv-package
+      - run: uv pip install --python .venv-package/bin/python dist/*.whl
+      - run: .venv-package/bin/python -c "import ray_doris; print(ray_doris.__version__)"
+      - run: uv venv --python 3.12 .venv-sdist
+      - run: uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
+      - run: .venv-sdist/bin/python -c "import ray_doris; print(ray_doris.__version__)"
