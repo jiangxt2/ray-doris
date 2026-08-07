@@ -99,8 +99,9 @@ read_doris(
 proxy in front of the Doris FE HTTP API. `flight_scheme` accepts `grpc` or `grpc+tls`; configure
 certificates and other ADBC settings with `flight_options`.
 
-`connect_timeout` is passed to the `_query_plan` HTTP request and each PyMySQL connection attempt.
-It does not set a deadline for an established MySQL socket read or a Flight SQL query/fetch RPC.
+`connect_timeout` is passed to the `_query_plan` HTTP request, each PyMySQL connection attempt,
+and the ADBC Flight SQL connect RPC. It does not set a deadline for an established MySQL socket
+read or a Flight SQL query/fetch RPC.
 Configure those limits explicitly when required:
 
 ```python
@@ -117,8 +118,9 @@ dataset = read_doris(
 )
 ```
 
-`client_kwargs` otherwise contains PyMySQL connection options such as TLS configuration.
-`connect_timeout` is managed by the public parameter and cannot be repeated in `client_kwargs`.
+`client_kwargs` otherwise contains PyMySQL connection options such as TLS configuration. Option
+mappings are defensively copied. `connect_timeout` and its deprecated `passwd` credential alias
+cannot override managed options. `read_timeout` and `write_timeout` must be finite positive numbers.
 
 `tablet_size` is a soft tablet grouping target. `batch_size` is a hard row-fetch bound for MySQL
 and a hard row bound for Arrow blocks emitted to Ray by Flight. It cannot constrain the size of a
@@ -140,10 +142,14 @@ and fails with an installation hint if it is missing. Flight RecordBatches are s
 into Ray blocks of at most `batch_size` rows, but their server-side size and ADBC prefetch memory
 are controlled by Doris and ADBC.
 
-`transport="auto"` attempts Flight only when the driver is installed. It falls back to MySQL only
+`transport="auto"` attempts Flight only when the extra is available in the execution environment.
+It falls back to MySQL only
 when dependency loading, connection creation, cursor creation, query setup, or protocol negotiation
-fails with a connection, timeout, or unsupported status. Once a Flight reader exists, stream, SQL,
-schema, authentication, and permission errors never trigger transport fallback.
+fails before rows are produced. An execute/fetch timeout does not fall back because MySQL might not
+have an equivalent execution deadline; an unsupported Flight operation may fall back. Selecting
+`flight_scheme="grpc+tls"` makes Flight setup fail closed instead of downgrading to MySQL. Once a
+Flight reader exists, stream, SQL, schema, authentication, and permission errors never trigger
+transport fallback.
 
 Doris schema discovery always uses `DESCRIBE` through the MySQL port. Supported scalar types are
 mapped to an explicit Arrow schema. Nested and aggregate-state types fail closed rather than being
@@ -161,7 +167,8 @@ Other planning failures follow `on_query_plan_error`:
 - `error` raises `DorisPlanningError`.
 
 Successful predicate pruning with an empty `partitions` object is a valid empty read and does not
-fall back to a full-table query.
+fall back to a full-table query. Ray receives a schema-carrying zero-row block so `Dataset.schema()`
+remains available.
 
 ## Advanced Ray usage
 
@@ -169,6 +176,11 @@ fall back to a full-table query.
 Only pass keyword arguments documented by your installed Ray version to that function. The
 convenience `read_doris()` entry point exposes the common cross-version arguments
 `concurrency`, `override_num_blocks`, and `ray_remote_args`; unknown keyword arguments fail fast.
+
+Ray may call `get_read_tasks()` more than once while constructing one read, so each
+`DorisDatasource` instance caches the schema and tablet discovery result from its first planning
+call. Treat an instance as one logical read and create a new instance to discover table or tablet
+changes made later. This planning cache does not provide snapshot isolation.
 
 Ray serializes datasource configuration to workers. Passwords and transport option values are
 redacted from representations and logs, but they still exist in serialized task state. Use this
@@ -204,9 +216,13 @@ options separately.
   Doris can execute but `_query_plan` cannot represent, or use `error` to diagnose the body status.
 - Flight connection failures: verify the FE and BE Flight ports, URI scheme, certificates, and ADBC
   options. Explicit Flight never silently switches transports.
-- Slow or hung reads: `connect_timeout` covers planning HTTP requests and MySQL connection setup,
-  not query execution. Configure PyMySQL `read_timeout`/`write_timeout` or the ADBC Flight SQL
-  query/fetch timeout options when an execution deadline is required.
+- Doris zero dates such as `0000-00-00` cannot be represented losslessly as Arrow date or timestamp
+  values. Reads fail closed and identify the affected column; values are not coerced to null.
+- Query-plan redirects are rejected because redirecting an authenticated POST can change its method
+  or expose credentials. Configure the final HTTP/HTTPS endpoint directly.
+- Slow or hung reads: `connect_timeout` covers planning HTTP requests, MySQL connection setup, and
+  the Flight connect RPC, but not query execution. Configure PyMySQL `read_timeout`/`write_timeout`
+  or the ADBC Flight SQL query/fetch timeout options when an execution deadline is required.
 - Schema failures: project only supported scalar columns; nested and aggregate-state types fail
   closed by design.
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping as MappingABC
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Tuple
 
@@ -14,6 +17,9 @@ QueryPlanPolicy = Literal["single_task", "error"]
 HttpScheme = Literal["http", "https"]
 FlightScheme = Literal["grpc", "grpc+tls"]
 
+_ADBC_CONNECT_TIMEOUT_OPTION = "adbc.flight.sql.rpc.timeout_seconds.connect"
+_MAX_CONNECT_TIMEOUT_SECONDS = 31_536_000
+
 _RESERVED_MYSQL_OPTIONS = {
     "charset",
     "connect_timeout",
@@ -22,10 +28,16 @@ _RESERVED_MYSQL_OPTIONS = {
     "db",
     "host",
     "password",
+    "passwd",
     "port",
     "user",
 }
-_RESERVED_FLIGHT_OPTIONS = {"password", "uri", "username"}
+_RESERVED_FLIGHT_OPTIONS = {
+    _ADBC_CONNECT_TIMEOUT_OPTION,
+    "password",
+    "uri",
+    "username",
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +61,14 @@ class DorisPlan:
 
     schema: pa.Schema
     splits: Tuple[DorisInputSplit, ...]
+
+
+@dataclass(frozen=True)
+class DorisPlanningSnapshot:
+    """Schema and tablet discovery shared across Ray planning calls."""
+
+    schema: pa.Schema
+    tablet_ids: Optional[Tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -105,8 +125,12 @@ class DorisReadConfig:
             isinstance(self.connect_timeout, bool)
             or not isinstance(self.connect_timeout, (int, float))
             or self.connect_timeout <= 0
+            or self.connect_timeout > _MAX_CONNECT_TIMEOUT_SECONDS
+            or not math.isfinite(self.connect_timeout)
         ):
-            raise DorisConfigurationError("connect_timeout must be positive")
+            raise DorisConfigurationError(
+                "connect_timeout must be finite, positive, and at most 31536000 seconds"
+            )
         if self.transport not in ("auto", "mysql", "flight"):
             raise DorisConfigurationError(f"unsupported transport: {self.transport!r}")
         if self.http_scheme not in ("http", "https"):
@@ -125,8 +149,28 @@ class DorisReadConfig:
         self._reject_reserved_options(
             "flight_options", self.flight_options, _RESERVED_FLIGHT_OPTIONS
         )
+        self._validate_mysql_timeouts()
         if any(not isinstance(value, str) for _, value in self.flight_options):
             raise DorisConfigurationError("flight_options values must be strings")
+
+    def _validate_mysql_timeouts(self) -> None:
+        options = dict(self.client_options)
+        for name in ("read_timeout", "write_timeout"):
+            if name not in options:
+                continue
+            value = options[name]
+            try:
+                finite = (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and math.isfinite(value)
+                )
+            except (TypeError, OverflowError):
+                finite = False
+            if not finite or value <= 0:
+                raise DorisConfigurationError(
+                    f"client_options {name} must be a finite positive number"
+                )
 
     @staticmethod
     def _validate_options(name: str, options: Tuple[Tuple[str, Any], ...]) -> None:
@@ -156,20 +200,34 @@ class DorisReadConfig:
         flight_options: Optional[Mapping[str, Any]] = None,
         **kwargs: Any,
     ) -> "DorisReadConfig":
-        """Construct a config while freezing caller-owned option mappings."""
+        """Construct a config while snapshotting caller-owned option mappings."""
         return cls(
-            client_options=tuple((client_options or {}).items()),
-            flight_options=tuple((flight_options or {}).items()),
+            client_options=cls._copy_options("client_options", client_options),
+            flight_options=cls._copy_options("flight_options", flight_options),
             **kwargs,
         )
 
+    @staticmethod
+    def _copy_options(
+        name: str, options: Optional[Mapping[str, Any]]
+    ) -> Tuple[Tuple[str, Any], ...]:
+        if options is None:
+            return ()
+        if not isinstance(options, MappingABC):
+            raise DorisConfigurationError(f"{name} must be a mapping")
+        try:
+            copied = deepcopy(dict(options))
+        except Exception as exc:
+            raise DorisConfigurationError(f"{name} values must be copyable") from exc
+        return tuple(copied.items())
+
     def mysql_options(self) -> Mapping[str, Any]:
         """Return a fresh mapping for a PyMySQL connection."""
-        return dict(self.client_options)
+        return deepcopy(dict(self.client_options))
 
     def adbc_options(self) -> Mapping[str, Any]:
         """Return a fresh mapping for an ADBC Flight SQL connection."""
-        return dict(self.flight_options)
+        return deepcopy(dict(self.flight_options))
 
     def __repr__(self) -> str:
         """Return a representation that never exposes credentials or option values."""

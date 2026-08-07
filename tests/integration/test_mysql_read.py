@@ -48,6 +48,17 @@ def test_mysql_task_emits_blocks_bounded_by_batch_size(doris_config) -> None:
 def test_empty_filter_is_valid_empty_result_not_full_table_fallback(doris_config) -> None:
     dataset = read_doris(**doris_config.reader_kwargs(filter="1 = 0"))
     assert dataset.take_all() == []
+    assert dataset.schema() is not None
+    assert dataset.schema().names == [
+        "id",
+        "category",
+        "amount",
+        "created_at",
+        "event_date",
+        "active",
+        "large_value",
+        "payload",
+    ]
 
 
 def test_complex_filter_falls_back_to_one_task_and_remains_correct(doris_config) -> None:

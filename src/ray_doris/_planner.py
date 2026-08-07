@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
+import logging
 import math
+import ssl
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pyarrow as pa
 import pymysql
@@ -19,12 +22,19 @@ from ray_doris._errors import (
     DorisPlanningError,
     DorisSchemaError,
 )
-from ray_doris._models import DorisInputSplit, DorisPlan, DorisReadConfig
+from ray_doris._models import (
+    DorisInputSplit,
+    DorisPlan,
+    DorisPlanningSnapshot,
+    DorisReadConfig,
+)
 from ray_doris._schema import build_arrow_schema, parse_describe_rows
 from ray_doris._sql import build_describe_sql, build_select_sql
 
 _MYSQL_AUTHENTICATION_ERROR_CODES = {1045}
 _MYSQL_PERMISSION_ERROR_CODES = {1044, 1142, 1143, 1227}
+
+logger = logging.getLogger(__name__)
 
 
 def _table_context(config: DorisReadConfig) -> str:
@@ -33,6 +43,58 @@ def _table_context(config: DorisReadConfig) -> str:
 
 def _mysql_error_code(exc: pymysql.MySQLError) -> Any:
     return exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+
+
+def _mysql_access_error(
+    exc: pymysql.MySQLError, *, operation: str, context: str
+) -> Optional[DorisPlanningError]:
+    code = _mysql_error_code(exc)
+    if code in _MYSQL_AUTHENTICATION_ERROR_CODES:
+        return DorisAuthenticationError(
+            f"Doris rejected {operation} credentials for {context} (MySQL error {code})"
+        )
+    if code in _MYSQL_PERMISSION_ERROR_CODES:
+        return DorisPermissionError(f"Doris denied {operation} for {context} (MySQL error {code})")
+    return None
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects for authenticated query-plan POST requests."""
+
+    def redirect_request(
+        self,
+        req: Any,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _open_query_plan_request(request: urllib.request.Request, timeout: float) -> Any:
+    return urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def _contains_tls_error(exc: BaseException) -> bool:
+    candidates = [exc]
+    seen = set()
+    while candidates:
+        candidate = candidates.pop()
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        if isinstance(candidate, (ssl.SSLError, ssl.CertificateError)):
+            return True
+        for related in (
+            candidate.__cause__,
+            candidate.__context__,
+            getattr(candidate, "reason", None),
+        ):
+            if isinstance(related, BaseException):
+                candidates.append(related)
+    return False
 
 
 def _mysql_connection_kwargs(config: DorisReadConfig, *, streaming: bool) -> Dict[str, Any]:
@@ -76,10 +138,15 @@ class QueryPlanClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=config.connect_timeout) as response:
-                status = response.status
+            with _open_query_plan_request(request, timeout=config.connect_timeout) as response:
                 payload_bytes = response.read()
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise DorisConfigurationError(
+                    f"Doris query-plan endpoint redirected HTTP {exc.code} for "
+                    f"{_table_context(config)}; configure the endpoint scheme and "
+                    "host explicitly"
+                ) from exc
             if exc.code == 401:
                 raise DorisAuthenticationError(
                     f"Doris query-plan authentication failed for {_table_context(config)} "
@@ -93,22 +160,15 @@ class QueryPlanClient:
             raise DorisPlanningError(
                 f"Doris query-plan endpoint returned HTTP {exc.code} for {_table_context(config)}"
             ) from exc
-        except (OSError, TimeoutError) as exc:
+        except (http.client.HTTPException, OSError) as exc:
+            if config.http_scheme == "https" and _contains_tls_error(exc):
+                raise DorisConfigurationError(
+                    f"Doris query-plan TLS validation failed for "
+                    f"{_table_context(config)}; refusing planning fallback"
+                ) from exc
             raise DorisPlanningError(
                 f"Doris query-plan endpoint is unavailable for {_table_context(config)}"
             ) from exc
-        if status == 401:
-            raise DorisAuthenticationError(
-                f"Doris query-plan authentication failed for {_table_context(config)} (HTTP 401)"
-            )
-        if status == 403:
-            raise DorisPermissionError(
-                f"Doris query-plan permission check failed for {_table_context(config)} (HTTP 403)"
-            )
-        if status != 200:
-            raise DorisPlanningError(
-                f"Doris query-plan endpoint returned HTTP {status} for {_table_context(config)}"
-            )
         try:
             payload = json.loads(payload_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -204,9 +264,8 @@ class DorisPlanner:
     def __init__(self, config: DorisReadConfig) -> None:
         self._config = config
 
-    def plan(self, parallelism: int) -> DorisPlan:
-        """Plan a read without counting or sampling table data."""
-        _validate_parallelism(parallelism)
+    def discover(self) -> DorisPlanningSnapshot:
+        """Discover schema and tablets once for one Ray datasource instance."""
         schema = self._describe_schema()
         base_sql = build_select_sql(
             self._config.table,
@@ -218,18 +277,38 @@ class DorisPlanner:
             tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
         except (DorisAuthenticationError, DorisPermissionError):
             raise
-        except DorisPlanningError:
+        except DorisPlanningError as exc:
             if self._config.on_query_plan_error == "error":
                 raise
-            return DorisPlan(schema=schema, splits=(DorisInputSplit(None),))
+            logger.warning(
+                "Doris query-plan failed for %s; using one unpartitioned task: %s",
+                _table_context(self._config),
+                exc,
+            )
+            return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
+        return DorisPlanningSnapshot(schema=schema, tablet_ids=tablet_ids)
+
+    def plan_from_snapshot(self, snapshot: DorisPlanningSnapshot, parallelism: int) -> DorisPlan:
+        """Group one discovery snapshot for Ray's current parallelism hint."""
+        _validate_parallelism(parallelism)
+        if snapshot.tablet_ids is None:
+            return DorisPlan(
+                schema=snapshot.schema,
+                splits=(DorisInputSplit(None),),
+            )
         return DorisPlan(
-            schema=schema,
+            schema=snapshot.schema,
             splits=group_tablets(
-                tablet_ids,
+                snapshot.tablet_ids,
                 tablet_size=self._config.tablet_size,
                 parallelism=parallelism,
             ),
         )
+
+    def plan(self, parallelism: int) -> DorisPlan:
+        """Plan a read without counting or sampling table data."""
+        _validate_parallelism(parallelism)
+        return self.plan_from_snapshot(self.discover(), parallelism)
 
     def _describe_schema(self) -> pa.Schema:
         try:
@@ -251,15 +330,9 @@ class DorisPlanner:
         except pymysql.MySQLError as exc:
             code = _mysql_error_code(exc)
             context = _table_context(self._config)
-            if code in _MYSQL_AUTHENTICATION_ERROR_CODES:
-                raise DorisAuthenticationError(
-                    f"Doris rejected schema-discovery credentials for {context} "
-                    f"(MySQL error {code})"
-                ) from exc
-            if code in _MYSQL_PERMISSION_ERROR_CODES:
-                raise DorisPermissionError(
-                    f"Doris denied schema discovery for {context} (MySQL error {code})"
-                ) from exc
+            access_error = _mysql_access_error(exc, operation="schema-discovery", context=context)
+            if access_error is not None:
+                raise access_error from exc
             raise DorisPlanningError(
                 f"failed to discover Doris schema for {context} (MySQL error {code!r})"
             ) from exc

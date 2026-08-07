@@ -33,6 +33,7 @@ def test_filter_rejects_statement_and_comment_tokens() -> None:
         "",
         "id = 1; SELECT 2",
         "id = 1 --",
+        "id = 1--2",
         "id = 1 # comment",
         "id /* comment */ = 1",
     ):

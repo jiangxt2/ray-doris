@@ -1,5 +1,7 @@
+import http.client
 import io
 import json
+import ssl
 import urllib.error
 from unittest.mock import Mock
 
@@ -46,9 +48,8 @@ def test_query_plan_response_uses_body_envelope_and_only_tablet_ids() -> None:
 
 
 class FakeResponse:
-    def __init__(self, payload: bytes, *, status: int = 200) -> None:
+    def __init__(self, payload: bytes) -> None:
         self._payload = payload
-        self.status = status
 
     def __enter__(self):
         return self
@@ -62,42 +63,44 @@ class FakeResponse:
 
 def test_query_plan_http_client_sends_post_auth_scheme_and_timeout(monkeypatch) -> None:
     response = FakeResponse(json.dumps(success_payload({"9": {}})).encode("utf-8"))
-    urlopen = Mock(return_value=response)
-    monkeypatch.setattr(_planner.urllib.request, "urlopen", urlopen)
+    open_request = Mock(return_value=response)
+    monkeypatch.setattr(_planner, "_open_query_plan_request", open_request)
     config = make_config(
         password="secret",
         http_scheme="https",
         connect_timeout=3.5,
     )
     assert QueryPlanClient(config).fetch_tablet_ids("SELECT * FROM `db`.`table`") == (9,)
-    request = urlopen.call_args.args[0]
+    request = open_request.call_args.args[0]
     assert request.full_url.startswith("https://fe:8030/")
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
     assert request.data == b'{"sql": "SELECT * FROM `db`.`table`"}'
-    assert urlopen.call_args.kwargs["timeout"] == 3.5
+    assert open_request.call_args.kwargs["timeout"] == 3.5
 
 
 def test_query_plan_http_client_classifies_transport_and_invalid_json(monkeypatch) -> None:
     config = make_config()
     monkeypatch.setattr(
-        _planner.urllib.request,
-        "urlopen",
+        _planner,
+        "_open_query_plan_request",
         Mock(side_effect=urllib.error.HTTPError("url", 502, "bad gateway", {}, io.BytesIO())),
     )
     with pytest.raises(DorisPlanningError, match="HTTP 502"):
         QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
     monkeypatch.setattr(
-        _planner.urllib.request, "urlopen", Mock(return_value=FakeResponse(b"not-json"))
+        _planner,
+        "_open_query_plan_request",
+        Mock(return_value=FakeResponse(b"not-json")),
     )
     with pytest.raises(DorisPlanningError, match="invalid JSON"):
         QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
     monkeypatch.setattr(
-        _planner.urllib.request,
-        "urlopen",
-        Mock(return_value=FakeResponse(b"{}", status=503)),
+        _planner,
+        "_open_query_plan_request",
+        Mock(side_effect=http.client.IncompleteRead(b"{")),
     )
-    with pytest.raises(DorisPlanningError, match="HTTP 503"):
+    with pytest.raises(DorisPlanningError, match="unavailable"):
         QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
 
 
@@ -110,8 +113,8 @@ def test_query_plan_http_auth_errors_never_become_planning_fallback(
 ) -> None:
     config = make_config(on_query_plan_error="single_task")
     monkeypatch.setattr(
-        _planner.urllib.request,
-        "urlopen",
+        _planner,
+        "_open_query_plan_request",
         Mock(side_effect=urllib.error.HTTPError("url", status, "denied", {}, io.BytesIO())),
     )
     with pytest.raises(error_type, match=rf"db\.table.*HTTP {status}"):
@@ -120,12 +123,40 @@ def test_query_plan_http_auth_errors_never_become_planning_fallback(
 
 def test_query_plan_timeout_has_table_context(monkeypatch) -> None:
     monkeypatch.setattr(
-        _planner.urllib.request,
-        "urlopen",
+        _planner,
+        "_open_query_plan_request",
         Mock(side_effect=TimeoutError("timed out")),
     )
     with pytest.raises(DorisPlanningError, match=r"unavailable.*db\.table"):
         QueryPlanClient(make_config()).fetch_tablet_ids("SELECT 1")
+
+
+def test_query_plan_redirect_and_tls_fail_closed(monkeypatch) -> None:
+    redirect = urllib.error.HTTPError(
+        "url", 302, "redirect", {"Location": "https://other.example"}, io.BytesIO()
+    )
+    monkeypatch.setattr(
+        _planner,
+        "_open_query_plan_request",
+        Mock(side_effect=redirect),
+    )
+    with pytest.raises(DorisConfigurationError, match="redirected HTTP 302"):
+        QueryPlanClient(make_config()).fetch_tablet_ids("SELECT 1")
+
+    tls_error = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
+    monkeypatch.setattr(
+        _planner,
+        "_open_query_plan_request",
+        Mock(side_effect=tls_error),
+    )
+    with pytest.raises(DorisConfigurationError, match="TLS validation failed"):
+        QueryPlanClient(make_config(http_scheme="https")).fetch_tablet_ids("SELECT 1")
+
+
+def test_query_plan_redirect_handler_refuses_post_rewrite() -> None:
+    handler = _planner._NoRedirectHandler()
+    request = urllib.request.Request("http://fe", data=b"{}", method="POST")
+    assert handler.redirect_request(request, None, 302, "redirect", {}, "https://fe") is None
 
 
 def test_query_plan_plan_shape_rejection_uses_integer_inner_status() -> None:
@@ -190,7 +221,7 @@ def test_planner_returns_empty_plan_for_successfully_pruned_empty_table(monkeypa
     assert planner.plan(4).splits == ()
 
 
-def test_planner_falls_back_to_single_task_only_for_planning_error(monkeypatch) -> None:
+def test_planner_falls_back_to_single_task_only_for_planning_error(monkeypatch, caplog) -> None:
     config = make_config(on_query_plan_error="single_task")
     planner = DorisPlanner(config)
     monkeypatch.setattr(planner, "_describe_schema", Mock(return_value=pa.schema([])))
@@ -198,6 +229,7 @@ def test_planner_falls_back_to_single_task_only_for_planning_error(monkeypatch) 
         QueryPlanClient, "fetch_tablet_ids", Mock(side_effect=DorisPlanningError("rejected"))
     )
     assert planner.plan(4).splits == (DorisInputSplit(None),)
+    assert "using one unpartitioned task" in caplog.text
 
 
 def test_planner_does_not_fallback_for_permission_error(monkeypatch) -> None:

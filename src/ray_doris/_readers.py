@@ -11,8 +11,16 @@ import pyarrow as pa
 import pymysql
 
 from ray_doris._errors import DorisReadError
-from ray_doris._models import DorisInputSplit, DorisReadConfig
-from ray_doris._planner import _mysql_connection_kwargs
+from ray_doris._models import (
+    _ADBC_CONNECT_TIMEOUT_OPTION,
+    DorisInputSplit,
+    DorisReadConfig,
+)
+from ray_doris._planner import (
+    _mysql_access_error,
+    _mysql_connection_kwargs,
+    _mysql_error_code,
+)
 from ray_doris._schema import coerce_decimal
 from ray_doris._sql import build_select_sql
 
@@ -104,6 +112,18 @@ def read_mysql(
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)}: {exc}"
         ) from exc
+    except pymysql.MySQLError as exc:
+        access_error = _mysql_access_error(
+            exc,
+            operation="split read",
+            context=_split_context(config, split),
+        )
+        if access_error is not None:
+            raise access_error from exc
+        raise DorisReadError(
+            f"failed to read Doris {_split_context(config, split)} through the "
+            f"MySQL protocol (MySQL error {_mysql_error_code(exc)!r})"
+        ) from exc
     except Exception as exc:
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)} through the MySQL protocol"
@@ -134,6 +154,7 @@ def _flight_connection(config: DorisReadConfig) -> Any:
     db_kwargs = {
         DatabaseOptions.USERNAME.value: config.user,
         DatabaseOptions.PASSWORD.value: config.password,
+        _ADBC_CONNECT_TIMEOUT_OPTION: str(config.connect_timeout),
     }
     db_kwargs.update(config.adbc_options())
     return flight_sql.connect(
@@ -148,10 +169,29 @@ def _cast_flight_batch(batch: pa.RecordBatch, schema: pa.Schema) -> pa.Table:
             f"Doris Flight result columns {tuple(batch.schema.names)!r} do not match planned "
             f"schema {tuple(schema.names)!r}"
         )
-    try:
-        return pa.Table.from_batches([batch]).cast(schema, safe=True)
-    except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, TypeError, ValueError) as exc:
-        raise DorisReadError("Doris Flight result does not match the planned schema") from exc
+    arrays = []
+    for index, field in enumerate(schema):
+        source_field = batch.schema.field(index)
+        try:
+            array = batch.column(index).cast(field.type, safe=True)
+        except (
+            pa.ArrowInvalid,
+            pa.ArrowTypeError,
+            OverflowError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise DorisReadError(
+                f"failed to convert Doris Flight column {field.name!r} "
+                f"from {source_field.type} to {field.type}"
+            ) from exc
+        if not field.nullable and array.null_count:
+            raise DorisReadError(
+                f"Doris Flight column {field.name!r} contains NULL but the "
+                "planned schema is non-nullable"
+            )
+        arrays.append(array)
+    return pa.Table.from_arrays(arrays, schema=schema)
 
 
 def _slice_flight_table(table: pa.Table, batch_size: int) -> Iterator[pa.Table]:
@@ -172,7 +212,7 @@ def read_flight(
                 f"Flight SQL setup is unavailable for {_split_context(config, split)}"
             ) from exc
         except Exception as exc:
-            if _is_flight_setup_error(exc):
+            if _is_flight_setup_error(exc, allow_timeout=True):
                 raise _FlightUnavailableError(
                     f"Flight SQL setup is unavailable for {_split_context(config, split)}"
                 ) from exc
@@ -181,7 +221,7 @@ def read_flight(
             try:
                 cursor = connection.cursor()
             except Exception as exc:
-                if _is_flight_setup_error(exc):
+                if _is_flight_setup_error(exc, allow_timeout=True):
                     raise _FlightUnavailableError(
                         f"Flight SQL setup is unavailable for {_split_context(config, split)}"
                     ) from exc
@@ -191,7 +231,7 @@ def read_flight(
                     cursor.execute(_query(config, split))
                     reader = cursor.fetch_record_batch()
                 except Exception as exc:
-                    if _is_flight_setup_error(exc):
+                    if _is_flight_setup_error(exc, allow_timeout=False):
                         raise _FlightUnavailableError(
                             f"Flight SQL setup is unavailable for {_split_context(config, split)}"
                         ) from exc
@@ -218,7 +258,7 @@ def read_flight(
         ) from exc
 
 
-def _is_flight_setup_error(exc: BaseException) -> bool:
+def _is_flight_setup_error(exc: BaseException, *, allow_timeout: bool = True) -> bool:
     error_type: Any = ()
     fallback_statuses: set[Any] = set()
     try:
@@ -237,12 +277,19 @@ def _is_flight_setup_error(exc: BaseException) -> bool:
     seen = set()
     while candidate is not None and id(candidate) not in seen:
         seen.add(id(candidate))
+        if isinstance(candidate, TimeoutError):
+            return allow_timeout
         if isinstance(candidate, (ImportError, OSError)):
             return True
         if (
             isinstance(candidate, error_type)
             and getattr(candidate, "status_code", None) in fallback_statuses
         ):
+            if (
+                getattr(candidate, "status_code", None) == AdbcStatusCode.TIMEOUT
+                and not allow_timeout
+            ):
+                return False
             return True
         candidate = candidate.__cause__
     return False
@@ -258,14 +305,23 @@ def read_split(
         _ensure_flight_available()
         return read_flight(config, split, schema)
     if not _flight_is_installed():
+        if config.flight_scheme == "grpc+tls":
+            raise _flight_import_error()
         logger.info("Flight SQL extra is unavailable; using the MySQL protocol")
         return read_mysql(config, split, schema)
 
     def auto_reader() -> Iterator[pa.Table]:
         try:
             yield from read_flight(config, split, schema)
-        except _FlightUnavailableError:
-            logger.warning("Flight SQL setup is unavailable; using MySQL")
+        except _FlightUnavailableError as exc:
+            if config.flight_scheme == "grpc+tls":
+                raise DorisReadError(
+                    "Flight SQL TLS setup failed; refusing automatic MySQL fallback"
+                ) from exc
+            logger.warning(
+                "Flight SQL setup is unavailable; using MySQL: %s",
+                exc,
+            )
             yield from read_mysql(config, split, schema)
 
     return auto_reader()

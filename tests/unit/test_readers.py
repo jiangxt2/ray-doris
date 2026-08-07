@@ -8,7 +8,11 @@ import pyarrow as pa
 import pytest
 
 from ray_doris import _readers
-from ray_doris._errors import DorisReadError
+from ray_doris._errors import (
+    DorisAuthenticationError,
+    DorisPermissionError,
+    DorisReadError,
+)
 from ray_doris._models import DorisInputSplit, DorisReadConfig
 from ray_doris._sql import parse_table
 
@@ -101,6 +105,26 @@ def test_mysql_empty_result_closes_resources(monkeypatch) -> None:
     assert cursor.closed and connection.closed
 
 
+@pytest.mark.parametrize(
+    ("code", "error_type"),
+    [(1045, DorisAuthenticationError), (1142, DorisPermissionError)],
+)
+def test_mysql_reader_preserves_access_error(monkeypatch, code, error_type) -> None:
+    monkeypatch.setattr(
+        _readers.pymysql,
+        "connect",
+        Mock(side_effect=_readers.pymysql.err.OperationalError(code, "denied")),
+    )
+    with pytest.raises(error_type, match="split read"):
+        list(
+            _readers.read_mysql(
+                make_config(),
+                DorisInputSplit(None),
+                pa.schema([("id", pa.int64())]),
+            )
+        )
+
+
 def test_boolean_normalization_accepts_only_doris_zero_and_one() -> None:
     assert _readers._normalize_values([0, 1, None, True], pa.bool_()) == [
         False,
@@ -156,6 +180,7 @@ def test_flight_import_and_network_errors_are_fallback_eligible_during_setup() -
     wrapped = DorisReadError("context")
     wrapped.__cause__ = OSError("connection refused")
     assert _readers._is_flight_setup_error(wrapped)
+    assert not _readers._is_flight_setup_error(TimeoutError("query deadline"), allow_timeout=False)
 
 
 class FakeBatchReader:
@@ -196,6 +221,11 @@ class FakeFlightConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+class QueryTimeoutFlightCursor(FakeFlightCursor):
+    def execute(self, query: str) -> None:
+        raise TimeoutError("query deadline")
 
 
 def test_flight_reader_streams_record_batches_and_closes_resources(monkeypatch) -> None:
@@ -239,7 +269,7 @@ def test_flight_reader_rejects_null_in_non_nullable_field_and_closes_resources(
     connection = FakeFlightConnection(cursor)
     monkeypatch.setattr(_readers, "_flight_connection", Mock(return_value=connection))
 
-    with pytest.raises(DorisReadError, match="planned schema"):
+    with pytest.raises(DorisReadError, match="non-nullable"):
         list(
             _readers.read_flight(
                 make_config(),
@@ -249,6 +279,22 @@ def test_flight_reader_rejects_null_in_non_nullable_field_and_closes_resources(
         )
 
     assert reader.closed and cursor.closed and connection.closed
+
+
+def test_flight_cast_error_identifies_column_without_exposing_value() -> None:
+    batch = pa.record_batch(
+        [pa.array(["0000-00-00 00:00:00"])],
+        names=["created_at"],
+    )
+    with pytest.raises(
+        DorisReadError,
+        match=r"column 'created_at'.*string.*timestamp",
+    ) as captured:
+        _readers._cast_flight_batch(
+            batch,
+            pa.schema([("created_at", pa.timestamp("us"))]),
+        )
+    assert "0000-00-00" not in str(captured.value)
 
 
 def test_auto_falls_back_for_eligible_setup_error(monkeypatch) -> None:
@@ -265,6 +311,49 @@ def test_auto_falls_back_for_eligible_setup_error(monkeypatch) -> None:
         _readers.read_split(make_config(transport="auto"), DorisInputSplit(None), pa.schema([]))
     )
     assert result == [mysql_table]
+
+
+def test_auto_tls_setup_failure_refuses_mysql_fallback(monkeypatch) -> None:
+    def failing_flight(*args):
+        if False:
+            yield pa.table({})
+        raise _readers._FlightUnavailableError("certificate failed")
+
+    mysql_reader = Mock(return_value=iter(()))
+    monkeypatch.setattr(_readers, "_flight_is_installed", Mock(return_value=True))
+    monkeypatch.setattr(_readers, "read_flight", failing_flight)
+    monkeypatch.setattr(_readers, "read_mysql", mysql_reader)
+    with pytest.raises(DorisReadError, match="refusing automatic MySQL fallback"):
+        list(
+            _readers.read_split(
+                make_config(transport="auto", flight_scheme="grpc+tls"),
+                DorisInputSplit(None),
+                pa.schema([]),
+            )
+        )
+    mysql_reader.assert_not_called()
+
+
+def test_auto_query_timeout_does_not_fallback(monkeypatch) -> None:
+    reader = FakeBatchReader([])
+    cursor = QueryTimeoutFlightCursor(reader)
+    connection = FakeFlightConnection(cursor)
+    mysql_reader = Mock(return_value=iter(()))
+    monkeypatch.setattr(_readers, "_flight_is_installed", Mock(return_value=True))
+    monkeypatch.setattr(_readers, "_flight_connection", Mock(return_value=connection))
+    monkeypatch.setattr(_readers, "read_mysql", mysql_reader)
+
+    with pytest.raises(DorisReadError, match="through Flight SQL"):
+        list(
+            _readers.read_split(
+                make_config(transport="auto"),
+                DorisInputSplit(None),
+                pa.schema([]),
+            )
+        )
+
+    mysql_reader.assert_not_called()
+    assert cursor.closed and connection.closed
 
 
 def test_auto_does_not_fallback_for_non_setup_error_before_first_batch(monkeypatch) -> None:
@@ -351,6 +440,10 @@ def test_flight_connection_uses_configured_scheme_and_options(monkeypatch) -> No
         )
     )
     assert connect.call_args.kwargs["uri"] == "grpc+tls://fe:8070"
+    assert (
+        connect.call_args.kwargs["db_kwargs"]["adbc.flight.sql.rpc.timeout_seconds.connect"]
+        == "10.0"
+    )
     assert connect.call_args.kwargs["db_kwargs"][timeout_key] == "30"
 
 
@@ -373,4 +466,6 @@ def test_adbc_status_classification_uses_structured_status_code(monkeypatch) -> 
     monkeypatch.setitem(sys.modules, "adbc_driver_manager.dbapi", dbapi)
 
     assert _readers._is_flight_setup_error(Error(StatusCode.IO))
+    assert _readers._is_flight_setup_error(Error(StatusCode.NOT_IMPLEMENTED), allow_timeout=False)
+    assert not _readers._is_flight_setup_error(Error(StatusCode.TIMEOUT), allow_timeout=False)
     assert not _readers._is_flight_setup_error(Error(StatusCode.UNAUTHORIZED))

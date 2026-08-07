@@ -5,24 +5,36 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, Callable, List, Mapping, Optional, Sequence, cast
 
+import pyarrow as pa
 from ray.data.block import BlockMetadata
 from ray.data.datasource import Datasource, ReadTask
 
 from ray_doris._compat import make_read_task
 from ray_doris._models import (
+    DorisPlanningSnapshot,
     DorisReadConfig,
     FlightScheme,
     HttpScheme,
     QueryPlanPolicy,
     Transport,
 )
-from ray_doris._planner import DorisPlanner
+from ray_doris._planner import DorisPlanner, _validate_parallelism
 from ray_doris._readers import _ensure_flight_available, read_split
 from ray_doris._sql import normalize_columns, normalize_filter, parse_table
 
 
+def _read_empty(schema: pa.Schema) -> List[pa.Table]:
+    """Return one schema-carrying Arrow block without querying Doris."""
+    return [pa.Table.from_batches([], schema=schema)]
+
+
 class DorisDatasource(Datasource):
-    """A public Ray V1 datasource that reads one internal-catalog Doris table."""
+    """A public Ray V1 datasource that reads one internal-catalog Doris table.
+
+    Each instance caches the schema and tablet discovery result from its first
+    planning call. Create a new instance to discover later table changes. This
+    planning cache does not provide snapshot isolation.
+    """
 
     def __init__(
         self,
@@ -69,7 +81,10 @@ class DorisDatasource(Datasource):
             client_options=client_kwargs,
             flight_options=flight_options,
         )
-        if self._config.transport == "flight":
+        self._planning_snapshot: Optional[DorisPlanningSnapshot] = None
+        if self._config.transport == "flight" or (
+            self._config.transport == "auto" and self._config.flight_scheme == "grpc+tls"
+        ):
             _ensure_flight_available()
 
     @property
@@ -89,7 +104,26 @@ class DorisDatasource(Datasource):
     ) -> List[ReadTask]:
         """Plan tablet splits on the driver and create serializable worker reads."""
         del data_context
-        plan = DorisPlanner(self._config).plan(parallelism)
+        _validate_parallelism(parallelism)
+        planner = DorisPlanner(self._config)
+        if self._planning_snapshot is None:
+            self._planning_snapshot = planner.discover()
+        plan = planner.plan_from_snapshot(self._planning_snapshot, parallelism)
+        if not plan.splits:
+            metadata = BlockMetadata(
+                num_rows=0,
+                size_bytes=0,
+                exec_stats=None,
+                input_files=None,
+            )
+            return [
+                make_read_task(
+                    partial(_read_empty, plan.schema),
+                    metadata,
+                    plan.schema,
+                    per_task_row_limit,
+                )
+            ]
         tasks = []
         for split in plan.splits:
             read_fn = partial(read_split, self._config, split, plan.schema)
