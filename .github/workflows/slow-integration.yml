@@ -35,10 +35,11 @@ jobs:
       RAY_DORIS_ROW_COUNT: ${{ inputs.row_count }}
       RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds }}
       RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit }}
-      RAY_DORIS_SLOW_LOG_DIR: ${{ runner.temp }}/ray-doris-slow-it
     steps:
       - uses: actions/checkout@v4
       - name: Run distributed cluster scenario
+        env:
+          RAY_DORIS_SLOW_LOG_DIR: ${{ runner.temp }}/ray-doris-slow-it
         run: tests/slow_integration/run.sh
       - uses: actions/upload-artifact@v4
         if: always()
