@@ -18,6 +18,17 @@ tests. The distributed suite runs Ray 2.55.1 so local and dedicated runners can 
 cached image without changing the tested version.
 This project is not maintained or endorsed by the Ray or Apache Doris projects.
 
+## Documentation
+
+The source documentation follows the Ray project structure and is built with Sphinx and MyST.
+Start with the [documentation landing page](doc/source/index.md), then use the
+[Quickstart](doc/source/quickstart.md), [user guides](doc/source/user-guide/index.md),
+[API reference](doc/source/api/api.md), and [compatibility matrix](doc/source/compatibility.md).
+
+Documentation claims are tied to the package source and test suites. The
+[architecture guide](doc/source/architecture.md) distinguishes public contracts from internal
+implementation details, and the [FAQ](doc/source/faq.md) records explicit scope limits.
+
 ## Installation
 
 Install the default MySQL transport:
@@ -299,6 +310,9 @@ existing `ray-doris-it` Compose project, preserves pytest, Ray, Doris, and HAPro
 only the resources created by that exact project.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete checks.
+
+Build and validate the documentation with the commands in the
+[documentation contributor guide](doc/source/contributing/index.md).
 
 ## License
 

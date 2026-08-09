@@ -59,6 +59,25 @@ at 2 GiB by default.
 
 The slow suite is manual and is not a required check in the default CI workflow.
 
+## Documentation checks
+
+Create an isolated documentation environment so Sphinx and runtime development dependencies do
+not drift together:
+
+```bash
+uv venv .docs-venv --python 3.12
+uv pip install --python .docs-venv/bin/python -r doc/requirements-doc.lock.txt
+uv pip install --python .docs-venv/bin/python --no-build-isolation --no-deps -e .
+.docs-venv/bin/python tools/check_docs.py
+make -C doc strict SPHINXBUILD=../.docs-venv/bin/sphinx-build
+make -C doc spelling SPHINXBUILD=../.docs-venv/bin/sphinx-build
+```
+
+Run `make -C doc linkcheck SPHINXBUILD=../.docs-venv/bin/sphinx-build` separately because external
+sites can fail transiently. New documentation pages use MyST Markdown under `doc/source/` and
+follow the Ray documentation organization and writing style. Keep examples source-aligned and do
+not describe an untested configuration or extension point as supported behavior.
+
 ## Compatibility
 
 Code must remain compatible with Python 3.9 and Ray 2.49.2. Do not import modules below
