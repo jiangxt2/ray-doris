@@ -8,13 +8,13 @@ services:
     hostname: fe
     networks:
       doris:
-        ipv4_address: 172.31.127.2
+        ipv4_address: 172.16.127.2
     ports:
       - "127.0.0.1:${DORIS_HTTP_PORT:-18030}:8030"
       - "127.0.0.1:${DORIS_MYSQL_PORT:-19030}:9030"
       - "127.0.0.1:${DORIS_FLIGHT_PORT:-18070}:8070"
     environment:
-      FE_SERVERS: fe1:172.31.127.2:9010
+      FE_SERVERS: fe1:172.16.127.2:9010
       FE_ID: "1"
     volumes:
       - fe-data:/opt/apache-doris/fe/doris-meta
@@ -32,12 +32,12 @@ services:
     depends_on: [fe]
     networks:
       doris:
-        ipv4_address: 172.31.127.3
+        ipv4_address: 172.16.127.3
     ports:
       - "127.0.0.1:18050:8050"
     environment:
-      FE_SERVERS: fe1:172.31.127.2:9010
-      BE_ADDR: 172.31.127.3:9050
+      FE_SERVERS: fe1:172.16.127.2:9010
+      BE_ADDR: 172.16.127.3:9050
     volumes:
       - be-data:/opt/apache-doris/be/storage
     mem_limit: 2g
@@ -50,7 +50,7 @@ networks:
   doris:
     ipam:
       config:
-        - subnet: 172.31.127.0/24
+        - subnet: 172.16.127.0/24
 
 volumes:
   fe-data:
