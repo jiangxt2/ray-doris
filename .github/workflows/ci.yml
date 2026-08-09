@@ -46,7 +46,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12
-      - run: uv pip install -e ".[dev]" "ray[data]==2.56.1"
+      - run: uv pip install -e ".[dev,flight]" "ray[data]==2.56.1"
       - run: .venv/bin/ruff format --check .
       - run: .venv/bin/ruff check .
       - run: .venv/bin/mypy
