@@ -1,0 +1,12 @@
+# Regenerate requirements-doc.lock.txt with:
+# uv pip compile pyproject.toml doc/requirements-doc.txt --python-version 3.12 \
+#   --output-file doc/requirements-doc.lock.txt
+editables>=0.3
+hatchling>=1.27
+myst-parser==5.1.0
+pymysql==1.2.0
+pydata-sphinx-theme==0.18.0
+ray[data]==2.56.1
+sphinx==8.2.3
+sphinx-design==0.7.0
+sphinxcontrib-spelling==8.0.1
