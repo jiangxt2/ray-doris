@@ -3,9 +3,11 @@
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.docs-venv/
 .venv*/
 __pycache__/
 build/
+doc/_build/
 dist/
 htmlcov/
 *.egg-info/

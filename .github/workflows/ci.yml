@@ -53,17 +53,41 @@ jobs:
       - run: .venv/bin/pre-commit run --all-files
 
   docs:
-    name: Documentation links
+    name: Documentation
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install spelling system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes enchant-2
+      - name: Install documentation environment
+        run: |
+          uv venv .docs-venv --python 3.12
+          uv pip install \
+            --python .docs-venv/bin/python \
+            --requirement doc/requirements-doc.lock.txt
+          uv pip install \
+            --python .docs-venv/bin/python \
+            --no-build-isolation \
+            --no-deps \
+            --editable .
+      - name: Check documentation contracts
+        run: .docs-venv/bin/python tools/check_docs.py
+      - name: Build strict documentation
+        run: make -C doc strict SPHINXBUILD=../.docs-venv/bin/sphinx-build
+      - name: Check documentation spelling
+        run: make -C doc spelling SPHINXBUILD=../.docs-venv/bin/sphinx-build
       - uses: lycheeverse/lychee-action@v2
         with:
           args: >-
             --no-progress
             --max-retries 3
-            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md
+            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md doc/source
 
   integration:
     name: Doris 4.0.6 integration
