@@ -20,7 +20,10 @@ Continuous integration covers these combinations:
 | 3.10 | 2.55.1 | Unit and Ray signature compatibility tests |
 | 3.12 | 2.56.1 | Unit tests and required Doris 4.0.6 integration tests |
 
-The optional distributed suite uses Python 3.12, Ray 2.55.1, and Doris 4.0.6. It runs one Ray head with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a TLS and Flight ingress.
+The optional distributed suite uses Python 3.12, Ray 2.55.1, and Doris 4.0.6. It runs one Ray head
+with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
+TLS and Flight ingress. The enterprise-candidate evidence uses the minimum-privilege MySQL reader;
+Flight remains an experimental regression path.
 
 ## Understand the Doris target
 
@@ -33,8 +36,11 @@ Doris 4.0.6 is the fixed real-infrastructure target for required and distributed
 - Multiple Ray worker and Doris backend participation.
 - Ray worker retry and Doris backend failure with replicated tablets.
 - Native MySQL TLS and certificate-validated HTTPS through the test ingress.
+- Environment-referenced credentials resolved independently on the driver and workers.
 
-The suite doesn't verify every Doris release, storage model, deployment proxy, authentication provider, or Flight TLS endpoint.
+The suite doesn't verify every Doris release, storage model, deployment proxy, authentication
+provider, or Flight TLS endpoint. It uses one logical FE hostname but doesn't certify Doris FE
+leader election, quorum, multi-FE failover, or an external load balancer's backend policy.
 
 ## Review Python and Flight limits
 
@@ -60,5 +66,10 @@ Advanced keyword support in `ray.data.read_datasource()` belongs to the installe
 MySQL is the production-candidate transport. Flight SQL and `auto` remain experimental because Doris documents Flight SQL as experimental and worker-local automatic selection can differ across heterogeneous environments.
 
 The required integration suite uses the default frontend HTTP query-plan endpoint. The distributed suite verifies certificate-validated HTTPS through HAProxy because Doris 4.0.6 native frontend HTTPS has a Jetty WebSocket startup regression in this test topology.
+
+The enterprise-candidate MySQL profile requires `password_env`, strict MySQL TLS, HTTPS query
+planning with hostname verification, `on_query_plan_error="error"`, and explicit query-plan and
+MySQL socket timeouts. A release candidate also requires a successful full slow manifest bound to
+the exact release SHA and workflow run.
 
 Doris 4.0.6 advertises plaintext Flight `grpc` endpoints in the distributed suite. Flight stays on an isolated Compose network. The test doesn't establish a positive `grpc+tls` Doris server compatibility claim.

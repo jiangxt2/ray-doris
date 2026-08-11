@@ -64,6 +64,7 @@ class DorisDatasource(Datasource):
         flight_scheme: FlightScheme = "grpc",
         user: str = "root",
         password: str = "",
+        password_env: Optional[str] = None,
         columns: Optional[Sequence[str]] = None,
         filter: Optional[str] = None,
         transport: Transport = "mysql",
@@ -71,6 +72,8 @@ class DorisDatasource(Datasource):
         tablet_size: int = 1,
         batch_size: int = 10_000,
         connect_timeout: float = 10.0,
+        query_plan_timeout: Optional[float] = None,
+        http_ca_file: Optional[str] = None,
         client_kwargs: Optional[Mapping[str, Any]] = None,
         flight_options: Optional[Mapping[str, Any]] = None,
     ) -> None:
@@ -88,6 +91,7 @@ class DorisDatasource(Datasource):
             flight_scheme=flight_scheme,
             user=user,
             password=password,
+            password_env=password_env,
             columns=normalize_columns(columns),
             filter=normalize_filter(filter),
             transport=transport,
@@ -95,6 +99,8 @@ class DorisDatasource(Datasource):
             tablet_size=tablet_size,
             batch_size=batch_size,
             connect_timeout=connect_timeout,
+            query_plan_timeout=query_plan_timeout,
+            http_ca_file=http_ca_file,
             client_options=client_kwargs,
             flight_options=flight_options,
         )

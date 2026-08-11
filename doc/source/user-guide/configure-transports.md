@@ -41,6 +41,7 @@ dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
     transport="mysql",
+    password_env="DORIS_PASSWORD",
     batch_size=10_000,
     client_kwargs={"read_timeout": 300, "write_timeout": 30},
 )
@@ -80,11 +81,13 @@ Setting `flight_scheme="grpc+tls"` makes `auto` fail closed. A TLS setup failure
 
 ## Configure timeout scopes
 
-`connect_timeout` applies to three setup operations:
+`connect_timeout` applies to two setup operations:
 
-- The frontend `_query_plan` HTTP request.
 - Each PyMySQL connection attempt.
 - The ADBC Flight SQL connect remote procedure call (RPC).
+
+`query_plan_timeout` applies to the frontend `_query_plan` HTTP request. When it is `None`, the
+request keeps the backward-compatible `connect_timeout` value.
 
 It doesn't set a deadline for an established MySQL socket read or a Flight query and fetch. Configure those execution deadlines with `client_kwargs` and `flight_options`:
 
@@ -92,8 +95,9 @@ It doesn't set a deadline for an established MySQL socket read or a Flight query
 dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
-    transport="auto",
+    transport="mysql",
     connect_timeout=10.0,
+    query_plan_timeout=30.0,
     client_kwargs={"read_timeout": 300, "write_timeout": 30},
     flight_options={
         "adbc.flight.sql.rpc.timeout_seconds.query": "300",

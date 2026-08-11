@@ -43,6 +43,18 @@ openssl x509 \
   -extfile "${target}/fe.ext" \
   -out "${target}/fe.pem"
 
+openssl req \
+  -x509 \
+  -newkey rsa:2048 \
+  -nodes \
+  -sha256 \
+  -days 2 \
+  -keyout "${target}/wrong-ca.key" \
+  -out "${target}/wrong-ca.pem" \
+  -subj "/CN=ray-doris untrusted test CA" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+
 openssl pkcs12 -export -name doris_ssl_certificate -inkey "${target}/fe.key" \
   -in "${target}/fe.pem" -certfile "${target}/ca.pem" -out "${target}/fe.p12" \
   -passout pass:doris
@@ -53,4 +65,5 @@ chmod 0644 \
   "${target}/ca.pem" \
   "${target}/fe.p12" \
   "${target}/ingress.pem" \
-  "${target}/mysql-ca.p12"
+  "${target}/mysql-ca.p12" \
+  "${target}/wrong-ca.pem"

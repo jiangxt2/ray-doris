@@ -14,6 +14,8 @@ DATABASE = "ray_doris_slow_it"
 DISTRIBUTED_TABLE = "distributed_records"
 REPLICATED_TABLE = "replicated_records"
 FLIGHT_PROXY_BACKENDS = ("be-1", "be-2", "be-3")
+READER_USER = "ray_doris_reader"
+READER_PASSWORD_ENV = "RAY_DORIS_READER_PASSWORD"
 
 
 def _positive_env_int(name: str, default: int, maximum: int) -> int:
@@ -89,7 +91,7 @@ class SlowITConfig:
         self,
         *,
         table: str,
-        transport: str = "flight",
+        transport: str = "mysql",
         **kwargs: Any,
     ) -> dict[str, Any]:
         values: dict[str, Any] = {
@@ -100,11 +102,13 @@ class SlowITConfig:
             "http_scheme": "https",
             "flight_port": self.flight_port,
             "flight_scheme": "grpc",
-            "user": "root",
-            "password": "",
+            "user": READER_USER,
+            "password_env": READER_PASSWORD_ENV,
             "transport": transport,
             "on_query_plan_error": "error",
             "connect_timeout": 30.0,
+            "query_plan_timeout": 30.0,
+            "http_ca_file": self.tls_ca,
             "client_kwargs": {
                 "ssl": {
                     "ca": self.tls_ca,
@@ -128,6 +132,32 @@ def mysql_connection(config: SlowITConfig):
         port=config.mysql_port,
         user="root",
         password="",
+        charset="utf8mb4",
+        autocommit=True,
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=30,
+        read_timeout=180,
+        write_timeout=180,
+        ssl={"ca": config.tls_ca, "check_hostname": True},
+    )
+
+
+def _reader_password() -> str:
+    password = os.environ.get(READER_PASSWORD_ENV)
+    if not password:
+        raise RuntimeError(f"{READER_PASSWORD_ENV} must be set to a non-empty test credential")
+    if not password.isascii() or not password.isalnum():
+        raise RuntimeError(f"{READER_PASSWORD_ENV} must contain only ASCII letters and digits")
+    return password
+
+
+def reader_mysql_connection(config: SlowITConfig):
+    return pymysql.connect(
+        host=config.host,
+        port=config.mysql_port,
+        user=READER_USER,
+        password=_reader_password(),
+        database=config.database,
         charset="utf8mb4",
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
@@ -263,6 +293,16 @@ def setup_tables(config: SlowITConfig) -> None:
         DISTRIBUTED BY HASH(`id`) BUCKETS {BUCKET_COUNT}
         PROPERTIES ("replication_num" = "1")
         """,
+    )
+    reader_password = _reader_password()
+    execute(config, f"DROP USER IF EXISTS '{READER_USER}'@'%'")
+    execute(
+        config,
+        f"CREATE USER '{READER_USER}'@'%' IDENTIFIED BY '{reader_password}'",
+    )
+    execute(
+        config,
+        f"GRANT SELECT_PRIV ON internal.{config.database}.* TO '{READER_USER}'@'%'",
     )
     execute(
         config,

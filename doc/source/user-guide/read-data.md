@@ -21,9 +21,12 @@ dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
 )
 ```
+
+`password_env` is the recommended credential boundary for distributed use. See
+[Secure connections](secure-connections.md) for driver/worker injection and TLS requirements.
 
 Database, table, and column identifiers must start with a letter or underscore and then contain only letters, numbers, underscores, or dollar signs. `ray-doris` quotes validated identifiers in generated SQL.
 

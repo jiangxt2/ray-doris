@@ -12,6 +12,13 @@ All notable changes to this project are documented in this file.
 - Mark Python 3.9 as Alpha legacy compatibility and Flight SQL and automatic transport selection as
   experimental.
 - Validate release ancestry against the `master` default branch.
+- Add environment-referenced credentials that resolve independently on the driver and workers
+  without serializing the resolved value.
+- Add a private-CA option and independent timeout for query-plan HTTPS, plus fixed redacted MySQL
+  TLS setup errors.
+- Move distributed worker-retry and backend-failure evidence to the minimum-privilege MySQL path.
+- Bind releases to a successful full slow-suite manifest from the exact release commit and workflow
+  run while keeping FE cluster HA as a deployment responsibility.
 
 ## 0.1.0a1
 

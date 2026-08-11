@@ -38,7 +38,7 @@ Only `read_doris`, `DorisDatasource`, and the exception hierarchy are public pac
 
 ## Plan on the driver
 
-The driver performs two metadata operations. MySQL `DESCRIBE` produces column names, types, and nullability. An authenticated HTTP POST to `/_query_plan` produces predicate-pruned tablet IDs.
+The driver performs two metadata operations. MySQL `DESCRIBE` produces column names, types, and nullability. An authenticated HTTP POST to `/_query_plan` produces predicate-pruned tablet IDs. When `password_env` is configured, each operation resolves the credential immediately before its own network request. A custom `http_ca_file` is loaded into a hostname-verifying TLS context for query planning.
 
 The query-plan client disables redirects and validates both HTTP failures and Doris's body envelope. Doris can report application errors inside an HTTP 200 response, so HTTP status alone isn't enough.
 
@@ -50,7 +50,7 @@ The MySQL reader distinguishes normal EOF from consumer abort. Normal completion
 
 MySQL is the production-candidate data path. Flight SQL and worker-local `auto` selection remain experimental and aren't part of a stable compatibility profile.
 
-Transport option mappings are deep-copied into immutable tuple storage so caller mutation can't change a constructed datasource. Construction also verifies the actual configuration with Ray's worker serialization protocol and rejects unsupported values before network access. The configuration representation exposes option keys for diagnosis but redacts the password, filter, and every option value.
+Transport option mappings are deep-copied into immutable tuple storage so caller mutation can't change a constructed datasource. Construction also verifies the actual configuration with Ray's worker serialization protocol and rejects unsupported values before network access. The configuration representation exposes option keys for diagnosis but redacts the password, password environment name, HTTP CA path, filter, and every option value. An environment credential is resolved per process and never written back into the serialized configuration.
 
 ## Keep SQL generation narrow
 
@@ -70,6 +70,10 @@ The filter remains a trusted expression because validating statement boundaries 
 Configuration, schema, planning, authentication, permission, and worker read failures have separate public exception types. Planning fallback catches only `DorisPlanningError` after excluding its authentication and permission subclasses.
 
 Automatic transport fallback uses an internal setup-only exception. The Flight reader translates eligible dependency, I/O, timeout, and unsupported-operation failures before a reader exists. It doesn't translate stream and conversion errors into fallback signals.
+
+The connector accepts one logical FE host and never discovers cluster members. Doris and the
+deployment platform own FE election, quorum, health checking, and load-balancer failover. The
+connector owns TLS verification and failure classification for the configured endpoint.
 
 ## Define the consistency boundary
 

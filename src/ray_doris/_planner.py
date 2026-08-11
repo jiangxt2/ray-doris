@@ -73,8 +73,26 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _open_query_plan_request(request: urllib.request.Request, timeout: float) -> Any:
-    return urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+def _open_query_plan_request(
+    request: urllib.request.Request,
+    timeout: float,
+    ssl_context: Optional[ssl.SSLContext],
+) -> Any:
+    handlers: List[Any] = [_NoRedirectHandler()]
+    if ssl_context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl_context))
+    return urllib.request.build_opener(*handlers).open(request, timeout=timeout)
+
+
+def _query_plan_ssl_context(config: DorisReadConfig) -> Optional[ssl.SSLContext]:
+    if config.http_scheme != "https":
+        return None
+    try:
+        return ssl.create_default_context(cafile=config.http_ca_file)
+    except (OSError, ValueError):
+        raise DorisConfigurationError(
+            f"Doris query-plan TLS configuration is invalid for {_table_context(config)}"
+        ) from None
 
 
 def _contains_tls_error(exc: BaseException) -> bool:
@@ -97,13 +115,36 @@ def _contains_tls_error(exc: BaseException) -> bool:
     return False
 
 
+def _contains_mysql_tls_error(exc: pymysql.MySQLError) -> bool:
+    if _contains_tls_error(exc):
+        return True
+    markers = (
+        "certificate verify failed",
+        "certificate_verify_failed",
+        "hostname mismatch",
+        "ssl handshake",
+        "tls handshake",
+    )
+    return any(
+        marker in argument.lower()
+        for argument in exc.args
+        if isinstance(argument, str)
+        for marker in markers
+    )
+
+
+def _mysql_tls_is_configured(config: DorisReadConfig) -> bool:
+    options = config.mysql_options()
+    return "ssl" in options or any(key.startswith("ssl_") for key in options)
+
+
 def _mysql_connection_kwargs(config: DorisReadConfig, *, streaming: bool) -> Dict[str, Any]:
     options = dict(config.mysql_options())
     kwargs: Dict[str, Any] = {
         "host": config.host,
         "port": config.mysql_port,
         "user": config.user,
-        "password": config.password,
+        "password": config.resolve_password(),
         "database": config.table.database,
         "charset": "utf8mb4",
         "connect_timeout": config.connect_timeout,
@@ -127,18 +168,24 @@ class QueryPlanClient:
             f"{config.http_scheme}://{config.host}:{config.http_port}/api/"
             f"{config.table.database}/{config.table.table}/_query_plan"
         )
+        password = config.resolve_password()
+        ssl_context = _query_plan_ssl_context(config)
         request = urllib.request.Request(
             url,
             data=json.dumps({"sql": sql}).encode("utf-8"),
             headers={
                 "Authorization": "Basic "
-                + base64.b64encode(f"{config.user}:{config.password}".encode()).decode(),
+                + base64.b64encode(f"{config.user}:{password}".encode()).decode(),
                 "Content-Type": "application/json",
             },
             method="POST",
         )
         try:
-            with _open_query_plan_request(request, timeout=config.connect_timeout) as response:
+            with _open_query_plan_request(
+                request,
+                timeout=config.effective_query_plan_timeout,
+                ssl_context=ssl_context,
+            ) as response:
                 payload_bytes = response.read()
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
@@ -323,9 +370,22 @@ class DorisPlanner:
                     cursor.close()
             finally:
                 connection.close()
+        except DorisConfigurationError:
+            raise
+        except OSError:
+            context = _table_context(self._config)
+            if _mysql_tls_is_configured(self._config):
+                raise DorisConfigurationError(
+                    f"Doris MySQL TLS configuration is invalid for {context}"
+                ) from None
+            raise DorisPlanningError(f"failed to discover Doris schema for {context}") from None
         except pymysql.MySQLError as exc:
             code = _mysql_error_code(exc)
             context = _table_context(self._config)
+            if _contains_mysql_tls_error(exc):
+                raise DorisConfigurationError(
+                    f"Doris MySQL TLS validation failed for {context}"
+                ) from None
             access_error = _mysql_access_error(exc, operation="schema-discovery", context=context)
             if access_error is not None:
                 raise access_error from None

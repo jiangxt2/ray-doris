@@ -2,6 +2,7 @@ import http.client
 import io
 import json
 import ssl
+import traceback
 import urllib.error
 from unittest.mock import Mock
 
@@ -25,6 +26,16 @@ def make_config(**kwargs: object) -> DorisReadConfig:
     values = {"table": parse_table("db.table"), "host": "fe", "user": "reader"}
     values.update(kwargs)
     return DorisReadConfig.from_options(**values)
+
+
+def _assert_redacted_exception(exception: BaseException, caplog, sentinel: str) -> None:
+    rendered_traceback = "".join(
+        traceback.format_exception(type(exception), exception, exception.__traceback__)
+    )
+    assert sentinel not in str(exception)
+    assert sentinel not in rendered_traceback
+    assert sentinel not in caplog.text
+    assert exception.__cause__ is None
 
 
 def success_payload(partitions: object) -> object:
@@ -69,6 +80,7 @@ def test_query_plan_http_client_sends_post_auth_scheme_and_timeout(monkeypatch) 
         password="secret",
         http_scheme="https",
         connect_timeout=3.5,
+        query_plan_timeout=4.5,
     )
     assert QueryPlanClient(config).fetch_tablet_ids("SELECT * FROM `db`.`table`") == (9,)
     request = open_request.call_args.args[0]
@@ -76,7 +88,52 @@ def test_query_plan_http_client_sends_post_auth_scheme_and_timeout(monkeypatch) 
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
     assert request.data == b'{"sql": "SELECT * FROM `db`.`table`"}'
-    assert open_request.call_args.kwargs["timeout"] == 3.5
+    assert open_request.call_args.kwargs["timeout"] == 4.5
+    assert isinstance(open_request.call_args.kwargs["ssl_context"], ssl.SSLContext)
+
+
+def test_query_plan_resolves_environment_password_for_each_request(monkeypatch) -> None:
+    response = FakeResponse(json.dumps(success_payload({"9": {}})).encode("utf-8"))
+    open_request = Mock(return_value=response)
+    monkeypatch.setattr(_planner, "_open_query_plan_request", open_request)
+    monkeypatch.setenv("RAY_DORIS_PLANNER_PASSWORD", "first-password")
+    config = make_config(password_env="RAY_DORIS_PLANNER_PASSWORD")
+    QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
+    first_authorization = open_request.call_args.args[0].get_header("Authorization")
+    monkeypatch.setenv("RAY_DORIS_PLANNER_PASSWORD", "second-password")
+    QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
+    second_authorization = open_request.call_args.args[0].get_header("Authorization")
+    assert first_authorization != second_authorization
+
+
+def test_query_plan_missing_environment_password_fails_before_network(monkeypatch, caplog) -> None:
+    sentinel = "RAY_DORIS_QUERY_PLAN_MISSING_PASSWORD_SENTINEL"
+    open_request = Mock()
+    monkeypatch.setattr(_planner, "_open_query_plan_request", open_request)
+    monkeypatch.delenv(sentinel, raising=False)
+    with pytest.raises(
+        DorisConfigurationError, match="environment variable is unavailable"
+    ) as captured:
+        QueryPlanClient(make_config(password_env=sentinel)).fetch_tablet_ids("SELECT 1")
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+    open_request.assert_not_called()
+
+
+def test_query_plan_custom_ca_failure_is_redacted_before_network(monkeypatch, caplog) -> None:
+    sentinel = "query-plan-ca-path-secret-sentinel"
+    open_request = Mock()
+    monkeypatch.setattr(_planner, "_open_query_plan_request", open_request)
+    monkeypatch.setattr(
+        _planner.ssl,
+        "create_default_context",
+        Mock(side_effect=OSError(sentinel)),
+    )
+    with pytest.raises(DorisConfigurationError, match="TLS configuration is invalid") as captured:
+        QueryPlanClient(
+            make_config(http_scheme="https", http_ca_file="private-ca.pem")
+        ).fetch_tablet_ids("SELECT 1")
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+    open_request.assert_not_called()
 
 
 def test_query_plan_http_client_classifies_transport_and_invalid_json(monkeypatch) -> None:
@@ -367,6 +424,30 @@ def test_describe_schema_uses_managed_connection_and_fetchmany(monkeypatch) -> N
     assert connect.call_args.kwargs["read_timeout"] == 30
 
 
+def test_describe_schema_resolves_environment_password(monkeypatch) -> None:
+    cursor = DescribeCursor()
+    connect = Mock(return_value=DescribeConnection(cursor))
+    monkeypatch.setattr(_planner.pymysql, "connect", connect)
+    monkeypatch.setenv("RAY_DORIS_DESCRIBE_PASSWORD", "resolved-password")
+    DorisPlanner(make_config(password_env="RAY_DORIS_DESCRIBE_PASSWORD"))._describe_schema()
+    assert connect.call_args.kwargs["password"] == "resolved-password"
+
+
+def test_describe_schema_missing_environment_password_fails_before_network(
+    monkeypatch, caplog
+) -> None:
+    sentinel = "RAY_DORIS_DESCRIBE_MISSING_PASSWORD_SENTINEL"
+    connect = Mock()
+    monkeypatch.setattr(_planner.pymysql, "connect", connect)
+    monkeypatch.delenv(sentinel, raising=False)
+    with pytest.raises(
+        DorisConfigurationError, match="environment variable is unavailable"
+    ) as captured:
+        DorisPlanner(make_config(password_env=sentinel))._describe_schema()
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+    connect.assert_not_called()
+
+
 def test_group_tablets_rejects_invalid_parallelism() -> None:
     for parallelism in (0, True):
         with pytest.raises(DorisConfigurationError, match="parallelism"):
@@ -406,3 +487,37 @@ def test_describe_schema_classifies_mysql_errors_with_table_context(
         DorisPlanner(make_config())._describe_schema()
     assert "sensitive server detail" not in str(captured.value)
     assert captured.value.__cause__ is None
+
+
+def test_describe_schema_classifies_mysql_tls_error_without_exposing_driver_text(
+    monkeypatch,
+    caplog,
+) -> None:
+    sentinel = "driver-tls-secret-sentinel"
+    monkeypatch.setattr(
+        _planner.pymysql,
+        "connect",
+        Mock(
+            side_effect=pymysql.err.OperationalError(
+                2003,
+                f"[SSL: CERTIFICATE_VERIFY_FAILED] {sentinel}",
+            )
+        ),
+    )
+    with pytest.raises(DorisConfigurationError, match="MySQL TLS validation failed") as captured:
+        DorisPlanner(make_config())._describe_schema()
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+
+def test_describe_schema_redacts_mysql_ca_setup_error(monkeypatch, caplog) -> None:
+    sentinel = "mysql-ca-path-secret-sentinel"
+    monkeypatch.setattr(
+        _planner.pymysql,
+        "connect",
+        Mock(side_effect=FileNotFoundError(sentinel)),
+    )
+    with pytest.raises(DorisConfigurationError, match="TLS configuration is invalid") as captured:
+        DorisPlanner(
+            make_config(client_options={"ssl": {"ca": "private-ca.pem"}})
+        )._describe_schema()
+    _assert_redacted_exception(captured.value, caplog, sentinel)

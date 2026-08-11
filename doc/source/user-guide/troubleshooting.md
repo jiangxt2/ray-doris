@@ -20,8 +20,13 @@ Start with the public exception type and the stage named in its message. Connect
 - `tablet_size`, `batch_size`, and Ray parallelism values are positive integers.
 - Timeout values are finite and positive.
 - Option mappings don't override connector-managed connection fields.
+- `password_env` is a portable environment name and is available in both driver and worker processes.
+- `http_ca_file` is non-empty and used only with `http_scheme="https"`.
 
-An HTTPS certificate failure and an authenticated query-plan redirect also use this exception because you must change the configuration before planning can continue safely.
+An HTTPS certificate failure, a MySQL TLS setup failure during driver planning, and an authenticated
+query-plan redirect also use this exception because you must change the configuration before
+planning can continue safely. Messages don't include environment-variable names, CA paths, or
+driver exception text.
 
 ## Fix authentication and permission errors
 
@@ -51,7 +56,9 @@ A Flight stream, schema, authentication, permission, or conversion error doesn't
 
 ## Diagnose slow or stalled reads
 
-`connect_timeout` doesn't stop an established query. Configure PyMySQL `read_timeout` and `write_timeout` or Arrow Database Connectivity (ADBC) Flight query and fetch timeouts. Then compare Ray task duration with Doris query and backend metrics.
+`query_plan_timeout` bounds query-plan request I/O. `connect_timeout` doesn't stop an established
+query. Configure PyMySQL `read_timeout` and `write_timeout` or Arrow Database Connectivity (ADBC)
+Flight query and fetch timeouts. Then compare Ray task duration with Doris query and backend metrics.
 
 Reduce `concurrency` when Doris carries too much load. Increase `tablet_size` when Ray schedules too many short tasks. Don't interpret `override_num_blocks` as a Doris connection limit.
 

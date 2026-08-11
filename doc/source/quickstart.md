@@ -64,6 +64,9 @@ export DORIS_PASSWORD=<password>
 python examples/quickstart.py
 ```
 
+The example passes `password_env="DORIS_PASSWORD"`; it doesn't read the value into datasource
+configuration. In a cluster, inject that variable into the driver and all Ray workers.
+
 The example uses the public {ref}`read_doris <ray-doris-api-read-doris>` entry point:
 
 ```{literalinclude} ../../examples/quickstart.py

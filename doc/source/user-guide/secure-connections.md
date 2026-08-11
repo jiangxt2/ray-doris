@@ -14,7 +14,26 @@ TLS configuration doesn't change transport maturity: MySQL is the production-can
 
 ## Understand the credential boundary
 
-Ray serializes datasource configuration into worker task state. `repr()` and connector logs redact passwords and option values, but the real values remain in serialized state so workers can connect to Doris.
+Ray serializes datasource configuration into worker task state. A literal `password` is redacted
+from `repr()` and connector logs but remains in that serialized state for compatibility.
+
+For the enterprise-candidate MySQL profile, pass the name of an environment variable instead:
+
+```python
+dataset = read_doris(
+    table="analytics.events",
+    host="doris.example.com",
+    user="ray_reader",
+    password_env="DORIS_PASSWORD",
+)
+```
+
+Only the environment-variable name is serialized. The driver resolves its value before each
+`DESCRIBE` or query-plan request, and a worker resolves it again before every split connection
+attempt. Inject the same variable into the driver and every Ray worker, including replacement
+workers. A missing variable fails before that process opens a network connection; an empty value
+preserves Doris's empty-password behavior. Don't set both a non-empty literal `password` and
+`password_env`.
 
 Run `ray-doris` only on a trusted Ray cluster. Inject credentials at runtime, restrict access to Ray logs and object storage, and don't put secrets in source code, documentation, issue reports, or persistent Dataset references.
 
@@ -35,7 +54,7 @@ dataset = read_doris(
     table="analytics.events",
     host="doris.example.com",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
     client_kwargs={
         "ssl": {
             "ca": "/etc/doris-tls/ca.pem",
@@ -59,14 +78,27 @@ dataset = read_doris(
     host="doris.example.com",
     http_port=8443,
     http_scheme="https",
+    http_ca_file="/etc/doris-tls/ca.pem",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
+    query_plan_timeout=30,
 )
 ```
 
 The client refuses authenticated POST redirects. Configure the final endpoint directly so a redirect can't change the request method or expose the `Authorization` header.
 
+`http_ca_file` loads a private CA with Python's default TLS context. Certificate and hostname
+verification remain enabled; there is no trust-all or hostname-bypass option. Leave it unset to use
+the process default trust store. It is valid only with `http_scheme="https"`.
+
 A TLS validation failure raises {ref}`DorisConfigurationError <ray-doris-api-configuration-error>` and never becomes a single-task planning fallback.
+
+## Define the FE availability boundary
+
+Use one logical hostname for the query-plan and MySQL endpoints. `ray-doris` validates that
+hostname and reopens connections for each planning or split attempt, but it doesn't discover FE
+members or manage leader election, quorum, health checks, or endpoint failover. Provide those
+properties with Doris and an external load balancer, and test that deployment independently.
 
 ## Configure Flight TLS
 

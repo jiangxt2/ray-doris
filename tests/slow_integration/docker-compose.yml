@@ -15,7 +15,11 @@ x-ray-common: &ray-common
     DORIS_FLIGHT_PORT: "18070"
     DORIS_FLIGHT_PROXY_STATS_URL: "http://flight-proxy:8404/stats;csv"
     DORIS_TLS_CA: /tls/ca.pem
+    RAY_DORIS_READER_PASSWORD: "${RAY_DORIS_READER_PASSWORD:?run.sh must provide the reader password}"
     RAY_DORIS_ROW_COUNT: "${RAY_DORIS_ROW_COUNT:-10000}"
+    RAY_DORIS_SLOW_COMMIT_SHA: "${RAY_DORIS_SLOW_COMMIT_SHA:?run.sh must provide the commit SHA}"
+    RAY_DORIS_SLOW_PROFILE: "${RAY_DORIS_SLOW_PROFILE:?run.sh must provide the profile}"
+    RAY_DORIS_SLOW_RUN_ID: "${RAY_DORIS_SLOW_RUN_ID:?run.sh must provide the run ID}"
     RAY_DORIS_STRESS_SECONDS: "${RAY_DORIS_STRESS_SECONDS:-5}"
     RAY_WORKER_IPS: 172.31.128.11,172.31.128.12,172.31.128.13
     RAY_USAGE_STATS_ENABLED: "0"
@@ -163,6 +167,7 @@ services:
     networks:
       doris:
         ipv4_address: 172.31.128.6
+        aliases: [doris-ingress]
     volumes:
       - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - tls:/tls:ro

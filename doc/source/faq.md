@@ -58,6 +58,18 @@ No. Ray can retry the complete read task according to its remote arguments. `ray
 
 The account needs `SELECT_PRIV` on the target internal-catalog table and network access to the frontend MySQL and HTTP ports. Add Flight endpoint access for Flight reads. The connector doesn't require administrator-only tablet metadata commands.
 
+## Does ray-doris serialize my password?
+
+A literal `password` remains in serialized task state for compatibility. With `password_env`, only
+the variable name is serialized; the driver and each worker resolve its value immediately before a
+network connection. Inject the same variable into every eligible Ray process.
+
+## Does ray-doris manage Doris FE failover?
+
+No. Configure one logical FE hostname. The connector verifies TLS and reopens connections for new
+planning and task attempts, but Doris and your external load balancer own FE discovery, leader
+election, quorum, health checks, and backend failover.
+
 ## Where do I install the Flight extra?
 
 Install the extra on the driver and in every environment that can execute a Ray read task. The driver validates explicit `flight` requests, and worker-side dependency availability determines whether `auto` can use Flight.

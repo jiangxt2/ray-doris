@@ -1,4 +1,5 @@
 import sys
+import traceback
 from datetime import datetime
 from decimal import Decimal
 from types import ModuleType
@@ -10,6 +11,7 @@ import pytest
 from ray_doris import _readers
 from ray_doris._errors import (
     DorisAuthenticationError,
+    DorisConfigurationError,
     DorisPermissionError,
     DorisReadError,
 )
@@ -26,6 +28,16 @@ def make_config(**kwargs: object) -> DorisReadConfig:
     }
     values.update(kwargs)
     return DorisReadConfig.from_options(**values)
+
+
+def _assert_redacted_exception(exception: BaseException, caplog, sentinel: str) -> None:
+    rendered_traceback = "".join(
+        traceback.format_exception(type(exception), exception, exception.__traceback__)
+    )
+    assert sentinel not in str(exception)
+    assert sentinel not in rendered_traceback
+    assert sentinel not in caplog.text
+    assert exception.__cause__ is None
 
 
 class FakeResult:
@@ -102,6 +114,47 @@ def test_mysql_reader_streams_fetchmany_batches_and_closes_resources(monkeypatch
     assert cursor.closed and connection.closed
     assert events == ["cursor-close", "connection-close"]
     assert cursor.close_calls == connection.close_calls == 1
+
+
+def test_mysql_reader_resolves_environment_password_for_each_attempt(monkeypatch) -> None:
+    schema = pa.schema(
+        [("id", pa.int64()), ("amount", pa.decimal128(10, 2)), ("created_at", pa.timestamp("us"))]
+    )
+    connect = Mock(
+        side_effect=[
+            FakeConnection(FakeCursor()),
+            FakeConnection(FakeCursor()),
+        ]
+    )
+    monkeypatch.setattr(_readers.pymysql, "connect", connect)
+    config = make_config(password_env="RAY_DORIS_WORKER_PASSWORD")
+    monkeypatch.setenv("RAY_DORIS_WORKER_PASSWORD", "first-password")
+    list(_readers.read_mysql(config, DorisInputSplit(None), schema))
+    monkeypatch.setenv("RAY_DORIS_WORKER_PASSWORD", "second-password")
+    list(_readers.read_mysql(config, DorisInputSplit(None), schema))
+    assert connect.call_args_list[0].kwargs["password"] == "first-password"
+    assert connect.call_args_list[1].kwargs["password"] == "second-password"
+
+
+def test_mysql_reader_missing_environment_password_fails_before_network(
+    monkeypatch, caplog
+) -> None:
+    sentinel = "RAY_DORIS_READER_MISSING_PASSWORD_SENTINEL"
+    connect = Mock()
+    monkeypatch.setattr(_readers.pymysql, "connect", connect)
+    monkeypatch.delenv(sentinel, raising=False)
+    with pytest.raises(
+        DorisConfigurationError, match="environment variable is unavailable"
+    ) as captured:
+        list(
+            _readers.read_mysql(
+                make_config(password_env=sentinel),
+                DorisInputSplit(None),
+                pa.schema([("id", pa.int64())]),
+            )
+        )
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+    connect.assert_not_called()
 
 
 def test_mysql_reader_abort_closes_connection_without_draining_cursor(monkeypatch) -> None:
@@ -196,6 +249,49 @@ def test_mysql_reader_preserves_access_error(monkeypatch, code, error_type) -> N
             )
         )
     assert captured.value.__cause__ is None
+
+
+def test_mysql_reader_classifies_tls_error_without_exposing_driver_text(
+    monkeypatch, caplog
+) -> None:
+    sentinel = "worker-tls-secret-sentinel"
+    monkeypatch.setattr(
+        _readers.pymysql,
+        "connect",
+        Mock(
+            side_effect=_readers.pymysql.err.OperationalError(
+                2003,
+                f"[SSL: CERTIFICATE_VERIFY_FAILED] {sentinel}",
+            )
+        ),
+    )
+    with pytest.raises(DorisReadError, match="MySQL TLS validation failed") as captured:
+        list(
+            _readers.read_mysql(
+                make_config(),
+                DorisInputSplit(None),
+                pa.schema([("id", pa.int64())]),
+            )
+        )
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+
+def test_mysql_reader_redacts_ca_setup_error(monkeypatch, caplog) -> None:
+    sentinel = "worker-ca-path-secret-sentinel"
+    monkeypatch.setattr(
+        _readers.pymysql,
+        "connect",
+        Mock(side_effect=FileNotFoundError(sentinel)),
+    )
+    with pytest.raises(DorisReadError, match="TLS configuration is invalid") as captured:
+        list(
+            _readers.read_mysql(
+                make_config(client_options={"ssl": {"ca": "private-ca.pem"}}),
+                DorisInputSplit(None),
+                pa.schema([("id", pa.int64())]),
+            )
+        )
+    _assert_redacted_exception(captured.value, caplog, sentinel)
 
 
 def test_boolean_normalization_accepts_only_doris_zero_and_one() -> None:
@@ -536,9 +632,11 @@ def test_flight_connection_uses_configured_scheme_and_options(monkeypatch) -> No
     monkeypatch.setitem(sys.modules, "adbc_driver_manager", manager)
 
     timeout_key = "adbc.flight.sql.rpc.timeout_seconds.query"
+    monkeypatch.setenv("RAY_DORIS_FLIGHT_PASSWORD", "resolved-flight-password")
     _readers._flight_connection(
         make_config(
             flight_scheme="grpc+tls",
+            password_env="RAY_DORIS_FLIGHT_PASSWORD",
             flight_options={timeout_key: "30"},
         )
     )
@@ -548,6 +646,7 @@ def test_flight_connection_uses_configured_scheme_and_options(monkeypatch) -> No
         == "10.0"
     )
     assert connect.call_args.kwargs["db_kwargs"][timeout_key] == "30"
+    assert connect.call_args.kwargs["db_kwargs"]["password"] == "resolved-flight-password"
 
 
 def test_adbc_status_classification_uses_structured_status_code(monkeypatch) -> None:

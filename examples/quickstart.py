@@ -11,7 +11,7 @@ dataset = read_doris(
     http_port=int(os.environ.get("DORIS_HTTP_PORT", "8030")),
     http_scheme=os.environ.get("DORIS_HTTP_SCHEME", "http"),
     user=os.environ.get("DORIS_USER", "root"),
-    password=os.environ.get("DORIS_PASSWORD", ""),
+    password_env="DORIS_PASSWORD",
     columns=["event_id", "created_at", "score"],
     filter="score >= 80",
     tablet_size=32,

@@ -58,8 +58,11 @@ dataset = read_doris(
     mysql_port=9030,
     http_port=8443,
     http_scheme="https",
+    http_ca_file="/etc/doris-tls/ca.pem",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
+    query_plan_timeout=30,
+    on_query_plan_error="error",
     client_kwargs={
         "ssl": {
             "ca": "/etc/doris-tls/ca.pem",
