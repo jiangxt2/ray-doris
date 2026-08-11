@@ -20,7 +20,7 @@ The repository example reads connection settings from environment variables:
 
 ## Read through Flight SQL
 
-Install the Flight extra in every Ray worker environment, then select the transport explicitly:
+Flight SQL is experimental. Install the Flight extra in every Ray worker environment, then select the transport explicitly:
 
 ```python
 from ray_doris import read_doris

@@ -17,6 +17,34 @@ def read_fn() -> Iterable[pa.Table]:
     return [pa.table({"id": [1]})]
 
 
+@pytest.mark.parametrize(
+    "version",
+    ["2.49.2", "2.55.1", "2.56.99", "2.56.1+vendor.1"],
+)
+def test_supported_ray_version_window(monkeypatch, version) -> None:
+    monkeypatch.setattr(_compat, "_RAY_VERSION", version)
+    _compat.ensure_supported_ray_version()
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "2.49.1",
+        "2.49.2rc1",
+        "2.56.1.dev0",
+        "2.56.1.post1",
+        "2.56.1garbage",
+        "2.57.0",
+        "3.0.0",
+        "unknown",
+    ],
+)
+def test_unsupported_ray_version_fails_fast(monkeypatch, version) -> None:
+    monkeypatch.setattr(_compat, "_RAY_VERSION", version)
+    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.57"):
+        _compat.ensure_supported_ray_version()
+
+
 def test_make_read_task_supports_ray_249_signature_fixture(monkeypatch) -> None:
     constructor = Mock()
 
@@ -46,12 +74,12 @@ def test_make_read_task_supports_current_signature_fixture(monkeypatch) -> None:
     assert constructor.call_args.kwargs["per_task_row_limit"] == 10
 
 
-def test_make_read_task_rejects_ray_247_signature_without_schema(monkeypatch) -> None:
+def test_make_read_task_rejects_signature_without_schema(monkeypatch) -> None:
     def read_task(read_fn, metadata):
         return None
 
     monkeypatch.setattr(_compat, "ReadTask", read_task)
-    with pytest.raises(DorisConfigurationError, match="Ray 2.48"):
+    with pytest.raises(DorisConfigurationError, match=r"ReadTask.*>=2\.49\.2,<2\.57"):
         _compat.make_read_task(read_fn, metadata(), pa.schema([]), None)
 
 

@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
   "PyMySQL>=1.1.1,<2",
-  "ray[data]>=2.49.2,<3",
+  "ray[data]>=2.49.2,<2.57",
 ]
 
 [project.optional-dependencies]

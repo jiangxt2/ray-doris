@@ -10,6 +10,8 @@ myst:
 
 `ray-doris` uses MySQL for schema discovery and supports MySQL or Arrow Flight SQL for split data. The transport choice changes worker data movement, not driver-side `DESCRIBE` or HTTP tablet planning.
 
+MySQL is the production-candidate transport. Flight SQL and `auto` are experimental and aren't part of a stable compatibility profile.
+
 ## Compare transport modes
 
 Choose one of three transport values:
@@ -17,8 +19,8 @@ Choose one of three transport values:
 | Mode | Behavior |
 | --- | --- |
 | `mysql` | Uses a PyMySQL server-side cursor and bounded `fetchmany()` calls. This is the default. |
-| `flight` | Requires the Flight extra and streams Arrow RecordBatch objects through Arrow Database Connectivity (ADBC) Flight SQL. Setup or read failures don't switch to MySQL. |
-| `auto` | Attempts Flight when its dependencies exist in the worker environment and falls back only for eligible setup or protocol-negotiation failures before Flight produces rows. |
+| `flight` | Experimental. Requires the Flight extra and streams Arrow RecordBatch objects through Arrow Database Connectivity (ADBC) Flight SQL. Setup or read failures don't switch to MySQL. |
+| `auto` | Experimental. Attempts Flight when its dependencies exist in the worker environment and falls back only for eligible setup or protocol-negotiation failures before Flight produces rows. |
 
 From a source checkout, install the Flight dependency in every execution environment that can run a Ray read task:
 

@@ -1,4 +1,4 @@
-from importlib.metadata import version
+from importlib.metadata import requires, version
 from unittest.mock import Mock
 
 import pytest
@@ -46,3 +46,8 @@ def test_package_does_not_import_ray_internal_modules() -> None:
 
 def test_package_version_matches_distribution_metadata() -> None:
     assert __version__ == version("ray-doris")
+
+
+def test_distribution_metadata_bounds_supported_ray_window() -> None:
+    package_requirements = requires("ray-doris") or []
+    assert "ray[data]<2.57,>=2.49.2" in package_requirements

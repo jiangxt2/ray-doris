@@ -10,6 +10,8 @@ myst:
 
 The default MySQL, query-plan HTTP, and Flight SQL schemes don't encrypt traffic. Use them only on a trusted private network. Protect each protocol separately for production credentials.
 
+TLS configuration doesn't change transport maturity: MySQL is the production-candidate path, while Flight SQL and `auto` remain experimental.
+
 ## Understand the credential boundary
 
 Ray serializes datasource configuration into worker task state. `repr()` and connector logs redact passwords and option values, but the real values remain in serialized state so workers can connect to Doris.

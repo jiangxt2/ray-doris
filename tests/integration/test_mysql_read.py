@@ -1,6 +1,8 @@
+import gc
 from datetime import datetime
 from decimal import Decimal
 
+import pymysql
 import pytest
 
 from ray_doris import DorisConfigurationError, DorisDatasource, DorisPlanningError, read_doris
@@ -29,7 +31,7 @@ def test_mysql_reads_projected_filtered_rows_in_bounded_batches(doris_config) ->
 def test_mysql_parallel_plan_uses_multiple_tablet_tasks(doris_config) -> None:
     datasource = DorisDatasource(**doris_config.reader_kwargs(tablet_size=1))
     tasks = datasource.get_read_tasks(parallelism=8)
-    assert 2 <= len(tasks) <= 4
+    assert len(tasks) == 4
     ids = sorted(row["id"] for task in tasks for table in task() for row in table.to_pylist())
     assert ids == [1, 2, 3, 4]
 
@@ -106,3 +108,32 @@ def test_minimum_select_privilege_reads_through_public_entrypoint(doris_config) 
         **doris_config.minimal_reader_kwargs(columns=["id"], filter="id <= 2")
     ).take_all()
     assert sorted(row["id"] for row in rows) == [1, 2]
+
+
+def test_mysql_consumer_close_does_not_drain_active_unbuffered_result(
+    doris_config, monkeypatch
+) -> None:
+    finish_calls = 0
+    original_finish = pymysql.connections.MySQLResult._finish_unbuffered_query
+
+    def track_finish(result) -> None:
+        nonlocal finish_calls
+        finish_calls += 1
+        original_finish(result)
+
+    monkeypatch.setattr(
+        pymysql.connections.MySQLResult,
+        "_finish_unbuffered_query",
+        track_finish,
+    )
+    datasource = DorisDatasource(
+        **doris_config.reader_kwargs(columns=["id"], batch_size=1, tablet_size=4)
+    )
+    task = datasource.get_read_tasks(parallelism=1)[0]
+    reader = iter(task())
+    assert next(reader).num_rows == 1
+    reader.close()
+    del reader, task, datasource
+    gc.collect()
+
+    assert finish_calls == 0

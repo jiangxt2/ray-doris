@@ -12,6 +12,8 @@ myst:
 
 The project is alpha software and isn't maintained or endorsed by the Ray or Apache Doris projects. See [Compatibility](compatibility.md) for the tested version matrix and [Key concepts](key-concepts.md) for the execution model.
 
+MySQL is the production-candidate transport. Flight SQL and automatic transport selection remain experimental.
+
 ## Read a table
 
 The public entry point returns a {py:class}`ray.data.Dataset`:

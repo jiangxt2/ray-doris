@@ -6,10 +6,12 @@ from functools import partial
 from typing import Any, Callable, List, Mapping, Optional, Sequence, cast
 
 import pyarrow as pa
+from ray import cloudpickle
 from ray.data.block import BlockMetadata
 from ray.data.datasource import Datasource, ReadTask
 
-from ray_doris._compat import make_read_task
+from ray_doris._compat import ensure_supported_ray_version, make_read_task
+from ray_doris._errors import DorisConfigurationError
 from ray_doris._models import (
     DorisPlanningSnapshot,
     DorisReadConfig,
@@ -28,8 +30,22 @@ def _read_empty(schema: pa.Schema) -> List[pa.Table]:
     return [pa.Table.from_batches([], schema=schema)]
 
 
+def _validate_config_serialization(config: DorisReadConfig) -> None:
+    """Reject worker configuration that Ray cannot serialize without exposing values."""
+    serialize = cast(Callable[[Any], bytes], cloudpickle.dumps)
+    try:
+        serialize(config)
+    except Exception:
+        raise DorisConfigurationError(
+            "datasource configuration must contain only copyable and serializable values"
+        ) from None
+
+
 class DorisDatasource(Datasource):
-    """A public Ray V1 datasource that reads one internal-catalog Doris table.
+    """A Ray V1 datasource that reads one internal-catalog Doris table.
+
+    This extension uses Ray's documented ``Datasource`` API and the
+    ``ReadTask`` DeveloperAPI. It never imports Ray Data private modules.
 
     Each instance caches the schema and tablet discovery result from its first
     planning call. Create a new instance to discover later table changes. This
@@ -58,6 +74,7 @@ class DorisDatasource(Datasource):
         client_kwargs: Optional[Mapping[str, Any]] = None,
         flight_options: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        ensure_supported_ray_version()
         # Ray exposes an untyped Datasource.__init__ across supported releases.
         initialize_datasource = cast(Callable[[], None], super().__init__)
         initialize_datasource()
@@ -81,6 +98,7 @@ class DorisDatasource(Datasource):
             client_options=client_kwargs,
             flight_options=flight_options,
         )
+        _validate_config_serialization(self._config)
         self._planning_snapshot: Optional[DorisPlanningSnapshot] = None
         if self._config.transport == "flight" or (
             self._config.transport == "auto" and self._config.flight_scheme == "grpc+tls"

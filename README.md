@@ -2,14 +2,15 @@
 
 `ray-doris` is an independent, community-maintained Apache Doris datasource for Ray Data. It plans reads with
 Doris FE's `_query_plan` endpoint and streams each tablet group through the MySQL protocol
-or Arrow Flight SQL. The implementation uses only Ray's public `Datasource`, `ReadTask`, and
-`read_datasource()` APIs.
+or Arrow Flight SQL. The implementation uses Ray's documented Datasource extension APIs and never
+imports `ray.data._internal`. Ray marks `ReadTask` as DeveloperAPI, so the supported Ray window is
+intentionally bounded and tested by minor release.
 
 The project is alpha software. The tested compatibility window is:
 
-| Python | Ray | Doris |
+| Python | Ray | Verification |
 |---|---|---|
-| 3.9 | 2.49.2 | Unit and compatibility tests |
+| 3.9 | 2.49.2 | Alpha legacy compatibility only; unit and signature tests |
 | 3.10 | 2.55.1 | Unit and compatibility tests |
 | 3.12 | 2.56.1 | Doris 4.0.6 required IT |
 
@@ -44,7 +45,14 @@ pip install "ray-doris[flight]"
 ```
 
 Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
-Python 3.9. Python 3.9 remains supported with the default MySQL transport.
+Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains an Alpha legacy
+compatibility target for the default MySQL transport, not a stable or production profile.
+
+The package accepts `ray[data]>=2.49.2,<2.57`. The runtime guard supports final releases in that
+window and local rebuild suffixes such as `2.56.1+vendor.1`; release candidates, development
+builds, and post-release builds aren't supported. Flight SQL and `transport="auto"` are
+experimental; the MySQL protocol is the only production-candidate transport. Datasource
+construction rejects an unsupported Ray release before opening a Doris connection.
 
 ## Quick start
 
@@ -148,12 +156,13 @@ an installation command.
 ## Transports
 
 The default `transport="mysql"` uses a PyMySQL server-side cursor and `fetchmany()`; it never
-materializes the complete result in the worker. `transport="flight"` requires the Flight extra
-and fails with an installation hint if it is missing. Flight RecordBatches are streamed and sliced
-into Ray blocks of at most `batch_size` rows, but their server-side size and ADBC prefetch memory
-are controlled by Doris and ADBC.
+materializes the complete result in the worker. `transport="flight"` is experimental, requires the
+Flight extra, and fails with an installation hint if it is missing. Flight RecordBatches are
+streamed and sliced into Ray blocks of at most `batch_size` rows, but their server-side size and
+ADBC prefetch memory are controlled by Doris and ADBC.
 
-`transport="auto"` attempts Flight only when the extra is available in the execution environment.
+The experimental `transport="auto"` mode attempts Flight only when the extra is available in the
+execution environment.
 It falls back to MySQL only
 when dependency loading, connection creation, cursor creation, query setup, or protocol negotiation
 fails before rows are produced. An execute/fetch timeout does not fall back because MySQL might not
@@ -183,8 +192,9 @@ remains available.
 
 ## Advanced Ray usage
 
-`DorisDatasource` is public for callers that need to invoke `ray.data.read_datasource()` directly.
-Only pass keyword arguments documented by your installed Ray version to that function. The
+`DorisDatasource` is part of this package's public surface for callers that need to invoke
+`ray.data.read_datasource()` directly. Ray's `ReadTask` remains DeveloperAPI. Only pass keyword
+arguments documented by your installed Ray version to that function. The
 convenience `read_doris()` entry point exposes the common cross-version arguments
 `concurrency`, `override_num_blocks`, and `ray_remote_args`; unknown keyword arguments fail fast.
 
@@ -283,6 +293,13 @@ manually on a Docker host with at least 16 GiB of available memory:
 
 ```bash
 tests/slow_integration/run.sh
+```
+
+For a Core read hardening change that affects only task count or worker distribution, run the
+targeted profile without the worker/BE failure scenarios:
+
+```bash
+RAY_DORIS_SLOW_PROFILE=core tests/slow_integration/run.sh
 ```
 
 The script automatically reuses a local `ray-cluster:2.55.1` image when present. Otherwise, the

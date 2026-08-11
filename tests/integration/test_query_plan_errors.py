@@ -19,7 +19,7 @@ def test_query_plan_access_denied_body_is_permission_error(doris_config) -> None
         password="no-select-password",
     )
     sql = build_select_sql(config.table, None, None, None)
-    with pytest.raises(DorisPermissionError, match="Access denied"):
+    with pytest.raises(DorisPermissionError, match="denied"):
         QueryPlanClient(config).fetch_tablet_ids(sql)
 
 

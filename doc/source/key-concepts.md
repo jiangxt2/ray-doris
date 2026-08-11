@@ -8,7 +8,7 @@ myst:
 
 # Key concepts
 
-`ray-doris` separates driver-side metadata planning from worker-side data movement. This boundary keeps Doris connections out of Ray's internal APIs and makes each read task serializable.
+`ray-doris` separates driver-side metadata planning from worker-side data movement. This boundary keeps Doris connections out of Ray's private APIs and makes each read task serializable. `ReadTask` is a Ray DeveloperAPI, so support is limited to the tested Ray minor window.
 
 ## How does a read work?
 
@@ -49,7 +49,7 @@ These settings control different layers:
 
 | Setting | Layer | Effect |
 | --- | --- | --- |
-| `tablet_size` | Doris split planning | Sets the minimum target number of adjacent tablets in one read task |
+| `tablet_size` | Doris split planning | Sets a soft tablet grouping target used to cap the task count |
 | Ray `parallelism` hint | Datasource planning | Caps the number of tablet groups returned to Ray |
 | `concurrency` | Ray execution | Limits the number of read tasks that execute at the same time |
 | `batch_size` | Worker output | Bounds MySQL `fetchmany()` batches and slices Flight results into Ray blocks |
@@ -68,6 +68,8 @@ Supported Doris scalar types map without inference. Unsupported nested, aggregat
 Doris can return HTTP 200 while reporting a planning error inside the JSON body. `ray-doris` validates the outer `code`, inner `status`, `exception`, and `partitions` fields before accepting a plan.
 
 With `on_query_plan_error="single_task"`, a non-access planning failure produces one query without a `TABLET` hint. Authentication and permission failures never use this fallback. TLS validation failures and authenticated HTTP redirects also fail closed.
+
+Fallback warnings include only the table context and a connector error category. They don't include Doris server exception text or the trusted filter expression.
 
 An empty `partitions` object from a successful query plan represents a valid empty result. The datasource returns a zero-row Arrow block that preserves the planned schema.
 

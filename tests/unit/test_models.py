@@ -23,6 +23,7 @@ def test_config_defaults() -> None:
 def test_config_repr_redacts_password_and_option_values() -> None:
     config = make_config(
         password="super-secret",
+        filter="tenant_id = 'sensitive-filter-value'",
         client_options={"ssl_key": "mysql-secret"},
         flight_options={"adbc.flight.sql.client_option.token": "flight-secret"},
     )
@@ -30,7 +31,13 @@ def test_config_repr_redacts_password_and_option_values() -> None:
     assert "super-secret" not in rendered
     assert "mysql-secret" not in rendered
     assert "flight-secret" not in rendered
+    assert "sensitive-filter-value" not in rendered
+    assert "filter=<redacted>" in rendered
     assert "<redacted>" in rendered
+
+
+def test_config_repr_distinguishes_missing_filter_without_exposing_values() -> None:
+    assert "filter=None" in repr(make_config())
 
 
 def test_config_is_cloudpickle_serializable_and_freezes_options() -> None:
@@ -67,6 +74,17 @@ def test_config_rejects_invalid_mysql_execution_timeout(value: object) -> None:
 def test_config_rejects_non_mapping_options() -> None:
     with pytest.raises(DorisConfigurationError, match="must be a mapping"):
         make_config(client_options=[("read_timeout", 30)])
+
+
+def test_config_copy_failure_does_not_expose_underlying_value() -> None:
+    class NotCopyable:
+        def __deepcopy__(self, memo):
+            raise RuntimeError("copy-secret-sentinel")
+
+    with pytest.raises(DorisConfigurationError, match="values must be copyable") as captured:
+        make_config(client_options={"program_name": NotCopyable()})
+    assert "copy-secret-sentinel" not in str(captured.value)
+    assert captured.value.__cause__ is None
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,27 @@ def test_estimate_size_returns_none_without_planning() -> None:
     assert cloudpickle.loads(cloudpickle.dumps(datasource)).config == datasource.config
 
 
+def test_datasource_rejects_unserializable_options_without_exposing_value() -> None:
+    class NotSerializable:
+        def __deepcopy__(self, memo):
+            return self
+
+        def __reduce__(self):
+            raise RuntimeError("serialization-secret-sentinel")
+
+    with pytest.raises(
+        ValueError,
+        match="copyable and serializable values",
+    ) as captured:
+        DorisDatasource(
+            table="db.table",
+            host="fe",
+            client_kwargs={"program_name": NotSerializable()},
+        )
+    assert "serialization-secret-sentinel" not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
 def test_explicit_flight_dependency_is_checked_on_driver(monkeypatch) -> None:
     monkeypatch.setattr(
         "ray_doris._readers._flight_is_installed",

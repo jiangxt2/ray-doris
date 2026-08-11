@@ -8,6 +8,12 @@ pytest_log="${log_dir}/pytest.log"
 compose_log="${log_dir}/compose.log"
 compose=(docker compose -f "${compose_file}")
 pytest_pid=
+profile=${RAY_DORIS_SLOW_PROFILE:-full}
+
+if [[ "${profile}" != "full" && "${profile}" != "core" ]]; then
+  echo "RAY_DORIS_SLOW_PROFILE must be 'full' or 'core'." >&2
+  exit 1
+fi
 
 mkdir -p "${log_dir}"
 
@@ -81,6 +87,15 @@ for service in be-1 be-2 be-3; do
     /opt/apache-doris/be/log/be.INFO \
     "Arrow Flight Service bind to host"
 done
+
+if [[ "${profile}" == "core" ]]; then
+  "${compose[@]}" exec -T ray-head \
+    python -m pytest \
+    -m slow_integration \
+    tests/slow_integration/test_distributed_cluster.py::test_flight_read_executes_on_all_ray_workers \
+    -vv -s 2>&1 | tee -a "${pytest_log}"
+  exit 0
+fi
 
 (
   "${compose[@]}" exec -T ray-head \

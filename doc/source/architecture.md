@@ -1,14 +1,14 @@
 ---
 myst:
   html_meta:
-    description: "ray-doris architecture, including public API adaptation, driver planning, schema mapping, Ray task construction, worker transports, and failure boundaries."
+    description: "ray-doris architecture, including documented Ray API adaptation, driver planning, schema mapping, Ray task construction, worker transports, and failure boundaries."
 ---
 
 (ray-doris-architecture)=
 
 # Architecture
 
-`ray-doris` is a thin independent connector around public Ray Data V1 interfaces and Doris public protocols. Ray owns distributed scheduling and Dataset execution. Doris owns query semantics, tablet pruning, and storage replicas. The connector owns validation, protocol coordination, schema consistency, and failure classification.
+`ray-doris` is a thin independent connector around Ray Data's documented V1 Datasource extension interfaces and Doris public protocols. Ray owns distributed scheduling and Dataset execution. Doris owns query semantics, tablet pruning, and storage replicas. The connector owns validation, protocol coordination, schema consistency, and failure classification. Ray marks `ReadTask` as DeveloperAPI, so `_compat.py` and the tested dependency window contain minor-version changes.
 
 ## Follow the module boundaries
 
@@ -30,11 +30,11 @@ src/ray_doris/
 
 Only `read_doris`, `DorisDatasource`, and the exception hierarchy are public package exports. The underscore-prefixed modules can change without a public compatibility promise.
 
-## Adapt the public Ray API
+## Adapt documented Ray extension APIs
 
 {ref}`read_doris <ray-doris-api-read-doris>` builds a datasource and calls `ray.data.read_datasource()` with `concurrency`, `override_num_blocks`, and a copied `ray_remote_args` mapping.
 
-{ref}`DorisDatasource <ray-doris-api-datasource>` subclasses Ray's public `Datasource`. It returns `ReadTask` objects that yield PyArrow tables. `_compat.py` inspects the public `ReadTask` constructor so it can reject unsupported Ray signatures without catching an unrelated `TypeError` from the read function.
+{ref}`DorisDatasource <ray-doris-api-datasource>` subclasses Ray's documented `Datasource` extension class. It returns DeveloperAPI `ReadTask` objects that yield PyArrow tables. `_compat.py` inspects the `ReadTask` constructor so it can reject unsupported Ray signatures without catching an unrelated `TypeError` from the read function.
 
 ## Plan on the driver
 
@@ -46,9 +46,11 @@ Schema and tablet IDs form one immutable planning snapshot. `get_read_tasks()` r
 
 ## Execute on workers
 
-Each task closes its cursor and connection in nested `finally` blocks. The MySQL reader uses a server-side cursor and converts each fetched row batch to the canonical schema. The Flight reader consumes RecordBatch objects, uses safe Arrow casts, verifies nullability, and slices tables into connector output batches.
+The MySQL reader distinguishes normal EOF from consumer abort. Normal completion closes the cursor and then the connection. Abort closes the connection first and detaches the active server-side cursor so PyMySQL can't drain the unread result. The Flight reader consumes RecordBatch objects, uses safe Arrow casts, verifies nullability, and slices tables into connector output batches. Both readers enforce the same result-column and non-nullable NULL contract.
 
-Transport option mappings are deep-copied into immutable tuple storage so caller mutation can't change a constructed datasource. The configuration representation exposes option keys for diagnosis but redacts the password and every option value.
+MySQL is the production-candidate data path. Flight SQL and worker-local `auto` selection remain experimental and aren't part of a stable compatibility profile.
+
+Transport option mappings are deep-copied into immutable tuple storage so caller mutation can't change a constructed datasource. Construction also verifies the actual configuration with Ray's worker serialization protocol and rejects unsupported values before network access. The configuration representation exposes option keys for diagnosis but redacts the password, filter, and every option value.
 
 ## Keep SQL generation narrow
 

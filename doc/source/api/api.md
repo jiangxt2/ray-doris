@@ -10,6 +10,8 @@ myst:
 
 This page documents the curated public package surface. Signatures and docstrings come from the installed source tree rather than duplicated handwritten declarations.
 
+The connector uses Ray's documented Datasource extension interfaces without importing `ray.data._internal`. Ray classifies `ReadTask` as DeveloperAPI, so compatibility is limited to the tested Ray minor window. MySQL is the production-candidate transport; Flight SQL and `auto` are experimental.
+
 ## Read a Doris table
 
 (ray-doris-api-read-doris)=
