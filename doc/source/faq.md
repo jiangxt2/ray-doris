@@ -34,7 +34,7 @@ Schema discovery always uses MySQL `DESCRIBE`. Flight SQL moves split data after
 
 ## Why did auto use MySQL?
 
-`auto` selects MySQL when Flight dependencies are missing or an eligible Flight setup or protocol-negotiation failure occurs before Flight produces rows. Enable connector logging and inspect worker dependency installation and Flight endpoint reachability.
+`auto` is experimental. It selects MySQL when Flight dependencies are missing or an eligible Flight setup or protocol-negotiation failure occurs before Flight produces rows. Enable connector logging and inspect worker dependency installation and Flight endpoint reachability.
 
 `auto` doesn't fall back after a row batch, for an execution timeout, or for a schema, authentication, permission, conversion, or stream failure.
 

@@ -217,8 +217,8 @@ class DorisReadConfig:
             raise DorisConfigurationError(f"{name} must be a mapping")
         try:
             copied = deepcopy(dict(options))
-        except Exception as exc:
-            raise DorisConfigurationError(f"{name} values must be copyable") from exc
+        except Exception:
+            raise DorisConfigurationError(f"{name} values must be copyable") from None
         return tuple(copied.items())
 
     def mysql_options(self) -> Mapping[str, Any]:
@@ -231,6 +231,7 @@ class DorisReadConfig:
 
     def __repr__(self) -> str:
         """Return a representation that never exposes credentials or option values."""
+        rendered_filter = "None" if self.filter is None else "<redacted>"
         return (
             "DorisReadConfig("
             f"host={self.host!r}, table={self.table!r}, user={self.user!r}, "
@@ -238,7 +239,7 @@ class DorisReadConfig:
             f"mysql_port={self.mysql_port}, http_port={self.http_port}, "
             f"flight_port={self.flight_port}, http_scheme={self.http_scheme!r}, "
             f"flight_scheme={self.flight_scheme!r}, columns={self.columns!r}, "
-            f"filter={self.filter!r}, transport={self.transport!r}, "
+            f"filter={rendered_filter}, transport={self.transport!r}, "
             f"tablet_size={self.tablet_size}, batch_size={self.batch_size}, "
             f"on_query_plan_error={self.on_query_plan_error!r}, "
             f"connect_timeout={self.connect_timeout}, "

@@ -24,7 +24,7 @@ Select one internal table, project columns, apply a trusted filter, and choose p
 :link: configure-transports
 :link-type: doc
 
-Choose MySQL, Flight SQL, or guarded automatic fallback and configure execution timeouts.
+Choose the production-candidate MySQL transport or experimental Flight SQL/automatic fallback and configure execution timeouts.
 :::
 
 :::{grid-item-card} Tune parallelism

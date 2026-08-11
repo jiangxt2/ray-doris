@@ -12,13 +12,13 @@ Start with Doris tablet distribution, then set Ray scheduling controls. A larger
 
 ## Group tablets into read tasks
 
-`tablet_size` is a soft minimum grouping target. For a non-empty plan, the datasource computes this group size:
+`tablet_size` is a soft grouping target. For a non-empty plan, the datasource computes this task count:
 
 ```text
-max(tablet_size, ceil(number_of_tablets / Ray_parallelism_hint))
+min(Ray_parallelism_hint, ceil(number_of_tablets / tablet_size))
 ```
 
-It then groups sorted tablet IDs into deterministic adjacent slices. `tablet_size=1` exposes the finest tablet-level split, while a larger value reduces Ray scheduling overhead for tables with many tablets.
+It then assigns sorted tablet IDs to that many deterministic adjacent groups. Group sizes differ by at most one. `tablet_size=1` exposes the finest tablet-level split allowed by Ray's hint, while a larger value reduces Ray scheduling overhead for tables with many tablets.
 
 The Ray parallelism hint is also a cap. If Doris returns 48 tablets, `tablet_size=1`, and Ray requests parallelism 12, the datasource creates at most 12 groups rather than 48 tasks.
 
@@ -90,4 +90,4 @@ Ray version support determines which options are valid. `ray-doris` passes the m
 
 ## Select settings from evidence
 
-Measure task duration, worker memory, Doris backend load, and Ray scheduling overhead with your table distribution. The repository's slow suite verifies three Ray workers, three Doris backends, 48 tablets, retries, and backend failover. It's a functional distributed gate, not a performance benchmark, so it doesn't define production defaults.
+Measure task duration, worker memory, Doris backend load, and Ray scheduling overhead with your table distribution. The repository's full slow suite verifies three Ray workers, three Doris backends, 48 tablets, retries, and backend failover. The `core` profile verifies only tablet task count and three-worker distribution. These are functional distributed gates, not performance benchmarks, so they don't define production defaults.

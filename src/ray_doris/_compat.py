@@ -3,13 +3,31 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Any, Callable, Iterable, Optional
 
 import pyarrow as pa
+import ray
 from ray.data.block import BlockMetadata
 from ray.data.datasource import ReadTask
 
 from ray_doris._errors import DorisConfigurationError
+
+_MIN_RAY_VERSION = (2, 49, 2)
+_MAX_RAY_VERSION = (2, 57, 0)
+_RAY_VERSION = ray.__version__
+_FINAL_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$")
+
+
+def ensure_supported_ray_version() -> None:
+    """Reject Ray releases outside the compatibility matrix before network access."""
+    match = _FINAL_RELEASE.fullmatch(_RAY_VERSION)
+    release = tuple(int(part) for part in match.groups()) if match is not None else ()
+    if not _MIN_RAY_VERSION <= release < _MAX_RAY_VERSION:
+        raise DorisConfigurationError(
+            "ray-doris supports final Ray releases >=2.49.2,<2.57 "
+            f"(local build suffixes are allowed); found Ray {_RAY_VERSION!r}"
+        )
 
 
 def make_read_task(
@@ -19,11 +37,13 @@ def make_read_task(
     per_task_row_limit: Optional[int],
 ) -> ReadTask:
     """Construct a ReadTask without hiding version or read-function TypeErrors."""
+    ensure_supported_ray_version()
     parameters = inspect.signature(ReadTask).parameters
     kwargs: dict[str, Any] = {"read_fn": read_fn, "metadata": metadata}
     if "schema" not in parameters:
         raise DorisConfigurationError(
-            "ray-doris requires Ray 2.48 or newer ReadTask schema support"
+            "installed Ray ReadTask lacks required schema support within the final "
+            "Ray >=2.49.2,<2.57 compatibility window"
         )
     kwargs["schema"] = schema
     if "per_task_row_limit" in parameters:

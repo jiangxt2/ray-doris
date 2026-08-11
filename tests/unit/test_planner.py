@@ -166,10 +166,17 @@ def test_query_plan_plan_shape_rejection_uses_integer_inner_status() -> None:
 
 
 def test_query_plan_service_error_and_permission_use_string_inner_status() -> None:
-    with pytest.raises(DorisPermissionError, match="Access denied"):
+    with pytest.raises(DorisPermissionError, match="denied") as captured:
         QueryPlanClient._parse_response(
-            {"code": 0, "data": {"status": "1", "exception": "Access denied; SELECT"}}
+            {
+                "code": 0,
+                "data": {
+                    "status": "1",
+                    "exception": "Access denied; sensitive-server-detail",
+                },
+            }
         )
+    assert "sensitive-server-detail" not in str(captured.value)
     with pytest.raises(DorisPlanningError, match="body status '1'"):
         QueryPlanClient._parse_response(
             {"code": 0, "data": {"status": "1", "exception": "planner crashed"}}
@@ -185,6 +192,26 @@ def test_query_plan_outer_bad_request_code_is_not_http_permission_error() -> Non
     with pytest.raises(DorisPlanningError, match="body code 403") as captured:
         QueryPlanClient._parse_response({"code": 403, "msg": "bad request"})
     assert not isinstance(captured.value, DorisPermissionError)
+
+
+def test_query_plan_server_messages_are_redacted_from_public_errors() -> None:
+    sentinel = "sensitive-server-detail"
+    with pytest.raises(DorisPlanningError, match="body code 500") as captured:
+        QueryPlanClient._parse_response({"code": 500, "msg": sentinel})
+    assert sentinel not in str(captured.value)
+
+    with pytest.raises(DorisPlanningError, match="invalid body code") as captured:
+        QueryPlanClient._parse_response({"code": sentinel})
+    assert sentinel not in str(captured.value)
+
+    with pytest.raises(DorisPlanningError, match="invalid body status") as captured:
+        QueryPlanClient._parse_response({"code": 0, "data": {"status": sentinel}})
+    assert sentinel not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+    with pytest.raises(DorisPlanningError, match="body status 500") as captured:
+        QueryPlanClient._parse_response({"code": 0, "data": {"status": 500, "exception": sentinel}})
+    assert sentinel not in str(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -204,13 +231,46 @@ def test_query_plan_rejects_malformed_envelopes(payload: object) -> None:
         QueryPlanClient._parse_response(payload)
 
 
-def test_tablet_grouping_is_deterministic_and_respects_parallelism_cap() -> None:
+def test_tablet_grouping_is_deterministic_balanced_and_respects_target_count() -> None:
     assert group_tablets(range(1, 11), tablet_size=2, parallelism=3) == (
         DorisInputSplit((1, 2, 3, 4)),
-        DorisInputSplit((5, 6, 7, 8)),
-        DorisInputSplit((9, 10)),
+        DorisInputSplit((5, 6, 7)),
+        DorisInputSplit((8, 9, 10)),
+    )
+    assert group_tablets(range(1, 11), tablet_size=1, parallelism=6) == (
+        DorisInputSplit((1, 2)),
+        DorisInputSplit((3, 4)),
+        DorisInputSplit((5, 6)),
+        DorisInputSplit((7, 8)),
+        DorisInputSplit((9,)),
+        DorisInputSplit((10,)),
     )
     assert group_tablets((), tablet_size=1, parallelism=2) == ()
+
+
+@pytest.mark.parametrize(
+    ("tablet_ids", "tablet_size", "parallelism", "expected_count"),
+    [
+        ((1,), 1, 8, 1),
+        ((1, 2, 3), 10, 8, 1),
+        (tuple(range(1, 11)), 3, 8, 4),
+        (tuple(range(1, 11)), 1, 20, 10),
+    ],
+)
+def test_tablet_grouping_covers_every_tablet_once_without_empty_splits(
+    tablet_ids, tablet_size, parallelism, expected_count
+) -> None:
+    splits = group_tablets(
+        tablet_ids,
+        tablet_size=tablet_size,
+        parallelism=parallelism,
+    )
+    groups = [split.tablet_ids for split in splits]
+    assert len(groups) == expected_count
+    assert all(group for group in groups)
+    assert tuple(tablet for group in groups for tablet in group) == tablet_ids
+    sizes = [len(group) for group in groups]
+    assert max(sizes) - min(sizes) <= 1
 
 
 def test_planner_returns_empty_plan_for_successfully_pruned_empty_table(monkeypatch) -> None:
@@ -226,10 +286,13 @@ def test_planner_falls_back_to_single_task_only_for_planning_error(monkeypatch, 
     planner = DorisPlanner(config)
     monkeypatch.setattr(planner, "_describe_schema", Mock(return_value=pa.schema([])))
     monkeypatch.setattr(
-        QueryPlanClient, "fetch_tablet_ids", Mock(side_effect=DorisPlanningError("rejected"))
+        QueryPlanClient,
+        "fetch_tablet_ids",
+        Mock(side_effect=DorisPlanningError("sensitive-planning-detail")),
     )
     assert planner.plan(4).splits == (DorisInputSplit(None),)
     assert "using one unpartitioned task" in caplog.text
+    assert "sensitive-planning-detail" not in caplog.text
 
 
 def test_planner_does_not_fallback_for_permission_error(monkeypatch) -> None:
@@ -310,6 +373,12 @@ def test_group_tablets_rejects_invalid_parallelism() -> None:
             group_tablets((1,), tablet_size=1, parallelism=parallelism)
 
 
+@pytest.mark.parametrize("tablet_size", [0, True])
+def test_group_tablets_rejects_invalid_tablet_size(tablet_size) -> None:
+    with pytest.raises(DorisConfigurationError, match="tablet_size"):
+        group_tablets((1,), tablet_size=tablet_size, parallelism=1)
+
+
 def test_planner_rejects_invalid_parallelism_before_fallback_or_network() -> None:
     planner = DorisPlanner(make_config(on_query_plan_error="single_task"))
     for parallelism in (0, True):
@@ -336,3 +405,4 @@ def test_describe_schema_classifies_mysql_errors_with_table_context(
     with pytest.raises(error_type, match=r"db\.table") as captured:
         DorisPlanner(make_config())._describe_schema()
     assert "sensitive server detail" not in str(captured.value)
+    assert captured.value.__cause__ is None

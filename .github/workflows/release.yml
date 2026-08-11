@@ -23,10 +23,8 @@ jobs:
           python-version: "3.12"
       - run: uv venv --python 3.12
       - run: uv pip install build twine
-      - name: Verify release commit belongs to main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - name: Verify tag matches package version
-        run: test "$GITHUB_REF_NAME" = "v$(.venv/bin/python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+      - name: Verify release source and package version
+        run: .venv/bin/python tools/check_release.py
       - run: .venv/bin/python -m build
       - run: .venv/bin/twine check dist/*
       - uses: actions/upload-artifact@v4

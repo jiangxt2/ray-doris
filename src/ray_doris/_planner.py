@@ -146,43 +146,43 @@ class QueryPlanClient:
                     f"Doris query-plan endpoint redirected HTTP {exc.code} for "
                     f"{_table_context(config)}; configure the endpoint scheme and "
                     "host explicitly"
-                ) from exc
+                ) from None
             if exc.code == 401:
                 raise DorisAuthenticationError(
                     f"Doris query-plan authentication failed for {_table_context(config)} "
                     "(HTTP 401)"
-                ) from exc
+                ) from None
             if exc.code == 403:
                 raise DorisPermissionError(
                     f"Doris query-plan permission check failed for {_table_context(config)} "
                     "(HTTP 403)"
-                ) from exc
+                ) from None
             raise DorisPlanningError(
                 f"Doris query-plan endpoint returned HTTP {exc.code} for {_table_context(config)}"
-            ) from exc
+            ) from None
         except (http.client.HTTPException, OSError) as exc:
             if config.http_scheme == "https" and _contains_tls_error(exc):
                 raise DorisConfigurationError(
                     f"Doris query-plan TLS validation failed for "
                     f"{_table_context(config)}; refusing planning fallback"
-                ) from exc
+                ) from None
             raise DorisPlanningError(
                 f"Doris query-plan endpoint is unavailable for {_table_context(config)}"
-            ) from exc
+            ) from None
         try:
             payload = json.loads(payload_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             raise DorisPlanningError(
                 f"Doris query-plan endpoint returned invalid JSON for {_table_context(config)}"
-            ) from exc
+            ) from None
         try:
             return self._parse_response(payload)
         except DorisAuthenticationError as exc:
-            raise DorisAuthenticationError(f"{exc} for {_table_context(config)}") from exc
+            raise DorisAuthenticationError(f"{exc} for {_table_context(config)}") from None
         except DorisPermissionError as exc:
-            raise DorisPermissionError(f"{exc} for {_table_context(config)}") from exc
+            raise DorisPermissionError(f"{exc} for {_table_context(config)}") from None
         except DorisPlanningError as exc:
-            raise DorisPlanningError(f"{exc} for {_table_context(config)}") from exc
+            raise DorisPlanningError(f"{exc} for {_table_context(config)}") from None
 
     @staticmethod
     def _parse_response(payload: Any) -> Tuple[int, ...]:
@@ -190,36 +190,29 @@ class QueryPlanClient:
             raise DorisPlanningError("Doris query-plan response must be an object")
         outer_code = payload.get("code")
         if isinstance(outer_code, bool) or not isinstance(outer_code, int):
-            raise DorisPlanningError(
-                f"Doris query-plan response has invalid body code {outer_code!r}"
-            )
+            raise DorisPlanningError("Doris query-plan response has an invalid body code")
         if outer_code == 401:
             raise DorisAuthenticationError("Doris rejected query-plan credentials (code 401)")
         if outer_code != 0:
             raise DorisPlanningError(
-                f"Doris query-plan request failed with body code {outer_code!r}: "
-                f"{payload.get('msg', 'unknown error')}"
+                f"Doris query-plan request failed with body code {outer_code!r}"
             )
         data = payload.get("data")
         if not isinstance(data, dict):
             raise DorisPlanningError("Doris query-plan response has no data object")
         plan_status = data.get("status")
-        exception = str(data.get("exception", "unknown error"))
+        exception = str(data.get("exception", ""))
         if isinstance(plan_status, int) and not isinstance(plan_status, bool):
             if plan_status != 200:
                 raise DorisPlanningError(
-                    f"Doris query-plan request failed with body status {plan_status}: {exception}"
+                    f"Doris query-plan request failed with body status {plan_status}"
                 )
         elif plan_status == "1":
             if exception.startswith("Access denied;"):
-                raise DorisPermissionError(exception)
-            raise DorisPlanningError(
-                f"Doris query-plan service failed with body status '1': {exception}"
-            )
+                raise DorisPermissionError("Doris denied the query-plan request")
+            raise DorisPlanningError("Doris query-plan service failed with body status '1'")
         else:
-            raise DorisPlanningError(
-                f"Doris query-plan response has invalid body status {plan_status!r}"
-            )
+            raise DorisPlanningError("Doris query-plan response has an invalid body status")
         partitions = data.get("partitions")
         if not isinstance(partitions, dict):
             raise DorisPlanningError("Doris query-plan response has no partitions object")
@@ -227,14 +220,10 @@ class QueryPlanClient:
         for raw_tablet_id in partitions:
             try:
                 tablet_id = int(raw_tablet_id)
-            except (TypeError, ValueError) as exc:
-                raise DorisPlanningError(
-                    f"Doris query-plan returned invalid tablet id {raw_tablet_id!r}"
-                ) from exc
+            except (TypeError, ValueError):
+                raise DorisPlanningError("Doris query-plan returned an invalid tablet id") from None
             if tablet_id <= 0:
-                raise DorisPlanningError(
-                    f"Doris query-plan returned invalid tablet id {raw_tablet_id!r}"
-                )
+                raise DorisPlanningError("Doris query-plan returned an invalid tablet id")
             tablet_ids.append(tablet_id)
         return tuple(sorted(set(tablet_ids)))
 
@@ -244,13 +233,20 @@ def group_tablets(
 ) -> Tuple[DorisInputSplit, ...]:
     """Build deterministic adjacent tablet groups within Ray's requested cap."""
     _validate_parallelism(parallelism)
+    if isinstance(tablet_size, bool) or not isinstance(tablet_size, int) or tablet_size <= 0:
+        raise DorisConfigurationError("tablet_size must be a positive integer")
     if not tablet_ids:
         return ()
-    group_size = max(tablet_size, math.ceil(len(tablet_ids) / parallelism))
-    return tuple(
-        DorisInputSplit(tuple(tablet_ids[index : index + group_size]))
-        for index in range(0, len(tablet_ids), group_size)
-    )
+    group_count = min(parallelism, math.ceil(len(tablet_ids) / tablet_size))
+    base_size, larger_groups = divmod(len(tablet_ids), group_count)
+    splits = []
+    offset = 0
+    for group_index in range(group_count):
+        group_size = base_size + (1 if group_index < larger_groups else 0)
+        next_offset = offset + group_size
+        splits.append(DorisInputSplit(tuple(tablet_ids[offset:next_offset])))
+        offset = next_offset
+    return tuple(splits)
 
 
 def _validate_parallelism(parallelism: int) -> None:
@@ -281,9 +277,9 @@ class DorisPlanner:
             if self._config.on_query_plan_error == "error":
                 raise
             logger.warning(
-                "Doris query-plan failed for %s; using one unpartitioned task: %s",
+                "Doris query-plan failed for %s; using one unpartitioned task (%s)",
                 _table_context(self._config),
-                exc,
+                type(exc).__name__,
             )
             return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
         return DorisPlanningSnapshot(schema=schema, tablet_ids=tablet_ids)
@@ -332,10 +328,10 @@ class DorisPlanner:
             context = _table_context(self._config)
             access_error = _mysql_access_error(exc, operation="schema-discovery", context=context)
             if access_error is not None:
-                raise access_error from exc
+                raise access_error from None
             raise DorisPlanningError(
                 f"failed to discover Doris schema for {context} (MySQL error {code!r})"
-            ) from exc
+            ) from None
         try:
             columns = parse_describe_rows(rows)
             return build_arrow_schema(columns, self._config.columns)

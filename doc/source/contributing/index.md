@@ -1,7 +1,7 @@
 ---
 myst:
   html_meta:
-    description: "Set up ray-doris development and documentation environments, run static and real Doris gates, and preserve public Ray API and fail-closed schema contracts."
+    description: "Set up ray-doris development and documentation environments, run static and real Doris gates, and preserve documented Ray extension and fail-closed schema contracts."
 ---
 
 (ray-doris-contributing)=
@@ -71,6 +71,6 @@ Use Sphinx cross-references for API symbols and `literalinclude` for maintained 
 
 ## Preserve connector boundaries
 
-Keep new runtime code on public Ray APIs. Don't import `ray.data._internal`. Unsupported Doris types must fail closed, and access or TLS failures must not become permissive fallback paths.
+Keep new runtime code on Ray's documented extension interfaces, and contain `ReadTask` DeveloperAPI adaptation in `_compat.py`. Don't import `ray.data._internal`. Unsupported Doris types must fail closed, and access or TLS failures must not become permissive fallback paths.
 
 Source, comments, documentation, commit messages, and public GitHub content use English. Every commit requires the repository's fixed `Signed-off-by` trailer.

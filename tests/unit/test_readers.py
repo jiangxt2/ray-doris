@@ -28,8 +28,15 @@ def make_config(**kwargs: object) -> DorisReadConfig:
     return DorisReadConfig.from_options(**values)
 
 
-class FakeCursor:
+class FakeResult:
     def __init__(self) -> None:
+        self.connection = None
+        self.unbuffered_active = True
+
+
+class FakeCursor:
+    def __init__(self, events=None) -> None:
+        self.events = events if events is not None else []
         self.description = (("id",), ("amount",), ("created_at",))
         self._batches = [
             [(1, Decimal("12.34"), datetime(2025, 1, 1, 1, 2, 3, 456789))],
@@ -38,7 +45,10 @@ class FakeCursor:
         ]
         self.fetchmany_calls = []
         self.closed = False
+        self.close_calls = 0
         self.query = None
+        self.connection = None
+        self._result = FakeResult()
 
     def execute(self, query: str) -> None:
         self.query = query
@@ -48,24 +58,34 @@ class FakeCursor:
         return self._batches.pop(0)
 
     def close(self) -> None:
+        self.events.append("cursor-close")
         self.closed = True
+        self.close_calls += 1
 
 
 class FakeConnection:
-    def __init__(self, cursor: FakeCursor) -> None:
+    def __init__(self, cursor: FakeCursor, events=None) -> None:
+        self.events = events if events is not None else cursor.events
         self._cursor = cursor
+        cursor.connection = self
+        cursor._result.connection = self
+        self._result = cursor._result
         self.closed = False
+        self.close_calls = 0
 
     def cursor(self) -> FakeCursor:
         return self._cursor
 
     def close(self) -> None:
+        self.events.append("connection-close")
         self.closed = True
+        self.close_calls += 1
 
 
 def test_mysql_reader_streams_fetchmany_batches_and_closes_resources(monkeypatch) -> None:
-    cursor = FakeCursor()
-    connection = FakeConnection(cursor)
+    events = []
+    cursor = FakeCursor(events)
+    connection = FakeConnection(cursor, events)
     monkeypatch.setattr(_readers.pymysql, "connect", Mock(return_value=connection))
     schema = pa.schema(
         [
@@ -80,6 +100,36 @@ def test_mysql_reader_streams_fetchmany_batches_and_closes_resources(monkeypatch
     assert cursor.fetchmany_calls == [2, 2, 2]
     assert "TABLET(7)" in str(cursor.query)
     assert cursor.closed and connection.closed
+    assert events == ["cursor-close", "connection-close"]
+    assert cursor.close_calls == connection.close_calls == 1
+
+
+def test_mysql_reader_abort_closes_connection_without_draining_cursor(monkeypatch) -> None:
+    events = []
+    cursor = FakeCursor(events)
+    connection = FakeConnection(cursor, events)
+    result = cursor._result
+    monkeypatch.setattr(_readers.pymysql, "connect", Mock(return_value=connection))
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("amount", pa.decimal128(10, 2)),
+            pa.field("created_at", pa.timestamp("us")),
+        ]
+    )
+    reader = _readers.read_mysql(make_config(), DorisInputSplit(None), schema)
+    assert next(reader).num_rows == 1
+    reader.close()
+    reader.close()
+
+    assert events == ["connection-close"]
+    assert connection.close_calls == 1
+    assert cursor.close_calls == 0
+    assert cursor.connection is None
+    assert cursor._result is None
+    assert connection._result is None
+    assert not result.unbuffered_active
+    assert result.connection is None
 
 
 def test_mysql_reader_detects_schema_drift(monkeypatch) -> None:
@@ -90,7 +140,29 @@ def test_mysql_reader_detects_schema_drift(monkeypatch) -> None:
     schema = pa.schema([("id", pa.int64()), ("amount", pa.string()), ("created_at", pa.string())])
     with pytest.raises(DorisReadError, match=r"db\.table tablets=all.*do not match"):
         list(_readers.read_mysql(make_config(), DorisInputSplit(None), schema))
-    assert cursor.closed and connection.closed
+    assert not cursor.closed and connection.closed
+    assert cursor.connection is None
+
+
+def test_mysql_reader_rejects_non_nullable_null_and_aborts_without_drain(monkeypatch) -> None:
+    cursor = FakeCursor()
+    cursor.description = (("id",),)
+    cursor._batches = [[(None,)], []]
+    connection = FakeConnection(cursor)
+    monkeypatch.setattr(_readers.pymysql, "connect", Mock(return_value=connection))
+
+    with pytest.raises(DorisReadError, match="non-nullable"):
+        list(
+            _readers.read_mysql(
+                make_config(),
+                DorisInputSplit(None),
+                pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+            )
+        )
+
+    assert connection.close_calls == 1
+    assert cursor.close_calls == 0
+    assert cursor.connection is None
 
 
 def test_mysql_empty_result_closes_resources(monkeypatch) -> None:
@@ -115,7 +187,7 @@ def test_mysql_reader_preserves_access_error(monkeypatch, code, error_type) -> N
         "connect",
         Mock(side_effect=_readers.pymysql.err.OperationalError(code, "denied")),
     )
-    with pytest.raises(error_type, match="split read"):
+    with pytest.raises(error_type, match="split read") as captured:
         list(
             _readers.read_mysql(
                 make_config(),
@@ -123,6 +195,7 @@ def test_mysql_reader_preserves_access_error(monkeypatch, code, error_type) -> N
                 pa.schema([("id", pa.int64())]),
             )
         )
+    assert captured.value.__cause__ is None
 
 
 def test_boolean_normalization_accepts_only_doris_zero_and_one() -> None:
@@ -132,8 +205,36 @@ def test_boolean_normalization_accepts_only_doris_zero_and_one() -> None:
         None,
         True,
     ]
-    with pytest.raises(DorisReadError, match="BOOLEAN"):
+    with pytest.raises(DorisReadError, match="BOOLEAN") as captured:
         _readers._normalize_values([2], pa.bool_())
+    assert "2" not in str(captured.value)
+
+
+def test_mysql_cleanup_error_does_not_mask_conversion_error(monkeypatch, caplog) -> None:
+    class FailingCloseConnection(FakeConnection):
+        def close(self) -> None:
+            super().close()
+            raise RuntimeError("cleanup-secret-sentinel")
+
+    cursor = FakeCursor()
+    cursor.description = (("active",),)
+    cursor._batches = [[(2,)], []]
+    connection = FailingCloseConnection(cursor)
+    monkeypatch.setattr(_readers.pymysql, "connect", Mock(return_value=connection))
+
+    with pytest.raises(DorisReadError, match="BOOLEAN") as captured:
+        list(
+            _readers.read_mysql(
+                make_config(),
+                DorisInputSplit(None),
+                pa.schema([pa.field("active", pa.bool_(), nullable=False)]),
+            )
+        )
+
+    assert connection.close_calls == 1
+    assert cursor.close_calls == 0
+    assert "cleanup-secret-sentinel" not in str(captured.value)
+    assert "cleanup-secret-sentinel" not in caplog.text
 
 
 def test_explicit_flight_missing_extra_fails_with_install_hint(monkeypatch) -> None:
@@ -384,8 +485,10 @@ def test_flight_stream_failure_closes_resources_and_is_not_setup_fallback(monkey
     cursor = FakeFlightCursor(reader)
     connection = FakeFlightConnection(cursor)
     monkeypatch.setattr(_readers, "_flight_connection", Mock(return_value=connection))
-    with pytest.raises(DorisReadError, match="through Flight SQL"):
+    with pytest.raises(DorisReadError, match="through Flight SQL") as captured:
         list(_readers.read_flight(make_config(), DorisInputSplit(None), schema))
+    assert "stream failed" not in str(captured.value)
+    assert captured.value.__cause__ is None
     assert reader.closed and cursor.closed and connection.closed
 
 

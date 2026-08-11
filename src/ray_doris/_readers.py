@@ -59,75 +59,140 @@ def _normalize_values(values: Sequence[object], data_type: pa.DataType) -> Seque
             elif isinstance(value, int) and value in (0, 1):
                 normalized.append(bool(value))
             else:
-                raise DorisReadError(f"invalid Doris BOOLEAN value: {value!r}")
+                raise DorisReadError("invalid Doris BOOLEAN value")
         return normalized
     return values
 
 
-def _rows_to_table(
-    rows: Sequence[Sequence[object]], column_names: Sequence[str], schema: pa.Schema
-) -> pa.Table:
+def _validate_result_columns(column_names: Sequence[str], schema: pa.Schema) -> None:
     if tuple(column_names) != tuple(schema.names):
         raise DorisReadError(
             f"Doris result columns {tuple(column_names)!r} do not match planned schema "
             f"{tuple(schema.names)!r}"
         )
+
+
+def _validate_nullability(array: pa.Array[Any], field: pa.Field[Any]) -> None:
+    if not field.nullable and array.null_count:
+        raise DorisReadError(
+            f"Doris column {field.name!r} contains NULL but the planned schema is non-nullable"
+        )
+
+
+def _rows_to_table(
+    rows: Sequence[Sequence[object]], column_names: Sequence[str], schema: pa.Schema
+) -> pa.Table:
+    _validate_result_columns(column_names, schema)
     arrays = []
     for index, field in enumerate(schema):
         values = _normalize_values([row[index] for row in rows], field.type)
         try:
-            arrays.append(pa.array(values, type=field.type))
-        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, TypeError, ValueError) as exc:
+            array = pa.array(values, type=field.type)
+        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, TypeError, ValueError):
             raise DorisReadError(
                 f"failed to convert Doris column {field.name!r} to {field.type}"
-            ) from exc
+            ) from None
+        _validate_nullability(array, field)
+        arrays.append(array)
     return pa.Table.from_arrays(arrays, schema=schema)
+
+
+def _close_reader_resource(resource: Any, *, label: str, context: str) -> None:
+    if resource is None:
+        return
+    try:
+        resource.close()
+    except Exception:
+        logger.warning("Failed to close Doris %s for %s", label, context)
+
+
+def _detach_mysql_result(connection: Any, cursor: Any, *, context: str) -> None:
+    """Detach PyMySQL's active result after closing its socket without draining.
+
+    PyMySQL 1.x has no public non-draining ``SSCursor`` cancellation API. The
+    private references used here are isolated in this helper and covered by the
+    required real-Doris integration test.
+    """
+    if connection is None and cursor is None:
+        return
+    try:
+        result = getattr(cursor, "_result", None)
+        if result is None:
+            result = getattr(connection, "_result", None)
+        if result is not None:
+            result.unbuffered_active = False
+            result.connection = None
+        if connection is not None:
+            connection._result = None
+        if cursor is not None:
+            cursor._result = None
+            cursor.connection = None
+    except Exception:
+        logger.warning("Failed to detach Doris MySQL result for %s", context)
+
+
+def _cleanup_mysql_reader(
+    connection: Any,
+    cursor: Any,
+    *,
+    reached_eof: bool,
+    context: str,
+) -> None:
+    if reached_eof:
+        _close_reader_resource(cursor, label="MySQL cursor", context=context)
+        _close_reader_resource(connection, label="MySQL connection", context=context)
+        return
+    _close_reader_resource(connection, label="MySQL connection", context=context)
+    _detach_mysql_result(connection, cursor, context=context)
 
 
 def read_mysql(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterator[pa.Table]:
     """Stream PyMySQL rows in bounded batches and convert to canonical Arrow."""
+    connection: Any = None
+    cursor: Any = None
+    reached_eof = False
+    context = _split_context(config, split)
     try:
-        connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
         try:
+            connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
             cursor = connection.cursor()
-            try:
-                cursor.execute(_query(config, split))
-                if cursor.description is None:
-                    raise DorisReadError("Doris SELECT returned no column metadata")
-                names = tuple(description[0] for description in cursor.description)
-                while True:
-                    rows = cursor.fetchmany(config.batch_size)
-                    if not rows:
-                        break
-                    table = _rows_to_table(rows, names, schema)
-                    del rows
-                    yield table
-            finally:
-                cursor.close()
+            cursor.execute(_query(config, split))
+            if cursor.description is None:
+                raise DorisReadError("Doris SELECT returned no column metadata")
+            names = tuple(description[0] for description in cursor.description)
+            while True:
+                rows = cursor.fetchmany(config.batch_size)
+                if not rows:
+                    reached_eof = True
+                    break
+                table = _rows_to_table(rows, names, schema)
+                del rows
+                yield table
         finally:
-            connection.close()
+            _cleanup_mysql_reader(
+                connection,
+                cursor,
+                reached_eof=reached_eof,
+                context=context,
+            )
     except DorisReadError as exc:
-        raise DorisReadError(
-            f"failed to read Doris {_split_context(config, split)}: {exc}"
-        ) from exc
+        raise DorisReadError(f"failed to read Doris {context}: {exc}") from exc
     except pymysql.MySQLError as exc:
         access_error = _mysql_access_error(
             exc,
             operation="split read",
-            context=_split_context(config, split),
+            context=context,
         )
         if access_error is not None:
-            raise access_error from exc
+            raise access_error from None
         raise DorisReadError(
-            f"failed to read Doris {_split_context(config, split)} through the "
+            f"failed to read Doris {context} through the "
             f"MySQL protocol (MySQL error {_mysql_error_code(exc)!r})"
-        ) from exc
-    except Exception as exc:
-        raise DorisReadError(
-            f"failed to read Doris {_split_context(config, split)} through the MySQL protocol"
-        ) from exc
+        ) from None
+    except Exception:
+        raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
 
 
 def _flight_is_installed() -> bool:
@@ -149,8 +214,8 @@ def _flight_connection(config: DorisReadConfig) -> Any:
     try:
         import adbc_driver_flightsql.dbapi as flight_sql
         from adbc_driver_manager import DatabaseOptions
-    except ImportError as exc:
-        raise _flight_import_error() from exc
+    except ImportError:
+        raise _flight_import_error() from None
     db_kwargs = {
         DatabaseOptions.USERNAME.value: config.user,
         DatabaseOptions.PASSWORD.value: config.password,
@@ -164,11 +229,7 @@ def _flight_connection(config: DorisReadConfig) -> Any:
 
 
 def _cast_flight_batch(batch: pa.RecordBatch, schema: pa.Schema) -> pa.Table:
-    if tuple(batch.schema.names) != tuple(schema.names):
-        raise DorisReadError(
-            f"Doris Flight result columns {tuple(batch.schema.names)!r} do not match planned "
-            f"schema {tuple(schema.names)!r}"
-        )
+    _validate_result_columns(batch.schema.names, schema)
     arrays = []
     for index, field in enumerate(schema):
         source_field = batch.schema.field(index)
@@ -180,16 +241,12 @@ def _cast_flight_batch(batch: pa.RecordBatch, schema: pa.Schema) -> pa.Table:
             OverflowError,
             TypeError,
             ValueError,
-        ) as exc:
+        ):
             raise DorisReadError(
                 f"failed to convert Doris Flight column {field.name!r} "
                 f"from {source_field.type} to {field.type}"
-            ) from exc
-        if not field.nullable and array.null_count:
-            raise DorisReadError(
-                f"Doris Flight column {field.name!r} contains NULL but the "
-                "planned schema is non-nullable"
-            )
+            ) from None
+        _validate_nullability(array, field)
         arrays.append(array)
     return pa.Table.from_arrays(arrays, schema=schema)
 
@@ -207,15 +264,15 @@ def read_flight(
     try:
         try:
             connection = _flight_connection(config)
-        except ImportError as exc:
+        except ImportError:
             raise _FlightUnavailableError(
                 f"Flight SQL setup is unavailable for {_split_context(config, split)}"
-            ) from exc
+            ) from None
         except Exception as exc:
             if _is_flight_setup_error(exc, allow_timeout=True):
                 raise _FlightUnavailableError(
                     f"Flight SQL setup is unavailable for {_split_context(config, split)}"
-                ) from exc
+                ) from None
             raise
         try:
             try:
@@ -224,7 +281,7 @@ def read_flight(
                 if _is_flight_setup_error(exc, allow_timeout=True):
                     raise _FlightUnavailableError(
                         f"Flight SQL setup is unavailable for {_split_context(config, split)}"
-                    ) from exc
+                    ) from None
                 raise
             try:
                 try:
@@ -234,7 +291,7 @@ def read_flight(
                     if _is_flight_setup_error(exc, allow_timeout=False):
                         raise _FlightUnavailableError(
                             f"Flight SQL setup is unavailable for {_split_context(config, split)}"
-                        ) from exc
+                        ) from None
                     raise
                 try:
                     for batch in reader:
@@ -252,10 +309,10 @@ def read_flight(
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)}: {exc}"
         ) from exc
-    except Exception as exc:
+    except Exception:
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)} through Flight SQL"
-        ) from exc
+        ) from None
 
 
 def _is_flight_setup_error(exc: BaseException, *, allow_timeout: bool = True) -> bool:
@@ -317,7 +374,7 @@ def read_split(
             if config.flight_scheme == "grpc+tls":
                 raise DorisReadError(
                     "Flight SQL TLS setup failed; refusing automatic MySQL fallback"
-                ) from exc
+                ) from None
             logger.warning(
                 "Flight SQL setup is unavailable; using MySQL: %s",
                 exc,

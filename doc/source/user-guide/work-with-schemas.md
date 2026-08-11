@@ -37,7 +37,7 @@ Supported decimal families include `DECIMAL`, `DECIMALV2`, `DECIMALV3`, `DECIMAL
 
 When you pass `columns`, the Arrow schema follows that order rather than the physical table order. Each field preserves the `YES` or `NO` nullability returned by `DESCRIBE`.
 
-MySQL rows convert into arrays with the planned type. Flight columns use safe Arrow casts. Both readers verify that result-column names match the schema. Flight also rejects a null value in a non-nullable field.
+MySQL rows convert into arrays with the planned type. Flight columns use safe Arrow casts. Both readers verify that result-column names match the schema and reject a null value in a non-nullable field with the same public error classification.
 
 ## Handle decimal and temporal values
 

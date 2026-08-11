@@ -39,6 +39,13 @@ execution must also pass the opt-in slow suite:
 tests/slow_integration/run.sh
 ```
 
+For changes limited to tablet task count and worker distribution, use the targeted profile instead
+of the worker/BE failure scenarios:
+
+```bash
+RAY_DORIS_SLOW_PROFILE=core tests/slow_integration/run.sh
+```
+
 The suite requires a Docker host with at least 16 GiB of available memory. Its default topology is
 one Ray head, three Ray workers, one Doris 4.0.6 FE, three Doris 4.0.6 BEs, and a production-style
 TLS and Flight ingress that exposes per-BE traffic counters. The functional profile loads 10,000
@@ -80,9 +87,11 @@ not describe an untested configuration or extension point as supported behavior.
 
 ## Compatibility
 
-Code must remain compatible with Python 3.9 and Ray 2.49.2. Do not import modules below
-`ray.data._internal`. Add a unit test for every independently verifiable behavior, including error
-paths and cleanup. Unsupported Doris types must fail closed.
+Code must remain compatible with the declared `ray[data]>=2.49.2,<2.57` range. Python 3.9 is an
+Alpha legacy compatibility target because it no longer receives upstream security fixes; it isn't
+a stable production baseline. Do not import modules below `ray.data._internal`. Add a unit test for
+every independently verifiable behavior, including error paths and cleanup. Unsupported Doris types
+must fail closed.
 
 Source, comments, documentation, commit messages, and public GitHub content are written in English.
 Every commit must include:
