@@ -1,8 +1,36 @@
 name: Slow distributed integration
 
 on:
+  workflow_call:
+    inputs:
+      profile:
+        description: Slow integration profile
+        required: false
+        default: full
+        type: string
+      row_count:
+        description: Rows loaded into each slow integration table
+        required: false
+        default: "10000"
+        type: string
+      stress_seconds:
+        description: Minimum duration of repeated Flight SQL reads
+        required: false
+        default: "5"
+        type: string
+      be_memory_limit:
+        description: Memory limit for each Doris BE container
+        required: false
+        default: 2g
+        type: string
   workflow_dispatch:
     inputs:
+      profile:
+        description: Slow integration profile
+        required: true
+        default: full
+        type: choice
+        options: [full, core]
       row_count:
         description: Rows loaded into each slow integration table
         required: true
@@ -18,6 +46,8 @@ on:
         required: true
         default: "2g"
         type: string
+  schedule:
+    - cron: "17 3 * * 0"
 
 permissions:
   contents: read
@@ -32,9 +62,10 @@ jobs:
     runs-on: [self-hosted, linux, x64, ray-doris-slow-it]
     timeout-minutes: 30
     env:
-      RAY_DORIS_ROW_COUNT: ${{ inputs.row_count }}
-      RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds }}
-      RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit }}
+      RAY_DORIS_SLOW_PROFILE: ${{ inputs.profile || 'full' }}
+      RAY_DORIS_ROW_COUNT: ${{ inputs.row_count || '10000' }}
+      RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds || '5' }}
+      RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit || '2g' }}
     steps:
       - uses: actions/checkout@v4
       - name: Run distributed cluster scenario
@@ -47,3 +78,13 @@ jobs:
           name: ray-doris-slow-it-logs
           path: ${{ runner.temp }}/ray-doris-slow-it/*.log
           if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: ${{ success() && env.RAY_DORIS_SLOW_PROFILE == 'full' }}
+        with:
+          name: ray-doris-slow-result-${{ github.sha }}
+          path: ${{ runner.temp }}/ray-doris-slow-it/slow-result.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90

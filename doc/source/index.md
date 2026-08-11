@@ -25,7 +25,7 @@ dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
     columns=["event_id", "created_at", "score"],
     filter="score >= 80",
     tablet_size=32,

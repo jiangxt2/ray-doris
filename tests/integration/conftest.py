@@ -9,6 +9,8 @@ import pymysql
 import pytest
 import ray
 
+READER_PASSWORD_ENV = "RAY_DORIS_IT_READER_PASSWORD"
+
 
 @dataclass(frozen=True)
 class DorisITConfig:
@@ -41,6 +43,17 @@ class DorisITConfig:
     def minimal_reader_kwargs(self, *, transport: str = "mysql", **kwargs: object) -> dict:
         values = self.reader_kwargs(transport=transport, **kwargs)
         values.update(user=self.reader_user, password=self.reader_password)
+        return values
+
+    def minimal_env_reader_kwargs(
+        self,
+        *,
+        transport: str = "mysql",
+        password_env: str = READER_PASSWORD_ENV,
+        **kwargs: object,
+    ) -> dict:
+        values = self.reader_kwargs(transport=transport, **kwargs)
+        values.update(user=self.reader_user, password="", password_env=password_env)
         return values
 
 
@@ -192,9 +205,15 @@ def doris_config() -> Iterator[DorisITConfig]:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def ray_runtime() -> Iterator[None]:
+def ray_runtime(doris_config: DorisITConfig) -> Iterator[None]:
+    previous_password = os.environ.get(READER_PASSWORD_ENV)
+    os.environ[READER_PASSWORD_ENV] = doris_config.reader_password
     ray.init(num_cpus=4, include_dashboard=False)
     try:
         yield
     finally:
         ray.shutdown()
+        if previous_password is None:
+            os.environ.pop(READER_PASSWORD_ENV, None)
+        else:
+            os.environ[READER_PASSWORD_ENV] = previous_password

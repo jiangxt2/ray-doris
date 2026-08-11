@@ -74,6 +74,25 @@ def test_get_read_tasks_has_current_compatible_signature_and_schema(monkeypatch)
     assert restored.metadata == tasks[0].metadata
     datasource.get_read_tasks(2)
     discover.assert_called_once()
+
+
+def test_environment_password_never_enters_datasource_or_read_task_pickle(monkeypatch) -> None:
+    secret = "datasource-password-secret-sentinel"
+    monkeypatch.setenv("RAY_DORIS_TASK_PASSWORD", secret)
+    schema = pa.schema([("id", pa.int64())])
+    discover = Mock(return_value=DorisPlanningSnapshot(schema=schema, tablet_ids=(7,)))
+    monkeypatch.setattr(
+        "ray_doris.datasource.DorisPlanner.discover",
+        discover,
+    )
+    datasource = DorisDatasource(
+        table="db.table",
+        host="fe",
+        password_env="RAY_DORIS_TASK_PASSWORD",
+    )
+    task = datasource.get_read_tasks(1)[0]
+    assert secret.encode() not in cloudpickle.dumps(datasource)
+    assert secret.encode() not in cloudpickle.dumps(task)
     restored_datasource = cloudpickle.loads(cloudpickle.dumps(datasource))
     assert restored_datasource.get_read_tasks(2)[0].schema == schema
     discover.assert_called_once()

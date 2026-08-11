@@ -13,8 +13,11 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
         table="db.table",
         host="fe",
         http_scheme="https",
+        http_ca_file="ca.pem",
         flight_scheme="grpc+tls",
         connect_timeout=3.5,
+        query_plan_timeout=4.5,
+        password_env="RAY_DORIS_PASSWORD",
         concurrency=2,
         override_num_blocks=4,
         ray_remote_args={"num_cpus": 0.25},
@@ -24,6 +27,9 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
     assert datasource.config.http_scheme == "https"
     assert datasource.config.flight_scheme == "grpc+tls"
     assert datasource.config.connect_timeout == 3.5
+    assert datasource.config.query_plan_timeout == 4.5
+    assert datasource.config.http_ca_file == "ca.pem"
+    assert datasource.config.password_env == "RAY_DORIS_PASSWORD"
     assert read_datasource.call_args.kwargs == {
         "concurrency": 2,
         "override_num_blocks": 4,

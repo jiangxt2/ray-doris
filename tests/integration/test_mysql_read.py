@@ -1,13 +1,30 @@
 import gc
+import traceback
 from datetime import datetime
 from decimal import Decimal
 
 import pymysql
 import pytest
 
-from ray_doris import DorisConfigurationError, DorisDatasource, DorisPlanningError, read_doris
+from ray_doris import (
+    DorisAuthenticationError,
+    DorisConfigurationError,
+    DorisDatasource,
+    DorisPlanningError,
+    read_doris,
+)
 
 pytestmark = pytest.mark.integration
+
+
+def _assert_redacted_exception(exception: BaseException, caplog, sentinel: str) -> None:
+    rendered_traceback = "".join(
+        traceback.format_exception(type(exception), exception, exception.__traceback__)
+    )
+    assert sentinel not in str(exception)
+    assert sentinel not in rendered_traceback
+    assert sentinel not in caplog.text
+    assert exception.__cause__ is None
 
 
 def test_mysql_reads_projected_filtered_rows_in_bounded_batches(doris_config) -> None:
@@ -108,6 +125,72 @@ def test_minimum_select_privilege_reads_through_public_entrypoint(doris_config) 
         **doris_config.minimal_reader_kwargs(columns=["id"], filter="id <= 2")
     ).take_all()
     assert sorted(row["id"] for row in rows) == [1, 2]
+
+
+def test_environment_password_reads_on_driver_and_ray_workers(doris_config) -> None:
+    rows = read_doris(
+        **doris_config.minimal_env_reader_kwargs(
+            columns=["id"],
+            filter="id <= 2",
+            on_query_plan_error="error",
+        )
+    ).take_all()
+    assert sorted(row["id"] for row in rows) == [1, 2]
+
+
+def test_missing_environment_password_fails_before_driver_network(
+    doris_config, monkeypatch, caplog
+) -> None:
+    variable = "RAY_DORIS_IT_MISSING_PASSWORD_SENTINEL"
+    monkeypatch.delenv(variable, raising=False)
+    datasource = DorisDatasource(
+        **doris_config.minimal_env_reader_kwargs(
+            password_env=variable,
+            on_query_plan_error="error",
+        )
+    )
+    with pytest.raises(
+        DorisConfigurationError, match="environment variable is unavailable"
+    ) as captured:
+        datasource.get_read_tasks(parallelism=1)
+    _assert_redacted_exception(captured.value, caplog, variable)
+
+
+def test_environment_password_is_resolved_again_when_split_starts(
+    doris_config, monkeypatch, caplog
+) -> None:
+    variable = "RAY_DORIS_IT_RETRY_PASSWORD_SENTINEL"
+    monkeypatch.setenv(variable, doris_config.reader_password)
+    datasource = DorisDatasource(
+        **doris_config.minimal_env_reader_kwargs(
+            password_env=variable,
+            columns=["id"],
+            tablet_size=4,
+            on_query_plan_error="error",
+        )
+    )
+    task = datasource.get_read_tasks(parallelism=1)[0]
+    monkeypatch.delenv(variable)
+    with pytest.raises(
+        DorisConfigurationError, match="environment variable is unavailable"
+    ) as captured:
+        list(task())
+    _assert_redacted_exception(captured.value, caplog, variable)
+
+
+def test_incorrect_environment_password_fails_closed(doris_config, monkeypatch, caplog) -> None:
+    variable = "RAY_DORIS_IT_WRONG_PASSWORD"
+    sentinel = "wrong-password-secret-sentinel"
+    monkeypatch.setenv(variable, sentinel)
+    datasource = DorisDatasource(
+        **doris_config.minimal_env_reader_kwargs(
+            password_env=variable,
+            on_query_plan_error="error",
+        )
+    )
+    with pytest.raises(DorisAuthenticationError, match="schema-discovery") as captured:
+        datasource.get_read_tasks(parallelism=1)
+    _assert_redacted_exception(captured.value, caplog, sentinel)
 
 
 def test_mysql_consumer_close_does_not_drain_active_unbuffered_result(

@@ -54,6 +54,7 @@ These settings control different layers:
 | `concurrency` | Ray execution | Limits the number of read tasks that execute at the same time |
 | `batch_size` | Worker output | Bounds MySQL `fetchmany()` batches and slices Flight results into Ray blocks |
 | `override_num_blocks` | Ray output planning | Requests an output block count independently of the source tablet count |
+| `query_plan_timeout` | Driver planning | Bounds query-plan HTTP request I/O; defaults to `connect_timeout` |
 
 See [Tune parallelism](user-guide/tune-parallelism.md) before changing more than one setting.
 
@@ -78,3 +79,7 @@ An empty `partitions` object from a successful query plan represents a valid emp
 Tablet planning and split execution don't provide snapshot isolation. Concurrent writes can make different tasks observe different moments. If Ray retries a failed task after it emitted part of a split, the replacement task reads the complete split again. `ray-doris` doesn't resume from a partial row offset.
 
 Create a new {ref}`DorisDatasource <ray-doris-api-datasource>` for each logical read. A datasource instance caches its first schema and tablet discovery result because Ray can request read tasks more than once while constructing a Dataset. The cache avoids repeated planning calls but doesn't create a database snapshot.
+
+`password_env` preserves the driver/worker boundary: the serialized task contains only the
+environment-variable name, while each process resolves the current value before opening its own
+connection. Ray retries therefore resolve the credential again before re-executing a complete split.

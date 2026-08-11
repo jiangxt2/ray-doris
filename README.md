@@ -63,7 +63,7 @@ dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
     user="ray_reader",
-    password="...",
+    password_env="DORIS_PASSWORD",
     columns=["event_id", "created_at", "score"],
     filter="score >= 80",
     tablet_size=32,
@@ -99,6 +99,7 @@ read_doris(
     flight_scheme="grpc",
     user="root",
     password="",
+    password_env=None,
     columns=None,
     filter=None,
     transport="mysql",
@@ -106,6 +107,8 @@ read_doris(
     tablet_size=1,
     batch_size=10_000,
     connect_timeout=10.0,
+    query_plan_timeout=None,
+    http_ca_file=None,
     client_kwargs=None,
     flight_options=None,
     concurrency=None,
@@ -114,21 +117,29 @@ read_doris(
 )
 ```
 
-`http_scheme` accepts `http` or `https`. HTTPS requires an HTTPS endpoint, commonly a TLS reverse
-proxy in front of the Doris FE HTTP API. `flight_scheme` accepts `grpc` or `grpc+tls`; configure
-certificates and other ADBC settings with `flight_options`.
+`password_env` stores an environment-variable name in the datasource and resolves its value before
+each driver request and worker connection attempt. It is mutually exclusive with a non-empty
+`password`. The variable name and resolved value are redacted from representations; the resolved
+value is never stored in the serialized datasource or ReadTask.
 
-`connect_timeout` is passed to the `_query_plan` HTTP request, each PyMySQL connection attempt,
-and the ADBC Flight SQL connect RPC. It does not set a deadline for an established MySQL socket
-read or a Flight SQL query/fetch RPC.
+`http_scheme` accepts `http` or `https`. HTTPS requires an HTTPS endpoint, commonly a TLS reverse
+proxy in front of the Doris FE HTTP API. Set `http_ca_file` for a private CA; hostname verification
+remains enabled. `flight_scheme` accepts `grpc` or `grpc+tls`; configure certificates and other ADBC
+settings with `flight_options`.
+
+`connect_timeout` is passed to each PyMySQL connection attempt and the ADBC Flight SQL connect RPC.
+`query_plan_timeout` controls the `_query_plan` HTTP request and defaults to `connect_timeout` when
+unset. Neither value sets a deadline for an established MySQL socket read or a Flight SQL
+query/fetch RPC.
 Configure those limits explicitly when required:
 
 ```python
 dataset = read_doris(
     table="analytics.events",
     host="doris-fe.example.com",
-    transport="auto",
+    transport="mysql",
     connect_timeout=10.0,
+    query_plan_timeout=30.0,
     client_kwargs={"read_timeout": 300, "write_timeout": 30},
     flight_options={
         "adbc.flight.sql.rpc.timeout_seconds.query": "300",
@@ -203,12 +214,18 @@ Ray may call `get_read_tasks()` more than once while constructing one read, so e
 call. Treat an instance as one logical read and create a new instance to discover table or tablet
 changes made later. This planning cache does not provide snapshot isolation.
 
-Ray serializes datasource configuration to workers. Passwords and transport option values are
-redacted from representations and logs, but they still exist in serialized task state. Use this
-package only on a trusted Ray cluster and private network, and inject secrets at runtime. Configure
-MySQL TLS through `client_kwargs`, set `http_scheme="https"` for a protected query-plan endpoint,
-and set `flight_scheme="grpc+tls"` with the required certificate `flight_options` for Flight TLS.
-The defaults are unencrypted and must only be used on a trusted private network.
+Ray serializes datasource configuration to workers. A literal `password` therefore remains in task
+state for compatibility and is suitable only for a trusted cluster. The enterprise-candidate MySQL
+profile uses `password_env`, injects the same variable into the driver and every Ray worker, and
+resolves it separately for each request or connection attempt without serializing the value.
+Transport option values are redacted from representations and logs but remain serialized, so TLS
+paths and other sensitive option values still require a trusted Ray control plane and object store.
+
+Configure MySQL TLS through `client_kwargs`; set `http_scheme="https"` and `http_ca_file` for a
+protected query-plan endpoint. The enterprise-candidate profile also uses
+`on_query_plan_error="error"`, explicit query-plan/MySQL timeouts, and a minimum-privilege reader.
+The defaults are unencrypted and must only be used on a trusted private network. Flight TLS remains
+deployment-specific and experimental.
 
 The Doris reader account needs access to the FE MySQL and HTTP ports and `SELECT` on the target
 internal-catalog table. Flight reads additionally need the FE Flight SQL port. The `_query_plan`
@@ -217,6 +234,11 @@ endpoint itself performs the table authorization check.
 Tablet planning and task execution do not provide snapshot isolation. Concurrent Doris writes can
 therefore produce a result that reflects different moments across splits. If a Ray task fails after
 reading part of a split, Ray can retry the whole task; the connector does not resume a partial split.
+
+Configure one logical FE hostname that is valid for both HTTPS and MySQL TLS. `ray-doris` validates
+and uses that endpoint but doesn't discover FE members or implement leader election, quorum, health
+checks, or cross-endpoint failover. Production deployments must provide and validate those HA
+properties in Doris and their external load balancer.
 
 The required Doris 4.0.6 integration suite uses the default HTTP endpoint. The distributed suite
 uses the same fixed Doris version, validates native MySQL TLS, and validates certificate-checked
@@ -284,8 +306,9 @@ The opt-in slow suite runs the following isolated topology:
 - certificate-verified HTTPS query planning at the ingress and native Doris MySQL TLS;
 - explicit Arrow Flight SQL reads, with no automatic MySQL fallback;
 - per-BE Flight session and byte counters proving that all three BE services receive traffic;
-- a Ray worker failure after the first Flight block and a retry on another worker;
-- a Doris BE failure, proxy health removal, and a complete read from surviving replicas;
+- a minimum-privilege MySQL read distributed across all three Ray workers;
+- a Ray worker failure after the first MySQL block and a complete-split retry on another worker;
+- a Doris BE failure and a complete MySQL read from surviving replicas;
 - 10,000 rows by default and repeated checksum-validated Flight reads for at least five seconds.
 
 It is excluded from the default pytest discovery paths and from the regular CI workflow. Run it
@@ -325,6 +348,10 @@ tests/slow_integration/run.sh
 Size the dedicated host for the requested container limits. The script refuses to reuse an
 existing `ray-doris-it` Compose project, preserves pytest, Ray, Doris, and HAProxy logs, and removes
 only the resources created by that exact project.
+
+Successful `full` runs write `slow-result.json`. The scheduled/reusable workflow uploads it under an
+artifact name bound to the tested commit; release verification accepts only a successful full
+manifest whose commit and workflow run ID exactly match the downloaded artifact source.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete checks.
 

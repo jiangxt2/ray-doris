@@ -10,16 +10,18 @@ from typing import Any, Iterable, Iterator, Optional, Sequence
 import pyarrow as pa
 import pymysql
 
-from ray_doris._errors import DorisReadError
+from ray_doris._errors import DorisConfigurationError, DorisReadError
 from ray_doris._models import (
     _ADBC_CONNECT_TIMEOUT_OPTION,
     DorisInputSplit,
     DorisReadConfig,
 )
 from ray_doris._planner import (
+    _contains_mysql_tls_error,
     _mysql_access_error,
     _mysql_connection_kwargs,
     _mysql_error_code,
+    _mysql_tls_is_configured,
 )
 from ray_doris._schema import coerce_decimal
 from ray_doris._sql import build_select_sql
@@ -177,9 +179,13 @@ def read_mysql(
                 reached_eof=reached_eof,
                 context=context,
             )
+    except DorisConfigurationError:
+        raise
     except DorisReadError as exc:
         raise DorisReadError(f"failed to read Doris {context}: {exc}") from exc
     except pymysql.MySQLError as exc:
+        if _contains_mysql_tls_error(exc):
+            raise DorisReadError(f"Doris MySQL TLS validation failed for {context}") from None
         access_error = _mysql_access_error(
             exc,
             operation="split read",
@@ -191,6 +197,12 @@ def read_mysql(
             f"failed to read Doris {context} through the "
             f"MySQL protocol (MySQL error {_mysql_error_code(exc)!r})"
         ) from None
+    except OSError:
+        if _mysql_tls_is_configured(config):
+            raise DorisReadError(
+                f"Doris MySQL TLS configuration is invalid for {context}"
+            ) from None
+        raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
     except Exception:
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
 
@@ -218,7 +230,7 @@ def _flight_connection(config: DorisReadConfig) -> Any:
         raise _flight_import_error() from None
     db_kwargs = {
         DatabaseOptions.USERNAME.value: config.user,
-        DatabaseOptions.PASSWORD.value: config.password,
+        DatabaseOptions.PASSWORD.value: config.resolve_password(),
         _ADBC_CONNECT_TIMEOUT_OPTION: str(config.connect_timeout),
     }
     db_kwargs.update(config.adbc_options())
@@ -303,7 +315,7 @@ def read_flight(
                 cursor.close()
         finally:
             connection.close()
-    except _FlightUnavailableError:
+    except (_FlightUnavailableError, DorisConfigurationError):
         raise
     except DorisReadError as exc:
         raise DorisReadError(

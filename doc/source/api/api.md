@@ -12,6 +12,12 @@ This page documents the curated public package surface. Signatures and docstring
 
 The connector uses Ray's documented Datasource extension interfaces without importing `ray.data._internal`. Ray classifies `ReadTask` as DeveloperAPI, so compatibility is limited to the tested Ray minor window. MySQL is the production-candidate transport; Flight SQL and `auto` are experimental.
 
+For the enterprise-candidate MySQL profile, use `password_env` rather than a literal password,
+strict MySQL TLS in `client_kwargs`, HTTPS with `http_ca_file`, an explicit
+`query_plan_timeout`, and `on_query_plan_error="error"`. The environment credential is resolved
+again in every driver request and worker attempt; its value isn't stored in the datasource or
+ReadTask payload.
+
 ## Read a Doris table
 
 (ray-doris-api-read-doris)=

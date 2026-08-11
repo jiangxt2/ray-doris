@@ -2,6 +2,7 @@ args
 autodoc
 backend
 backends
+balancer
 charset
 Datasink
 datasource
@@ -16,11 +17,13 @@ DorisPlanningError
 DorisReadConfig
 DorisReadError
 DorisSchemaError
+env
 failover
 frontend
 grpc
 http
 https
+hostname
 kwargs
 mysql
 nullability

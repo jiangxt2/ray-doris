@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import ssl
 import time
+import traceback
 from collections.abc import Callable, Iterable, Iterator
 from functools import partial
 from pathlib import Path
@@ -18,17 +19,19 @@ from _cluster import (
     SlowITConfig,
     alive_backends,
     flight_proxy_backend_stats,
-    mysql_connection,
     query_rows,
+    reader_mysql_connection,
     replica_distribution,
     wait_for_backend_count,
-    wait_for_flight_proxy_backend_count,
 )
 from ray.data.aggregate import Count, Max, Min, Sum
 from ray.data.datasource import ReadTask
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from ray_doris import DorisDatasource, read_doris
+from ray_doris import DorisConfigurationError, DorisDatasource, read_doris
+from ray_doris._models import DorisReadConfig
+from ray_doris._planner import QueryPlanClient
+from ray_doris._sql import build_select_sql, parse_table
 
 pytestmark = [
     pytest.mark.slow_integration,
@@ -38,6 +41,16 @@ pytestmark = [
 WORKER_COLUMN = "ray_worker"
 RAY_FAILURE_MARKER = "/state/ray-read-started"
 BE_FAILURE_MARKER = "/state/be-failure-ready"
+
+
+def _assert_redacted_exception(exception: BaseException, caplog, sentinel: str) -> None:
+    rendered_traceback = "".join(
+        traceback.format_exception(type(exception), exception, exception.__traceback__)
+    )
+    assert sentinel not in str(exception)
+    assert sentinel not in rendered_traceback
+    assert sentinel not in caplog.text
+    assert exception.__cause__ is None
 
 
 def _alive_ray_nodes() -> list[dict[str, Any]]:
@@ -196,7 +209,7 @@ def test_cluster_topology_and_replica_distribution(
 def test_https_gateway_mysql_tls_and_explicit_flight(
     slow_config: SlowITConfig,
 ) -> None:
-    connection = mysql_connection(slow_config)
+    connection = reader_mysql_connection(slow_config)
     try:
         assert isinstance(connection._sock, ssl.SSLSocket)
         assert connection._sock.cipher() is not None
@@ -229,14 +242,77 @@ def test_https_gateway_mysql_tls_and_explicit_flight(
         )
 
 
-def test_flight_read_executes_on_all_ray_workers(
+def test_tls_rejects_wrong_ca_hostname_and_plaintext_endpoint(
     slow_config: SlowITConfig,
+    caplog,
 ) -> None:
-    proxy_before = flight_proxy_backend_stats(slow_config)
+    sentinel = os.environ["RAY_DORIS_READER_PASSWORD"]
+    wrong_ca_kwargs = slow_config.reader_kwargs(
+        table=slow_config.distributed_table,
+        http_ca_file="/tls/wrong-ca.pem",
+        client_kwargs={
+            "ssl": {"ca": "/tls/wrong-ca.pem", "check_hostname": True},
+            "read_timeout": 180,
+            "write_timeout": 180,
+        },
+    )
+    with pytest.raises(DorisConfigurationError, match="MySQL TLS validation failed") as captured:
+        DorisDatasource(**wrong_ca_kwargs).get_read_tasks(parallelism=1)
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+    wrong_hostname_kwargs = slow_config.reader_kwargs(
+        table=slow_config.distributed_table,
+        host="doris-ingress",
+    )
+    with pytest.raises(DorisConfigurationError, match="MySQL TLS validation failed") as captured:
+        DorisDatasource(**wrong_hostname_kwargs).get_read_tasks(parallelism=1)
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+    query_plan_config = DorisReadConfig.from_options(
+        table=parse_table(f"{slow_config.database}.{slow_config.distributed_table}"),
+        host="doris-ingress",
+        mysql_port=slow_config.mysql_port,
+        http_port=slow_config.https_port,
+        http_scheme="https",
+        http_ca_file=slow_config.tls_ca,
+        user="ray_doris_reader",
+        password_env="RAY_DORIS_READER_PASSWORD",
+        on_query_plan_error="error",
+    )
+    query_plan_sql = build_select_sql(query_plan_config.table, None, None, None)
+    with pytest.raises(
+        DorisConfigurationError, match="query-plan TLS validation failed"
+    ) as captured:
+        QueryPlanClient(query_plan_config).fetch_tablet_ids(query_plan_sql)
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+    plaintext_config = DorisReadConfig.from_options(
+        table=query_plan_config.table,
+        host="fe",
+        http_port=8030,
+        http_scheme="https",
+        http_ca_file=slow_config.tls_ca,
+        user=query_plan_config.user,
+        password_env="RAY_DORIS_READER_PASSWORD",
+        on_query_plan_error="error",
+    )
+    with pytest.raises(
+        DorisConfigurationError, match="query-plan TLS validation failed"
+    ) as captured:
+        QueryPlanClient(plaintext_config).fetch_tablet_ids(query_plan_sql)
+    _assert_redacted_exception(captured.value, caplog, sentinel)
+
+
+def _assert_read_executes_on_all_ray_workers(
+    slow_config: SlowITConfig,
+    *,
+    transport: str,
+) -> None:
+    proxy_before = flight_proxy_backend_stats(slow_config) if transport == "flight" else None
     datasource = InstrumentedDorisDatasource(
         **slow_config.reader_kwargs(
             table=slow_config.distributed_table,
-            transport="flight",
+            transport=transport,
             columns=["id", WORKER_COLUMN],
             tablet_size=1,
             batch_size=5_000,
@@ -270,13 +346,26 @@ def test_flight_read_executes_on_all_ray_workers(
     assert row_count == slow_config.row_count
     assert id_sum == slow_config.expected_id_sum
 
-    proxy_after = flight_proxy_backend_stats(slow_config)
-    for backend in proxy_before:
-        previous = proxy_before[backend]
-        current = proxy_after[backend]
-        assert current.status == "UP"
-        assert current.total_sessions > previous.total_sessions
-        assert current.bytes_in + current.bytes_out > previous.bytes_in + previous.bytes_out
+    if proxy_before is not None:
+        proxy_after = flight_proxy_backend_stats(slow_config)
+        for backend in proxy_before:
+            previous = proxy_before[backend]
+            current = proxy_after[backend]
+            assert current.status == "UP"
+            assert current.total_sessions > previous.total_sessions
+            assert current.bytes_in + current.bytes_out > previous.bytes_in + previous.bytes_out
+
+
+def test_mysql_read_executes_on_all_ray_workers(
+    slow_config: SlowITConfig,
+) -> None:
+    _assert_read_executes_on_all_ray_workers(slow_config, transport="mysql")
+
+
+def test_flight_read_executes_on_all_ray_workers(
+    slow_config: SlowITConfig,
+) -> None:
+    _assert_read_executes_on_all_ray_workers(slow_config, transport="flight")
 
 
 def test_repeated_flight_reads(
@@ -331,7 +420,7 @@ def test_worker_retry_and_backend_failover(
     datasource = InstrumentedDorisDatasource(
         **slow_config.reader_kwargs(
             table=slow_config.replicated_table,
-            transport="flight",
+            transport="mysql",
             columns=["id", WORKER_COLUMN],
             filter=f"id < {retry_rows}",
             tablet_size=BUCKET_COUNT,
@@ -381,17 +470,10 @@ def test_worker_retry_and_backend_failover(
         timeout_seconds=180,
     )
     assert len(surviving_backends) == 2
-    proxy_stats = wait_for_flight_proxy_backend_count(
-        slow_config,
-        2,
-        timeout_seconds=180,
-    )
-    assert proxy_stats["be-1"].status == "DOWN"
-
     dataset = read_doris(
         **slow_config.reader_kwargs(
             table=slow_config.replicated_table,
-            transport="flight",
+            transport="mysql",
             columns=["id"],
             tablet_size=1,
             batch_size=10_000,

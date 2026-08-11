@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import re
 from collections.abc import Mapping as MappingABC
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -19,6 +21,7 @@ FlightScheme = Literal["grpc", "grpc+tls"]
 
 _ADBC_CONNECT_TIMEOUT_OPTION = "adbc.flight.sql.rpc.timeout_seconds.connect"
 _MAX_CONNECT_TIMEOUT_SECONDS = 31_536_000
+_ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _RESERVED_MYSQL_OPTIONS = {
     "charset",
@@ -79,10 +82,12 @@ class DorisReadConfig:
     table: QualifiedTable
     user: str
     password: str = field(default="", repr=False)
+    password_env: Optional[str] = field(default=None, repr=False)
     mysql_port: int = 9030
     http_port: int = 8030
     flight_port: int = 8070
     http_scheme: HttpScheme = "http"
+    http_ca_file: Optional[str] = field(default=None, repr=False)
     flight_scheme: FlightScheme = "grpc"
     columns: Optional[Tuple[str, ...]] = None
     filter: Optional[str] = None
@@ -91,6 +96,7 @@ class DorisReadConfig:
     batch_size: int = 10_000
     on_query_plan_error: QueryPlanPolicy = "single_task"
     connect_timeout: float = 10.0
+    query_plan_timeout: Optional[float] = None
     client_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
     flight_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
 
@@ -102,6 +108,13 @@ class DorisReadConfig:
             raise DorisConfigurationError("user must not be empty")
         if not isinstance(self.password, str):
             raise DorisConfigurationError("password must be a string")
+        if self.password_env is not None and (
+            not isinstance(self.password_env, str)
+            or _ENVIRONMENT_VARIABLE_PATTERN.fullmatch(self.password_env) is None
+        ):
+            raise DorisConfigurationError("password_env must be a portable environment name")
+        if self.password and self.password_env is not None:
+            raise DorisConfigurationError("password and password_env are mutually exclusive")
         for name, port in (
             ("mysql_port", self.mysql_port),
             ("http_port", self.http_port),
@@ -121,20 +134,18 @@ class DorisReadConfig:
             or self.batch_size <= 0
         ):
             raise DorisConfigurationError("batch_size must be a positive integer")
-        if (
-            isinstance(self.connect_timeout, bool)
-            or not isinstance(self.connect_timeout, (int, float))
-            or self.connect_timeout <= 0
-            or self.connect_timeout > _MAX_CONNECT_TIMEOUT_SECONDS
-            or not math.isfinite(self.connect_timeout)
-        ):
-            raise DorisConfigurationError(
-                "connect_timeout must be finite, positive, and at most 31536000 seconds"
-            )
+        self._validate_timeout("connect_timeout", self.connect_timeout)
+        if self.query_plan_timeout is not None:
+            self._validate_timeout("query_plan_timeout", self.query_plan_timeout)
         if self.transport not in ("auto", "mysql", "flight"):
             raise DorisConfigurationError(f"unsupported transport: {self.transport!r}")
         if self.http_scheme not in ("http", "https"):
             raise DorisConfigurationError(f"unsupported HTTP scheme: {self.http_scheme!r}")
+        if self.http_ca_file is not None:
+            if not isinstance(self.http_ca_file, str) or not self.http_ca_file:
+                raise DorisConfigurationError("http_ca_file must be a non-empty string")
+            if self.http_scheme != "https":
+                raise DorisConfigurationError("http_ca_file requires http_scheme='https'")
         if self.flight_scheme not in ("grpc", "grpc+tls"):
             raise DorisConfigurationError(f"unsupported Flight SQL scheme: {self.flight_scheme!r}")
         if self.on_query_plan_error not in ("single_task", "error"):
@@ -152,6 +163,19 @@ class DorisReadConfig:
         self._validate_mysql_timeouts()
         if any(not isinstance(value, str) for _, value in self.flight_options):
             raise DorisConfigurationError("flight_options values must be strings")
+
+    @staticmethod
+    def _validate_timeout(name: str, value: object) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value <= 0
+            or value > _MAX_CONNECT_TIMEOUT_SECONDS
+            or not math.isfinite(value)
+        ):
+            raise DorisConfigurationError(
+                f"{name} must be finite, positive, and at most 31536000 seconds"
+            )
 
     def _validate_mysql_timeouts(self) -> None:
         options = dict(self.client_options)
@@ -225,6 +249,22 @@ class DorisReadConfig:
         """Return a fresh mapping for a PyMySQL connection."""
         return deepcopy(dict(self.client_options))
 
+    def resolve_password(self) -> str:
+        """Resolve a per-process credential without storing it in the config."""
+        if self.password_env is None:
+            return self.password
+        try:
+            return os.environ[self.password_env]
+        except KeyError:
+            raise DorisConfigurationError(
+                "configured password environment variable is unavailable"
+            ) from None
+
+    @property
+    def effective_query_plan_timeout(self) -> float:
+        """Return the configured query-plan I/O timeout."""
+        return self.connect_timeout if self.query_plan_timeout is None else self.query_plan_timeout
+
     def adbc_options(self) -> Mapping[str, Any]:
         """Return a fresh mapping for an ADBC Flight SQL connection."""
         return deepcopy(dict(self.flight_options))
@@ -232,17 +272,21 @@ class DorisReadConfig:
     def __repr__(self) -> str:
         """Return a representation that never exposes credentials or option values."""
         rendered_filter = "None" if self.filter is None else "<redacted>"
+        rendered_password_env = "None" if self.password_env is None else "<configured>"
+        rendered_http_ca = "None" if self.http_ca_file is None else "<configured>"
         return (
             "DorisReadConfig("
             f"host={self.host!r}, table={self.table!r}, user={self.user!r}, "
-            "password=<redacted>, "
+            f"password=<redacted>, password_env={rendered_password_env}, "
             f"mysql_port={self.mysql_port}, http_port={self.http_port}, "
             f"flight_port={self.flight_port}, http_scheme={self.http_scheme!r}, "
+            f"http_ca_file={rendered_http_ca}, "
             f"flight_scheme={self.flight_scheme!r}, columns={self.columns!r}, "
             f"filter={rendered_filter}, transport={self.transport!r}, "
             f"tablet_size={self.tablet_size}, batch_size={self.batch_size}, "
             f"on_query_plan_error={self.on_query_plan_error!r}, "
             f"connect_timeout={self.connect_timeout}, "
+            f"query_plan_timeout={self.query_plan_timeout}, "
             f"client_options={tuple(key for key, _ in self.client_options)!r}, "
             f"flight_options={tuple(key for key, _ in self.flight_options)!r})"
         )

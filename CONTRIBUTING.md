@@ -64,7 +64,10 @@ tests/slow_integration/run.sh
 Size the dedicated host for the requested container limits; the functional profile keeps each BE
 at 2 GiB by default.
 
-The slow suite is manual and is not a required check in the default CI workflow.
+The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
+the default CI workflow. A successful full run emits `slow-result.json`; release verification
+requires that artifact from a successful workflow run on the exact release SHA. The `core` profile
+is diagnostic only and never produces release evidence.
 
 ## Documentation checks
 

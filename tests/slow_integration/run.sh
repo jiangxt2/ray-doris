@@ -6,9 +6,19 @@ compose_file="${script_dir}/docker-compose.yml"
 log_dir=${RAY_DORIS_SLOW_LOG_DIR:-/tmp/ray-doris-slow-it-logs}
 pytest_log="${log_dir}/pytest.log"
 compose_log="${log_dir}/compose.log"
+result_file="${log_dir}/slow-result.json"
 compose=(docker compose -f "${compose_file}")
 pytest_pid=
 profile=${RAY_DORIS_SLOW_PROFILE:-full}
+RAY_DORIS_SLOW_COMMIT_SHA=${GITHUB_SHA:-$(git -C "${script_dir}/../.." rev-parse HEAD)}
+RAY_DORIS_SLOW_RUN_ID=${GITHUB_RUN_ID:-1}
+RAY_DORIS_SLOW_PROFILE=${profile}
+export RAY_DORIS_SLOW_COMMIT_SHA RAY_DORIS_SLOW_PROFILE RAY_DORIS_SLOW_RUN_ID
+
+if [[ -z "${RAY_DORIS_READER_PASSWORD:-}" ]]; then
+  RAY_DORIS_READER_PASSWORD=$(openssl rand -hex 24)
+  export RAY_DORIS_READER_PASSWORD
+fi
 
 if [[ "${profile}" != "full" && "${profile}" != "core" ]]; then
   echo "RAY_DORIS_SLOW_PROFILE must be 'full' or 'core'." >&2
@@ -92,7 +102,7 @@ if [[ "${profile}" == "core" ]]; then
   "${compose[@]}" exec -T ray-head \
     python -m pytest \
     -m slow_integration \
-    tests/slow_integration/test_distributed_cluster.py::test_flight_read_executes_on_all_ray_workers \
+    tests/slow_integration/test_distributed_cluster.py::test_mysql_read_executes_on_all_ray_workers \
     -vv -s 2>&1 | tee -a "${pytest_log}"
   exit 0
 fi
@@ -114,3 +124,7 @@ wait_for_marker /state/be-failure-ready 600
 
 wait "${pytest_pid}"
 pytest_pid=
+
+"${compose[@]}" exec -T ray-head \
+  python tests/slow_integration/write_result.py
+"${compose[@]}" cp ray-head:/state/slow-result.json "${result_file}"
