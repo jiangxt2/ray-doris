@@ -8,11 +8,14 @@ myst:
 
 # FAQ
 
-This page answers common scope and behavior questions. Use [Troubleshoot reads](user-guide/troubleshooting.md) when a specific operation fails.
+This page answers common scope and behavior questions. Use [Troubleshoot reads and writes](user-guide/troubleshooting.md) when a specific operation fails.
 
 ## Can ray-doris write to Doris?
 
-No. The package implements bounded batch reads into Ray Data. It doesn't implement a Ray Datasink, Doris Stream Load, insert operations, table creation, or schema changes.
+Yes. `write_doris()` and `DorisDatasink` use Ray's public Datasink API and Doris HTTP Stream Load for
+`load`, `upsert`, and Merge-on-Write `partial_update`. They validate existing metadata and send
+bounded Parquet or line-delimited JSON batches. They do not create or alter tables, perform arbitrary
+SQL writes, or provide exactly-once or whole-dataset atomicity.
 
 ## Can it read an external catalog table?
 
@@ -56,7 +59,7 @@ No. Ray can retry the complete read task according to its remote arguments. `ray
 
 ## What account privileges does ray-doris require?
 
-The account needs `SELECT_PRIV` on the target internal-catalog table and network access to the frontend MySQL and HTTP ports. Add Flight endpoint access for Flight reads. The connector doesn't require administrator-only tablet metadata commands.
+The read account needs `SELECT_PRIV` on the target internal-catalog table and network access to the frontend MySQL and HTTP ports. A write account additionally needs `SHOW CREATE TABLE`, `DESCRIBE`, and Stream Load permission on the target table, plus network access from every Ray worker to the FE and allowlisted BE redirect endpoints. Add Flight endpoint access for Flight reads. The connector doesn't require administrator-only tablet metadata commands for reads, but a deployment may need its own administrative setup for BE `public_endpoint` values.
 
 ## Does ray-doris serialize my password?
 
@@ -73,3 +76,10 @@ election, quorum, health checks, and backend failover.
 ## Where do I install the Flight extra?
 
 Install the extra on the driver and in every environment that can execute a Ray read task. The driver validates explicit `flight` requests, and worker-side dependency availability determines whether `auto` can use Flight.
+
+## Does a successful write mean the whole Dataset is atomic?
+
+No. Each Stream Load request is an independent Doris batch. A successful `DorisWriteResult` reports
+the requests whose responses were observed; it doesn't provide a transaction across Ray tasks. If a
+request outcome is ambiguous, stop automatic replay and reconcile it with an application-owned Doris
+workflow.

@@ -77,4 +77,4 @@ The example uses the public {ref}`read_doris <ray-doris-api-read-doris>` entry p
 
 ## Continue learning
 
-See [Key concepts](key-concepts.md) before tuning task counts. Then use the [read data](user-guide/read-data.md), [transport](user-guide/configure-transports.md), and [parallelism](user-guide/tune-parallelism.md) guides for production configuration.
+See [Key concepts](key-concepts.md) before tuning task counts. Then use the [read data](user-guide/read-data.md), [write data](user-guide/write-data.md), [transport](user-guide/configure-transports.md), and [parallelism](user-guide/tune-parallelism.md) guides for production configuration.

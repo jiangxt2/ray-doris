@@ -9,6 +9,8 @@ import pymysql
 import pytest
 import ray
 
+from ray_doris import DorisConnection, DorisTable
+
 READER_PASSWORD_ENV = "RAY_DORIS_IT_READER_PASSWORD"
 
 
@@ -18,6 +20,7 @@ class DorisITConfig:
     mysql_port: int
     http_port: int
     flight_port: int
+    be_http_port: int
     user: str
     password: str
     database: str = "ray_doris_it"
@@ -25,6 +28,23 @@ class DorisITConfig:
     empty_table: str = "empty_records"
     reader_user: str = "ray_doris_reader"
     reader_password: str = "reader-password"
+
+    def write_connection(
+        self, *, user: str | None = None, password: str | None = None
+    ) -> DorisConnection:
+        return DorisConnection(
+            host=self.host,
+            username=self.user if user is None else user,
+            password=self.password if password is None else password,
+            http_port=self.http_port,
+            mysql_port=self.mysql_port,
+            redirect_hosts=(self.host,),
+            redirect_ports=(self.be_http_port,),
+            redirect_policy="public",
+        )
+
+    def write_table(self, name: str) -> DorisTable:
+        return DorisTable(self.database, name)
 
     def reader_kwargs(self, *, transport: str = "mysql", **kwargs: object) -> dict:
         values = {
@@ -63,6 +83,7 @@ def _config_from_environment() -> DorisITConfig:
         mysql_port=int(os.environ.get("DORIS_MYSQL_PORT", "19030")),
         http_port=int(os.environ.get("DORIS_HTTP_PORT", "18030")),
         flight_port=int(os.environ.get("DORIS_FLIGHT_PORT", "18070")),
+        be_http_port=int(os.environ.get("DORIS_BE_HTTP_PORT", "18040")),
         user=os.environ.get("DORIS_USER", "root"),
         password=os.environ.get("DORIS_PASSWORD", ""),
     )
@@ -105,6 +126,29 @@ def _wait_for_doris(config: DorisITConfig) -> None:
     raise RuntimeError("Doris FE/BE did not become ready within 240 seconds") from last_error
 
 
+def _configure_stream_load_endpoint(config: DorisITConfig) -> None:
+    connection = _connect(config)
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SHOW BACKENDS")
+            names = [description[0] for description in cursor.description]
+            rows = cursor.fetchall()
+            if not rows:
+                raise RuntimeError("Doris did not report a backend")
+            host = str(rows[0][names.index("Host")])
+            heartbeat_port = int(rows[0][names.index("HeartbeatPort")])
+            endpoint = f"{config.host}:{config.be_http_port}"
+            cursor.execute(
+                f"ALTER SYSTEM MODIFY BACKEND '{host}:{heartbeat_port}' SET "
+                f"('tag.location' = 'default', 'tag.public_endpoint' = '{endpoint}')"
+            )
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def _execute(cursor, sql: str) -> None:
     cursor.execute(sql)
 
@@ -131,6 +175,63 @@ def _create_fixture_data(config: DorisITConfig) -> None:
                 ) ENGINE=OLAP
                 DUPLICATE KEY(`id`)
                 DISTRIBUTED BY HASH(`id`) BUCKETS 4
+                PROPERTIES ("replication_num" = "1")
+                """,
+            )
+            _execute(
+                cursor,
+                f"""
+                CREATE TABLE `{config.database}`.`write_events` (
+                    `id` BIGINT NOT NULL,
+                    `category` VARCHAR(32) NULL,
+                    `score` INT NULL,
+                    `payload` JSON NULL
+                ) ENGINE=OLAP
+                DUPLICATE KEY(`id`)
+                DISTRIBUTED BY HASH(`id`) BUCKETS 1
+                PROPERTIES ("replication_num" = "1")
+                """,
+            )
+            _execute(
+                cursor,
+                f"""
+                CREATE TABLE `{config.database}`.`unique_events` (
+                    `id` BIGINT NOT NULL,
+                    `category` VARCHAR(32) NULL,
+                    `score` INT NULL,
+                    `payload` JSON NULL
+                ) ENGINE=OLAP
+                UNIQUE KEY(`id`)
+                DISTRIBUTED BY HASH(`id`) BUCKETS 1
+                PROPERTIES ("replication_num" = "1")
+                """,
+            )
+            _execute(
+                cursor,
+                f"""
+                CREATE TABLE `{config.database}`.`partial_events` (
+                    `id` BIGINT NOT NULL,
+                    `category` VARCHAR(32) NULL,
+                    `score` INT NULL,
+                    `payload` JSON NULL
+                ) ENGINE=OLAP
+                UNIQUE KEY(`id`)
+                DISTRIBUTED BY HASH(`id`) BUCKETS 1
+                PROPERTIES (
+                    "replication_num" = "1",
+                    "enable_unique_key_merge_on_write" = "true"
+                )
+                """,
+            )
+            _execute(
+                cursor,
+                f"""
+                CREATE TABLE `{config.database}`.`aggregate_events` (
+                    `id` BIGINT NOT NULL,
+                    `score` INT SUM
+                ) ENGINE=OLAP
+                AGGREGATE KEY(`id`)
+                DISTRIBUTED BY HASH(`id`) BUCKETS 1
                 PROPERTIES ("replication_num" = "1")
                 """,
             )
@@ -197,6 +298,7 @@ def _cleanup_fixture_data(config: DorisITConfig) -> None:
 def doris_config() -> Iterator[DorisITConfig]:
     config = _config_from_environment()
     _wait_for_doris(config)
+    _configure_stream_load_endpoint(config)
     try:
         _create_fixture_data(config)
         yield config

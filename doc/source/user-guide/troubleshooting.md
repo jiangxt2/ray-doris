@@ -1,12 +1,12 @@
 ---
 myst:
   html_meta:
-    description: "Diagnose ray-doris configuration, authentication, permission, planning, schema, transport, timeout, and empty-result behavior."
+    description: "Diagnose ray-doris configuration, authentication, permission, planning, schema, transport, write, timeout, and empty-result behavior."
 ---
 
 (ray-doris-troubleshooting)=
 
-# Troubleshoot reads
+# Troubleshoot reads and writes
 
 Start with the public exception type and the stage named in its message. Connector exceptions include table or tablet context without including passwords or option values.
 
@@ -75,3 +75,28 @@ Include this information:
 Never include passwords, TLS private keys, authorization headers, or full option values.
 
 Report suspected vulnerabilities through the repository's private GitHub security advisory interface, as described in `SECURITY.md`.
+
+(ray-doris-troubleshoot-writes)=
+
+## Troubleshoot writes
+
+`DorisMetadataError` means `SHOW CREATE TABLE` or `DESCRIBE` was missing, malformed, or inaccessible.
+`DorisTableCompatibilityError` means the operation, model, key columns, nullability, type, or full-
+row column order could not be validated before upload. Check the table with the same account used by
+the Ray workers; the connector does not create or alter the table.
+
+`DorisWriteError` identifies a known Stream Load failure. `DorisLabelExistsError` means Doris retained
+the generated label and the connector deliberately does not guess whether it belongs to this write.
+`DorisAmbiguousWriteError` means the request body may have reached Doris but the final outcome is
+unknown. Do not rerun the Dataset automatically under a new label; reconcile the target table using
+an application-owned workflow.
+
+For a redirect failure, verify that Doris BE nodes have a reachable `tag.public_endpoint`, that the
+returned scheme is HTTPS when `http_secure=True`, and that every redirected host and port is in the
+explicit allowlist. For `Publish Timeout`, inspect Doris load visibility before any manual decision;
+the connector reports the state and does not replay the batch.
+
+`write_doris()` rejects non-zero Ray task retries because Stream Load is an external side effect.
+`DorisWriteResult.attempted_rows`, `loaded_rows`, `filtered_rows`, `batches`, and `uploaded_bytes`
+come from sanitized Doris task summaries. `ray_num_rows` and `ray_size_bytes` are Ray accounting and
+must not be interpreted as Doris loaded counters.

@@ -1,8 +1,8 @@
 # ray-doris
 
-`ray-doris` is an independent, community-maintained Apache Doris datasource for Ray Data. It plans reads with
-Doris FE's `_query_plan` endpoint and streams each tablet group through the MySQL protocol
-or Arrow Flight SQL. The implementation uses Ray's documented Datasource extension APIs and never
+`ray-doris` is an independent, community-maintained Apache Doris connector for Ray Data. It plans reads with
+Doris FE's `_query_plan` endpoint, streams each tablet group through the MySQL protocol
+or Arrow Flight SQL, and writes bounded batches through Doris HTTP Stream Load. The implementation uses Ray's documented Datasource and Datasink extension APIs and never
 imports `ray.data._internal`. Ray marks `ReadTask` as DeveloperAPI, so the supported Ray window is
 intentionally bounded and tested by minor release.
 
@@ -84,6 +84,46 @@ parallelism.
 `tablet_size=1` provides the finest split granularity. Tables with thousands of tablets should
 start with a larger value such as `tablet_size=32` and use `override_num_blocks` to tune Ray's
 output blocks without creating one scheduling task per tablet.
+
+## Write a Dataset
+
+Writes use Ray's public `Datasink` API and Doris Stream Load. The facade returns connector-owned
+statistics; Ray's `num_rows` and `size_bytes` remain separate accounting fields.
+
+```python
+import ray
+from ray_doris import DorisConnection, DorisTable, write_doris
+
+dataset = ray.data.from_items([
+    {"event_id": 1, "score": 95.0},
+    {"event_id": 2, "score": 88.0},
+])
+result = write_doris(
+    dataset,
+    connection=DorisConnection(
+        host="doris-fe.example.com",
+        username="ray_writer",
+        password_env="DORIS_PASSWORD",
+        redirect_hosts=("doris-be.example.com",),
+        redirect_ports=(8040,),
+        redirect_policy="public",
+    ),
+    table=DorisTable("analytics", "events"),
+    operation="load",
+)
+print(result.loaded_rows, result.batches)
+```
+
+`load` and `upsert` send bounded Parquet batches. `partial_update` sends line-delimited JSON and
+requires a Merge-on-Write Unique Key table. Configure both a FE endpoint and an explicit,
+certificate-validated FE-to-BE redirect allowlist for production. Write task retries are forced to
+zero; a request whose final status is unknown raises an ambiguous-write error and is never replayed
+under a new label. The connector does not provide DDL, overwrite/truncate, Stream Load 2PC,
+whole-dataset atomicity, or exactly-once semantics.
+
+Callers that construct `DorisDatasink` directly must pass `ray_remote_args={"max_retries": 0}` to
+`Dataset.write_datasink()` themselves; only the `write_doris()` facade applies this policy
+automatically.
 
 ## API
 
@@ -280,6 +320,7 @@ uv pip install -e ".[dev,flight]"
 .venv/bin/ruff check .
 .venv/bin/mypy
 .venv/bin/python -m pytest tests/unit
+.venv/bin/python -m pytest tests/contract
 ```
 
 Run the required real Doris integration suite:
@@ -291,7 +332,8 @@ docker compose -f tests/integration/docker-compose.yml down -v --rmi local
 ```
 
 The integration fixture can use an existing isolated Doris instance when the `DORIS_*` connection
-variables are set. It creates and removes only the `ray_doris_it` database and its two test users.
+variables are set. It creates and removes only the `ray_doris_it` database and its test users. It
+also configures the isolated BE public endpoint required for Doris 4.x Stream Load redirects.
 
 ### Slow distributed integration
 
@@ -299,14 +341,17 @@ The opt-in slow suite runs the following isolated topology:
 
 - one Ray head with no scheduling CPUs and three one-CPU Ray workers;
 - one Doris 4.0.6 FE and three Doris 4.0.6 BEs;
-- one HAProxy ingress for HTTPS, FE MySQL/Flight routing, and BE Flight routing through Doris
-  `public_host` and `arrow_flight_sql_proxy_port`;
+- one HAProxy ingress for HTTPS, FE MySQL/Flight routing, BE Flight routing, and certificate-checked
+  BE Stream Load routing through Doris public endpoints;
 - a 48-tablet, single-replica table distributed across all BEs;
 - a 48-tablet, three-replica table used for BE failure recovery;
 - certificate-verified HTTPS query planning at the ingress and native Doris MySQL TLS;
 - explicit Arrow Flight SQL reads, with no automatic MySQL fallback;
 - per-BE Flight session and byte counters proving that all three BE services receive traffic;
 - a minimum-privilege MySQL read distributed across all three Ray workers;
+- a bounded Parquet Stream Load write distributed across all three Ray workers with Doris readback;
+- a deterministic post-send Stream Load transport fault executed by a Ray write task and classified
+  as ambiguous without replay;
 - a Ray worker failure after the first MySQL block and a complete-split retry on another worker;
 - a Doris BE failure and a complete MySQL read from surviving replicas;
 - 10,000 rows by default and repeated checksum-validated Flight reads for at least five seconds.

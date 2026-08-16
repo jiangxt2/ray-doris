@@ -8,7 +8,7 @@ myst:
 
 # Secure connections
 
-The default MySQL, query-plan HTTP, and Flight SQL schemes don't encrypt traffic. Use them only on a trusted private network. Protect each protocol separately for production credentials.
+The default MySQL, query-plan HTTP, Stream Load HTTP, and Flight SQL schemes don't encrypt traffic. Use them only on a trusted private network. Protect each protocol separately for production credentials.
 
 TLS configuration doesn't change transport maturity: MySQL is the production-candidate path, while Flight SQL and `auto` remain experimental.
 
@@ -92,6 +92,34 @@ verification remain enabled; there is no trust-all or hostname-bypass option. Le
 the process default trust store. It is valid only with `http_scheme="https"`.
 
 A TLS validation failure raises {ref}`DorisConfigurationError <ray-doris-api-configuration-error>` and never becomes a single-task planning fallback.
+
+## Protect Stream Load writes
+
+Write metadata discovery and Stream Load can use separate TLS settings on the same immutable
+`DorisConnection`:
+
+```python
+from ray_doris import DorisConnection
+
+connection = DorisConnection(
+    host="doris-fe.example.com",
+    username="ray_writer",
+    password_env="DORIS_PASSWORD",
+    http_port=8443,
+    http_secure=True,
+    http_ca_file="/etc/doris-tls/ca.pem",
+    mysql_ca_file="/etc/doris-tls/ca.pem",
+    redirect_hosts=("doris-be.example.com",),
+    redirect_ports=(8040,),
+    redirect_policy="public",
+)
+```
+
+`http_ca_file` applies to the HTTPS Stream Load request and `mysql_ca_file` enables PyMySQL server
+certificate verification for `SHOW CREATE TABLE` and `DESCRIBE`. Both paths keep hostname
+verification enabled. A redirect must match the configured host and port allowlist and cannot
+downgrade an HTTPS write to HTTP. Stream Load disables ambient HTTP proxy settings because a proxy
+could observe or replay a request body.
 
 ## Define the FE availability boundary
 

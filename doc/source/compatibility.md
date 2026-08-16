@@ -1,7 +1,7 @@
 ---
 myst:
   html_meta:
-    description: "ray-doris dependency bounds, tested Python and Ray combinations, Doris 4.0.6 integration coverage, Flight requirements, and compatibility limits."
+    description: "ray-doris dependency bounds, tested Python and Ray combinations, Datasink lifecycle compatibility, Doris 4.0.6 read/write coverage, Flight requirements, and limits."
 ---
 
 (ray-doris-compatibility)=
@@ -16,9 +16,9 @@ Continuous integration covers these combinations:
 
 | Python | Ray | Verification |
 | --- | --- | --- |
-| 3.9 | 2.49.2 | Alpha legacy compatibility only; unit and Ray signature tests |
+| 3.9 | 2.49.2 | Alpha legacy compatibility only; unit and public Datasink contract tests |
 | 3.10 | 2.55.1 | Unit and Ray signature compatibility tests |
-| 3.12 | 2.56.1 | Unit tests and required Doris 4.0.6 integration tests |
+| 3.12 | 2.56.1 | Unit, public Datasink contract, and required Doris 4.0.6 read/write integration tests |
 
 The optional distributed suite uses Python 3.12, Ray 2.55.1, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
@@ -37,6 +37,12 @@ Doris 4.0.6 is the fixed real-infrastructure target for required and distributed
 - Ray worker retry and Doris backend failure with replicated tablets.
 - Native MySQL TLS and certificate-validated HTTPS through the test ingress.
 - Environment-referenced credentials resolved independently on the driver and workers.
+- Duplicate load, Unique upsert, Aggregate load, and Merge-on-Write partial-update Stream Load
+  writes, including FE-to-BE redirect validation and Doris readback.
+- A deterministic post-send Stream Load transport fault in a Ray write task, classified as
+  ambiguous without replay.
+- Ray Datasink `write_returns`, `WriteResult` accounting separation, empty Dataset behavior, and
+  `min_rows_per_write` bundling target.
 
 The suite doesn't verify every Doris release, storage model, deployment proxy, authentication
 provider, or Flight TLS endpoint. It uses one logical FE hostname but doesn't certify Doris FE
@@ -51,6 +57,19 @@ The Flight extra is conditional on Python 3.10 or newer because the supported Ar
 ## Review the Ray API boundary
 
 `ray-doris` uses Ray's documented Datasource extension interfaces and doesn't import `ray.data._internal` modules. Ray documents `ReadTask` as DeveloperAPI, not a minor-version-stable public API.
+
+Writes use the documented `Datasink` and `Dataset.write_datasink()` interfaces. The compatibility
+layer explicitly models the Datasink generation split:
+
+| Ray version | `on_write_start` | Empty non-file Dataset | Schema source |
+| --- | --- | --- | --- |
+| 2.49.2–2.52.x | `on_write_start()` with no argument, called before execution | Callback still runs; metadata setup is observable | Worker blocks |
+| 2.53.0–2.56.x | `on_write_start(schema)` may receive the first bundle schema | No callback when no input bundle exists | First input bundle, with worker validation |
+
+The public contract tests also assert one-row task summaries in `write_returns`, the separation
+between Doris counters and Ray `WriteResult.num_rows`/`size_bytes`, and the zero-bundle behavior of
+`ray.data.range(0)` on the current generation. The old-generation callback is kept compatible by
+the sink's optional schema parameter and is covered by the explicit `_compat.py` matrix.
 
 The compatibility layer requires the `ReadTask` constructor to accept a schema, and the package dependency starts at Ray 2.49.2. It passes `per_task_row_limit` only when the installed constructor supports that argument.
 

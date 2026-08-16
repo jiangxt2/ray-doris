@@ -13,7 +13,15 @@ from ray_doris._errors import DorisSchemaError
 
 _TYPE_PATTERN = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?:\(([^)]*)\))?$")
 _UNSUPPORTED_PREFIXES = ("ARRAY<", "MAP<", "STRUCT<")
-_UNSUPPORTED_TYPES = {"AGG_STATE", "BITMAP", "HLL", "QUANTILE_STATE", "VARIANT"}
+_UNSUPPORTED_TYPES = {
+    "AGG_STATE",
+    "BITMAP",
+    "HLL",
+    "QUANTILE_STATE",
+    "TIME",
+    "TIMEV2",
+    "VARIANT",
+}
 
 
 @dataclass(frozen=True)

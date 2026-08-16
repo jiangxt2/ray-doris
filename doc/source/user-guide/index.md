@@ -1,14 +1,14 @@
 ---
 myst:
   html_meta:
-    description: "Task-oriented guides for reading Doris tables with Ray Data, selecting transports, tuning parallelism, mapping schemas, securing connections, and diagnosing failures."
+    description: "Task-oriented guides for reading and writing Doris tables with Ray Data, selecting transports, tuning parallelism, mapping schemas, securing connections, and diagnosing failures."
 ---
 
 (ray-doris-user-guides)=
 
 # User guides
 
-Start with the [Quickstart](../quickstart.md) if you haven't created a Dataset yet. These guides explain each production-facing configuration boundary.
+Start with the [Quickstart](../quickstart.md) if you haven't created a Dataset yet. These guides explain each production-facing read and write configuration boundary.
 
 ::::{grid} 1 2 2 2
 :gutter: 1
@@ -25,6 +25,13 @@ Select one internal table, project columns, apply a trusted filter, and choose p
 :link-type: doc
 
 Choose the production-candidate MySQL transport or experimental Flight SQL/automatic fallback and configure execution timeouts.
+:::
+
+:::{grid-item-card} Write data
+:link: write-data
+:link-type: doc
+
+Load, upsert, and Merge-on-Write partial-update batches through the public Ray Datasink API.
 :::
 
 :::{grid-item-card} Tune parallelism
@@ -60,6 +67,7 @@ Map public exceptions to configuration, planning, permission, schema, and worker
 :maxdepth: 2
 
 read-data
+write-data
 configure-transports
 tune-parallelism
 work-with-schemas

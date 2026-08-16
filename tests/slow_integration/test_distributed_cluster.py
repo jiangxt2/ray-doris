@@ -28,10 +28,22 @@ from ray.data.aggregate import Count, Max, Min, Sum
 from ray.data.datasource import ReadTask
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from ray_doris import DorisConfigurationError, DorisDatasource, read_doris
+from ray_doris import (
+    DorisAmbiguousWriteError,
+    DorisConfigurationError,
+    DorisConnection,
+    DorisDatasink,
+    DorisDatasource,
+    DorisTable,
+    DorisWriteOptions,
+    read_doris,
+)
+from ray_doris._compat import validate_datasink_signature
 from ray_doris._models import DorisReadConfig
 from ray_doris._planner import QueryPlanClient
+from ray_doris._schema import DorisColumn
 from ray_doris._sql import build_select_sql, parse_table
+from ray_doris.write.metadata import DorisTableMetadata, validate_write_table
 
 pytestmark = [
     pytest.mark.slow_integration,
@@ -143,6 +155,50 @@ class InstrumentedDorisDatasource(DorisDatasource):
             )
             for task in tasks
         ]
+
+
+class InstrumentedDorisDatasink(DorisDatasink):
+    def write(self, blocks: Iterable[Any], ctx: Any) -> dict[str, Any]:
+        node_id = ray.get_runtime_context().get_node_id()
+        _claim_marker(f"/state/ray-write-{node_id}", node_id)
+        return dict(super().write(blocks, ctx))
+
+
+class FaultInjectionDorisDatasink(DorisDatasink):
+    """Use real Ray write execution while bypassing metadata for the transport fault endpoint."""
+
+    def on_write_start(self, schema: pa.Schema | None = None) -> None:
+        validate_datasink_signature()
+        metadata = DorisTableMetadata(
+            "DUPLICATE",
+            ("id",),
+            False,
+            ("id", "shard", "payload", WORKER_COLUMN),
+            (
+                DorisColumn("id", "BIGINT", False),
+                DorisColumn("shard", "INT", False),
+                DorisColumn("payload", "VARCHAR(128)", True),
+                DorisColumn(WORKER_COLUMN, "VARCHAR(64)", True),
+            ),
+        )
+        if schema is not None:
+            validate_write_table(metadata, operation=self.options.operation, arrow_schema=schema)
+            self._input_arrow_schema = schema
+        self._metadata = metadata
+
+
+@ray.remote(max_retries=3)
+def _run_retried_read_task(read_task: ReadTask) -> tuple[int, int, tuple[str, ...]]:
+    row_count = 0
+    id_sum = 0
+    worker_ids: set[str] = set()
+    for batch in read_task.read_fn():
+        assert isinstance(batch, pa.Table)
+        row_count += batch.num_rows
+        batch_sum = pc.sum(batch["id"]).as_py()
+        id_sum += int(batch_sum or 0)
+        worker_ids.update(str(value) for value in pc.unique(batch[WORKER_COLUMN]).to_pylist())
+    return row_count, id_sum, tuple(sorted(worker_ids))
 
 
 def _assert_summary(
@@ -368,6 +424,78 @@ def test_flight_read_executes_on_all_ray_workers(
     _assert_read_executes_on_all_ray_workers(slow_config, transport="flight")
 
 
+def test_stream_load_write_executes_on_all_ray_workers(
+    slow_config: SlowITConfig,
+) -> None:
+    write_rows = max(3, min(slow_config.row_count, 3_000))
+    id_base = 1_000_000
+    worker_nodes = _ray_worker_nodes(slow_config)
+    assert len(worker_nodes) == 3
+
+    def build_write_table(start: int, end: int) -> pa.Table:
+        ids = list(range(id_base + start, id_base + end))
+        return pa.table(
+            {
+                "id": ids,
+                "shard": [value % 1024 for value in ids],
+                "payload": [f"payload-{value}" for value in ids],
+                "ray_worker": [None] * len(ids),
+            }
+        )
+
+    rows_per_worker, remainder = divmod(write_rows, len(worker_nodes))
+    results = []
+    offset = 0
+    for index, node in enumerate(worker_nodes):
+        worker_rows = rows_per_worker + (index < remainder)
+        dataset = ray.data.from_arrow(build_write_table(offset, offset + worker_rows))
+        sink = InstrumentedDorisDatasink(
+            slow_config.write_connection(),
+            DorisTable(slow_config.database, slow_config.write_table),
+            DorisWriteOptions(batch_rows=worker_rows),
+        )
+        dataset.write_datasink(
+            sink,
+            concurrency=1,
+            ray_remote_args={
+                "num_cpus": 1,
+                "scheduling_strategy": NodeAffinitySchedulingStrategy(
+                    node_id=node["NodeID"],
+                    soft=False,
+                ),
+                "max_retries": 0,
+            },
+        )
+        assert sink.result is not None
+        assert sink.result.status == "success"
+        assert sink.result.attempted_rows == worker_rows
+        assert sink.result.loaded_rows == worker_rows
+        assert sink.result.ray_num_rows == worker_rows
+        results.append(sink.result)
+        offset += worker_rows
+
+    assert sum(result.attempted_rows for result in results) == write_rows
+    assert sum(result.loaded_rows for result in results) == write_rows
+
+    rows = query_rows(
+        slow_config,
+        f"SELECT COUNT(*) AS row_count, SUM(id) AS id_sum "
+        f"FROM `{slow_config.database}`.`{slow_config.write_table}` "
+        f"WHERE id >= {id_base}",
+    )
+    assert rows == [
+        {
+            "row_count": write_rows,
+            "id_sum": id_base * write_rows + write_rows * (write_rows - 1) // 2,
+        }
+    ]
+    expected_node_ids = {node["NodeID"] for node in _ray_worker_nodes(slow_config)}
+    observed_node_ids = {
+        marker.read_text(encoding="utf-8") for marker in Path("/state").glob("ray-write-*")
+    }
+    assert observed_node_ids == expected_node_ids
+
+
 def test_repeated_flight_reads(
     slow_config: SlowITConfig,
 ) -> None:
@@ -429,28 +557,18 @@ def test_worker_retry_and_backend_failover(
         marker_path=RAY_FAILURE_MARKER,
         pause_seconds=600,
     )
-    dataset = ray.data.read_datasource(
-        datasource,
-        concurrency=1,
-        override_num_blocks=1,
-        ray_remote_args={
-            "num_cpus": 1,
-            "scheduling_strategy": NodeAffinitySchedulingStrategy(
+    read_tasks = datasource.get_read_tasks(parallelism=1)
+    assert len(read_tasks) == 1
+    row_count, id_sum, observed_worker_ids = ray.get(
+        _run_retried_read_task.options(
+            num_cpus=1,
+            scheduling_strategy=NodeAffinitySchedulingStrategy(
                 node_id=worker_one["NodeID"],
                 soft=True,
             ),
-            "max_retries": 3,
-        },
+        ).remote(read_tasks[0])
     )
-    observed_node_ids: set[str] = set()
-    row_count = 0
-    id_sum = 0
-    for batch in dataset.iter_batches(batch_size=10_000, batch_format="pyarrow"):
-        assert isinstance(batch, pa.Table)
-        row_count += batch.num_rows
-        batch_sum = pc.sum(batch["id"]).as_py()
-        id_sum += int(batch_sum or 0)
-        observed_node_ids.update(pc.unique(batch[WORKER_COLUMN]).to_pylist())
+    observed_node_ids = set(observed_worker_ids)
 
     initial_node_id = Path(RAY_FAILURE_MARKER).read_text(encoding="utf-8")
     assert initial_node_id == worker_one["NodeID"]
@@ -475,11 +593,11 @@ def test_worker_retry_and_backend_failover(
             table=slow_config.replicated_table,
             transport="mysql",
             columns=["id"],
-            tablet_size=1,
+            tablet_size=BUCKET_COUNT,
             batch_size=10_000,
         ),
-        concurrency=2,
-        override_num_blocks=BUCKET_COUNT,
+        concurrency=1,
+        override_num_blocks=1,
         ray_remote_args={
             "num_cpus": 1,
             "scheduling_strategy": "SPREAD",
@@ -491,3 +609,44 @@ def test_worker_retry_and_backend_failover(
         row_count=slow_config.row_count,
         id_sum=slow_config.expected_id_sum,
     )
+
+
+def test_stream_load_transport_fault_is_ambiguous(
+    slow_config: SlowITConfig,
+) -> None:
+    body_marker = Path("/state/write-fault-body-started")
+    body_marker.unlink(missing_ok=True)
+    sink = FaultInjectionDorisDatasink(
+        DorisConnection(
+            host="write-fault",
+            http_port=slow_config.stream_load_fault_port,
+            username="fault",
+            password="fault",
+            request_timeout_seconds=30.0,
+        ),
+        DorisTable(slow_config.database, slow_config.write_table),
+        DorisWriteOptions(batch_rows=1),
+    )
+    dataset = ray.data.from_arrow(
+        pa.table(
+            {
+                "id": [2_000_000],
+                "shard": [1],
+                "payload": ["transport-fault"],
+                WORKER_COLUMN: [None],
+            }
+        )
+    )
+    with pytest.raises(Exception) as captured:
+        dataset.write_datasink(
+            sink,
+            concurrency=1,
+            ray_remote_args={
+                "num_cpus": 1,
+                "scheduling_strategy": "SPREAD",
+                "max_retries": 0,
+            },
+        )
+    cause = getattr(captured.value, "as_instanceof_cause", lambda: captured.value)()
+    assert isinstance(cause, DorisAmbiguousWriteError)
+    assert body_marker.read_text(encoding="utf-8") == "body-started\n"

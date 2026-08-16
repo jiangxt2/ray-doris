@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ray-doris"
 version = "0.1.0a1"
-description = "Community-maintained Apache Doris datasource for Ray Data"
+description = "Community-maintained Apache Doris connector for Ray Data"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
@@ -57,9 +57,10 @@ exclude = ["/AGENTS.md"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
-testpaths = ["tests/unit", "tests/integration"]
+testpaths = ["tests/unit", "tests/contract", "tests/integration"]
 timeout = 300
 markers = [
+  "contract: verifies Ray public Datasink and Datasource contracts",
   "integration: requires a real Apache Doris deployment",
   "slow_integration: requires the opt-in multi-node Ray and Doris Compose cluster",
 ]

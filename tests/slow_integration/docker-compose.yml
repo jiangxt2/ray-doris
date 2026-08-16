@@ -12,6 +12,8 @@ x-ray-common: &ray-common
     DORIS_HOST: flight-proxy
     DORIS_MYSQL_PORT: "19030"
     DORIS_HTTPS_PORT: "18443"
+    DORIS_STREAM_LOAD_PORT: "18444"
+    DORIS_STREAM_LOAD_FAULT_PORT: "18445"
     DORIS_FLIGHT_PORT: "18070"
     DORIS_FLIGHT_PROXY_STATS_URL: "http://flight-proxy:8404/stats;csv"
     DORIS_TLS_CA: /tls/ca.pem
@@ -21,7 +23,7 @@ x-ray-common: &ray-common
     RAY_DORIS_SLOW_PROFILE: "${RAY_DORIS_SLOW_PROFILE:?run.sh must provide the profile}"
     RAY_DORIS_SLOW_RUN_ID: "${RAY_DORIS_SLOW_RUN_ID:?run.sh must provide the run ID}"
     RAY_DORIS_STRESS_SECONDS: "${RAY_DORIS_STRESS_SECONDS:-5}"
-    RAY_WORKER_IPS: 172.31.128.11,172.31.128.12,172.31.128.13
+    RAY_WORKER_IPS: 172.20.128.11,172.20.128.12,172.20.128.13
     RAY_USAGE_STATS_ENABLED: "0"
     PYTHONPATH: /workspace/tests/slow_integration
     SSL_CERT_FILE: /tls/ca.pem
@@ -61,9 +63,9 @@ services:
         condition: service_completed_successfully
     networks:
       doris:
-        ipv4_address: 172.31.128.2
+        ipv4_address: 172.20.128.2
     environment:
-      FE_SERVERS: fe1:172.31.128.2:9010
+      FE_SERVERS: fe1:172.20.128.2:9010
       FE_ID: "1"
     volumes:
       - fe-data:/opt/apache-doris/fe/doris-meta
@@ -74,7 +76,7 @@ services:
         - CMD-SHELL
         - >-
           mysql -uroot -h127.0.0.1 -P9030 -N -e 'SHOW FRONTENDS'
-          2>/dev/null | grep -w '172.31.128.2' >/dev/null
+          2>/dev/null | grep -w '172.20.128.2' >/dev/null
       interval: 2s
       timeout: 2s
       retries: 90
@@ -94,10 +96,10 @@ services:
         condition: service_healthy
     networks:
       doris:
-        ipv4_address: 172.31.128.3
+        ipv4_address: 172.20.128.3
     environment:
-      FE_SERVERS: fe1:172.31.128.2:9010
-      BE_ADDR: 172.31.128.3:9050
+      FE_SERVERS: fe1:172.20.128.2:9010
+      BE_ADDR: 172.20.128.3:9050
     volumes:
       - be-1-data:/opt/apache-doris/be/storage
     mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
@@ -116,10 +118,10 @@ services:
         condition: service_healthy
     networks:
       doris:
-        ipv4_address: 172.31.128.4
+        ipv4_address: 172.20.128.4
     environment:
-      FE_SERVERS: fe1:172.31.128.2:9010
-      BE_ADDR: 172.31.128.4:9050
+      FE_SERVERS: fe1:172.20.128.2:9010
+      BE_ADDR: 172.20.128.4:9050
     volumes:
       - be-2-data:/opt/apache-doris/be/storage
     mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
@@ -138,10 +140,10 @@ services:
         condition: service_healthy
     networks:
       doris:
-        ipv4_address: 172.31.128.5
+        ipv4_address: 172.20.128.5
     environment:
-      FE_SERVERS: fe1:172.31.128.2:9010
-      BE_ADDR: 172.31.128.5:9050
+      FE_SERVERS: fe1:172.20.128.2:9010
+      BE_ADDR: 172.20.128.5:9050
     volumes:
       - be-3-data:/opt/apache-doris/be/storage
     mem_limit: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
@@ -166,25 +168,56 @@ services:
         condition: service_started
     networks:
       doris:
-        ipv4_address: 172.31.128.6
+        ipv4_address: 172.20.128.6
         aliases: [doris-ingress]
     volumes:
       - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - tls:/tls:ro
     mem_limit: 256m
 
+  write-fault:
+    <<: *ray-common
+    hostname: write-fault
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+    command:
+      - python
+      - /workspace/tests/slow_integration/docker/write_fault_server.py
+    networks:
+      doris:
+        ipv4_address: 172.20.128.7
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /state/write-fault-ready"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
   ray-head:
     <<: *ray-common
     hostname: ray-head
-    depends_on: [fe, be-1, be-2, be-3, flight-proxy]
+    depends_on:
+      fe:
+        condition: service_healthy
+      be-1:
+        condition: service_started
+      be-2:
+        condition: service_started
+      be-3:
+        condition: service_started
+      flight-proxy:
+        condition: service_started
+      write-fault:
+        condition: service_healthy
     networks:
       doris:
-        ipv4_address: 172.31.128.10
+        ipv4_address: 172.20.128.10
     command:
       - ray
       - start
       - --head
-      - --node-ip-address=172.31.128.10
+      - --node-ip-address=172.20.128.10
       - --port=6379
       - --dashboard-host=0.0.0.0
       - --num-cpus=0
@@ -196,13 +229,13 @@ services:
     depends_on: [ray-head]
     networks:
       doris:
-        ipv4_address: 172.31.128.11
+        ipv4_address: 172.20.128.11
     command:
       - /bin/bash
       - -lc
       - >-
         until ray start --address=ray-head:6379
-        --node-ip-address=172.31.128.11 --num-cpus=1 --block;
+        --node-ip-address=172.20.128.11 --num-cpus=1 --block;
         do sleep 2; done
 
   ray-worker-2:
@@ -211,13 +244,13 @@ services:
     depends_on: [ray-head]
     networks:
       doris:
-        ipv4_address: 172.31.128.12
+        ipv4_address: 172.20.128.12
     command:
       - /bin/bash
       - -lc
       - >-
         until ray start --address=ray-head:6379
-        --node-ip-address=172.31.128.12 --num-cpus=1 --block;
+        --node-ip-address=172.20.128.12 --num-cpus=1 --block;
         do sleep 2; done
 
   ray-worker-3:
@@ -226,20 +259,20 @@ services:
     depends_on: [ray-head]
     networks:
       doris:
-        ipv4_address: 172.31.128.13
+        ipv4_address: 172.20.128.13
     command:
       - /bin/bash
       - -lc
       - >-
         until ray start --address=ray-head:6379
-        --node-ip-address=172.31.128.13 --num-cpus=1 --block;
+        --node-ip-address=172.20.128.13 --num-cpus=1 --block;
         do sleep 2; done
 
 networks:
   doris:
     ipam:
       config:
-        - subnet: 172.31.128.0/24
+        - subnet: 172.20.128.0/24
 
 volumes:
   tls:

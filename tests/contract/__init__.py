@@ -1,0 +1,1 @@
+"""Public Ray contract tests."""

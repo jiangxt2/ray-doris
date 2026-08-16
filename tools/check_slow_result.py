@@ -72,6 +72,8 @@ def verify_slow_result(path: Path, *, expected_commit: str, expected_run_id: int
         "logical_endpoint_tls",
         "mysql_all_workers",
         "ray_worker_retry",
+        "stream_load_transport_fault",
+        "stream_load_write_all_workers",
     ]
     scenarios = data.get("scenarios")
     if scenarios != expected_scenarios:

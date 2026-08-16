@@ -27,3 +27,23 @@ class DorisPermissionError(DorisPlanningError):
 
 class DorisReadError(DorisError):
     """Raised when a planned split cannot be read."""
+
+
+class DorisWriteError(DorisError):
+    """Raised when a Doris Stream Load request has a known failure."""
+
+
+class DorisAmbiguousWriteError(DorisWriteError):
+    """Raised when a Stream Load request may have reached Doris with unknown outcome."""
+
+
+class DorisLabelExistsError(DorisWriteError):
+    """Raised when Doris reports that a Stream Load label is already retained."""
+
+
+class DorisMetadataError(DorisWriteError):
+    """Raised when target table metadata is absent or malformed."""
+
+
+class DorisTableCompatibilityError(DorisWriteError):
+    """Raised when the requested operation cannot safely target the table."""

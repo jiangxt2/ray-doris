@@ -44,14 +44,25 @@ _EXPECTED_NAVIGATION = (
 _EXPECTED_API_TARGETS = frozenset(
     {
         "ray_doris.DorisAuthenticationError",
+        "ray_doris.DorisAmbiguousWriteError",
         "ray_doris.DorisConfigurationError",
+        "ray_doris.DorisConnection",
         "ray_doris.DorisDatasource",
+        "ray_doris.DorisDatasink",
         "ray_doris.DorisError",
+        "ray_doris.DorisLabelExistsError",
+        "ray_doris.DorisMetadataError",
         "ray_doris.DorisPermissionError",
         "ray_doris.DorisPlanningError",
         "ray_doris.DorisReadError",
         "ray_doris.DorisSchemaError",
+        "ray_doris.DorisTable",
+        "ray_doris.DorisTableCompatibilityError",
+        "ray_doris.DorisWriteError",
+        "ray_doris.DorisWriteOptions",
+        "ray_doris.DorisWriteResult",
         "ray_doris.read_doris",
+        "ray_doris.write_doris",
     }
 )
 

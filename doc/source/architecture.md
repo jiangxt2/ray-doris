@@ -8,7 +8,12 @@ myst:
 
 # Architecture
 
-`ray-doris` is a thin independent connector around Ray Data's documented V1 Datasource extension interfaces and Doris public protocols. Ray owns distributed scheduling and Dataset execution. Doris owns query semantics, tablet pruning, and storage replicas. The connector owns validation, protocol coordination, schema consistency, and failure classification. Ray marks `ReadTask` as DeveloperAPI, so `_compat.py` and the tested dependency window contain minor-version changes.
+`ray-doris` is a thin independent connector around Ray Data's documented V1 Datasource and Datasink
+extension interfaces and Doris public protocols. Ray owns distributed scheduling and Dataset
+execution. Doris owns query semantics, tablet pruning, storage replicas, and Stream Load table
+semantics. The connector owns validation, protocol coordination, schema consistency, and failure
+classification. Ray marks `ReadTask` as DeveloperAPI and has Datasink lifecycle differences across
+the supported window, so `_compat.py` and the tested dependency window contain minor-version changes.
 
 ## Follow the module boundaries
 
@@ -24,17 +29,35 @@ src/ray_doris/
 ├── _readers.py    streaming MySQL and Flight SQL worker readers
 ├── _schema.py     Doris-to-Arrow schema mapping and conversion
 ├── _sql.py        identifier validation and SQL rendering
-├── _compat.py     explicit supported-Ray constructor adaptation
+├── _compat.py     explicit supported-Ray constructor and Datasink adaptation
 └── _errors.py     public exception hierarchy
+
+write/
+├── api.py         write_doris() facade
+├── datasink.py    public Ray Datasink lifecycle and result aggregation
+├── connection.py  immutable HTTP/MySQL/TLS/redirect settings
+├── metadata.py    SHOW CREATE/DESCRIBE parsing and write validation
+├── options.py     operation, format, batch, and load-property policy
+├── serialization.py bounded Parquet and line-delimited JSON encoding
+└── stream_load.py redirect-safe HTTP Stream Load protocol client
 ```
 
-Only `read_doris`, `DorisDatasource`, and the exception hierarchy are public package exports. The underscore-prefixed modules can change without a public compatibility promise.
+Only the documented read/write entry points, configuration objects, sink, result, and exception
+hierarchy are public package exports. The underscore-prefixed modules and `write/` implementation
+modules can change without a public compatibility promise.
 
 ## Adapt documented Ray extension APIs
 
 {ref}`read_doris <ray-doris-api-read-doris>` builds a datasource and calls `ray.data.read_datasource()` with `concurrency`, `override_num_blocks`, and a copied `ray_remote_args` mapping.
 
 {ref}`DorisDatasource <ray-doris-api-datasource>` subclasses Ray's documented `Datasource` extension class. It returns DeveloperAPI `ReadTask` objects that yield PyArrow tables. `_compat.py` inspects the `ReadTask` constructor so it can reject unsupported Ray signatures without catching an unrelated `TypeError` from the read function.
+
+`DorisDatasink` subclasses Ray's public `Datasink`. `write_doris()` calls only
+`Dataset.write_datasink()` and obtains its return value from `on_write_complete(WriteResult)`; it
+does not inspect Ray's private write operator. `_compat.py` records the two supported callback
+generations: Ray 2.49.2–2.52.x calls `on_write_start()` unconditionally, while Ray 2.53.0 and later
+may pass the first bundle schema and skip the callback for an empty Dataset. `min_rows_per_write`
+is the connector's row bundling target, not a strict request-size guarantee.
 
 ## Plan on the driver
 
@@ -80,3 +103,17 @@ connector owns TLS verification and failure classification for the configured en
 The connector doesn't coordinate a Doris transaction across tablet tasks. Metadata discovery, query planning, and split reads are separate requests. Task retry is at-least-once at the split level because a replacement task re-executes the complete split.
 
 Applications that require a database snapshot or exactly-once downstream effects must establish those semantics outside `ray-doris`.
+
+## Execute writes without replay
+
+The write driver discovers table metadata, validates the operation and input schema, and serializes
+an immutable connection/options snapshot into Ray tasks. Each task consumes Arrow or pandas blocks,
+splits them by row and serialized-byte targets, and sends independent Stream Load requests. `load`
+and `upsert` use Parquet; Merge-on-Write `partial_update` uses line-delimited JSON.
+
+FE-to-BE redirects are manually validated against an allowlist with no HTTPS downgrade or userinfo.
+Responses are size-limited and classified as Success, Publish Timeout, Label Already Exists, known
+failure, or ambiguous outcome. The write profile forces Ray task retries to zero. A body that may
+have reached Doris is never automatically replayed under a new label. Doris counters are aggregated
+from sanitized `write_returns`; Ray's `WriteResult.num_rows` and `size_bytes` remain separate
+accounting values.

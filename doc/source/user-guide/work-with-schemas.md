@@ -10,6 +10,10 @@ myst:
 
 `ray-doris` discovers schema with MySQL `DESCRIBE` and builds one canonical PyArrow schema before creating worker tasks. It doesn't infer types from returned values.
 
+The same mapping is used by writes. A write validates a full-row Arrow schema against the existing
+Doris column order, or validates a known subset for Merge-on-Write partial updates, before sending a
+Stream Load request.
+
 ## Review supported scalar types
 
 The connector maps these Doris types:
@@ -31,7 +35,7 @@ The connector maps these Doris types:
 | Doris decimal families with precision up to 38 | `decimal128(precision, scale)` |
 | Doris decimal families with precision from 39 through 76 | `decimal256(precision, scale)` |
 
-Supported decimal families include `DECIMAL`, `DECIMALV2`, `DECIMALV3`, `DECIMAL32`, `DECIMAL64`, `DECIMAL128`, and `DECIMAL256`. A decimal declaration must include valid precision and scale.
+Supported decimal families include `DECIMAL`, `DECIMALV2`, `DECIMALV3`, `DECIMAL32`, `DECIMAL64`, `DECIMAL128`, and `DECIMAL256`. A decimal declaration must include valid precision and scale. `TIME` and `TIMEV2` are intentionally unsupported in the RFC pre-review type matrix.
 
 ## Preserve projection and nullability
 
@@ -64,3 +68,8 @@ dataset = read_doris(
 ```
 
 An unsupported projected column raises {ref}`DorisSchemaError <ray-doris-api-schema-error>` during planning. The connector doesn't silently stringify it.
+
+Writes additionally reject timezone-aware temporal values, non-finite floating-point or decimal
+values, unsafe numeric casts, and NULL values for non-nullable columns before uploading. JSON and
+JSONB are represented as strings for full-row Parquet writes; partial-update JSON values may use
+JSON-compatible scalar, list, and object values.

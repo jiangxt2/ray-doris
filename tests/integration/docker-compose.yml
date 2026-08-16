@@ -35,6 +35,7 @@ services:
         ipv4_address: 172.16.127.3
     ports:
       - "127.0.0.1:18050:8050"
+      - "127.0.0.1:${DORIS_BE_HTTP_PORT:-18040}:8040"
     environment:
       FE_SERVERS: fe1:172.16.127.2:9010
       BE_ADDR: 172.16.127.3:9050

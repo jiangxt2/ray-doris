@@ -39,6 +39,8 @@ def write_result(path: Path) -> None:
             "logical_endpoint_tls",
             "mysql_all_workers",
             "ray_worker_retry",
+            "stream_load_transport_fault",
+            "stream_load_write_all_workers",
         ],
     }
     path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -34,7 +34,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv venv --python ${{ matrix.python }}
       - run: uv pip install -e ".[test]" "ray[data]==${{ matrix.ray }}"
-      - run: .venv/bin/python -m pytest tests/unit --cov=ray_doris --cov-report=term-missing
+      - run: .venv/bin/python -m pytest tests/unit tests/contract --cov=ray_doris --cov-report=term-missing
 
   quality:
     name: Static quality

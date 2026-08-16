@@ -13,6 +13,7 @@ BUCKET_COUNT = 48
 DATABASE = "ray_doris_slow_it"
 DISTRIBUTED_TABLE = "distributed_records"
 REPLICATED_TABLE = "replicated_records"
+WRITE_TABLE = "distributed_write_records"
 FLIGHT_PROXY_BACKENDS = ("be-1", "be-2", "be-3")
 READER_USER = "ray_doris_reader"
 READER_PASSWORD_ENV = "RAY_DORIS_READER_PASSWORD"
@@ -42,6 +43,8 @@ class SlowITConfig:
     host: str
     mysql_port: int
     https_port: int
+    stream_load_port: int
+    stream_load_fault_port: int
     flight_port: int
     flight_proxy_stats_url: str
     tls_ca: str
@@ -51,6 +54,7 @@ class SlowITConfig:
     database: str = DATABASE
     distributed_table: str = DISTRIBUTED_TABLE
     replicated_table: str = REPLICATED_TABLE
+    write_table: str = WRITE_TABLE
 
     @classmethod
     def from_environment(cls) -> SlowITConfig:
@@ -58,7 +62,7 @@ class SlowITConfig:
             value.strip()
             for value in os.environ.get(
                 "RAY_WORKER_IPS",
-                "172.31.128.11,172.31.128.12,172.31.128.13",
+                "172.20.128.11,172.20.128.12,172.20.128.13",
             ).split(",")
             if value.strip()
         )
@@ -68,6 +72,8 @@ class SlowITConfig:
             host=os.environ.get("DORIS_HOST", "flight-proxy"),
             mysql_port=int(os.environ.get("DORIS_MYSQL_PORT", "19030")),
             https_port=int(os.environ.get("DORIS_HTTPS_PORT", "18443")),
+            stream_load_port=int(os.environ.get("DORIS_STREAM_LOAD_PORT", "18444")),
+            stream_load_fault_port=int(os.environ.get("DORIS_STREAM_LOAD_FAULT_PORT", "18445")),
             flight_port=int(os.environ.get("DORIS_FLIGHT_PORT", "18070")),
             flight_proxy_stats_url=os.environ.get(
                 "DORIS_FLIGHT_PROXY_STATS_URL",
@@ -124,6 +130,23 @@ class SlowITConfig:
         }
         values.update(kwargs)
         return values
+
+    def write_connection(self):
+        from ray_doris import DorisConnection
+
+        return DorisConnection(
+            host=self.host,
+            http_port=self.https_port,
+            mysql_port=self.mysql_port,
+            http_secure=True,
+            http_ca_file=self.tls_ca,
+            mysql_ca_file=self.tls_ca,
+            redirect_hosts=(self.host,),
+            redirect_ports=(self.stream_load_port,),
+            redirect_policy="public",
+            connect_timeout_seconds=30.0,
+            request_timeout_seconds=180.0,
+        )
 
 
 def mysql_connection(config: SlowITConfig):
@@ -268,16 +291,35 @@ def wait_for_backend_count(
     while time.monotonic() < deadline:
         try:
             rows = alive_backends(config)
-            if len(rows) == expected:
+            if len(rows) == expected and all(
+                str(row.get(column, "")).strip() not in {"", "0", "0.000", "0.000 B"}
+                for row in rows
+                for column in ("AvailCapacity", "TotalCapacity")
+            ):
                 return rows
         except (OSError, pymysql.MySQLError, KeyError) as exc:
             last_error = exc
         time.sleep(2)
-    raise RuntimeError(f"Doris did not report exactly {expected} alive backends") from last_error
+    raise RuntimeError(
+        f"Doris did not report exactly {expected} alive backends with registered storage"
+    ) from last_error
+
+
+def configure_stream_load_endpoints(config: SlowITConfig) -> None:
+    endpoint = f"{config.host}:{config.stream_load_port}"
+    for backend in alive_backends(config):
+        host = str(backend["Host"])
+        heartbeat_port = int(backend["HeartbeatPort"])
+        execute(
+            config,
+            f"ALTER SYSTEM MODIFY BACKEND '{host}:{heartbeat_port}' SET "
+            f"('tag.location' = 'default', 'tag.public_endpoint' = '{endpoint}')",
+        )
 
 
 def setup_tables(config: SlowITConfig) -> None:
     wait_for_backend_count(config, 3)
+    configure_stream_load_endpoints(config)
     execute(config, f"DROP DATABASE IF EXISTS `{config.database}`")
     execute(config, f"CREATE DATABASE `{config.database}`")
     execute(
@@ -308,6 +350,20 @@ def setup_tables(config: SlowITConfig) -> None:
         config,
         f"""
         CREATE TABLE `{config.database}`.`{config.replicated_table}` (
+            `id` BIGINT NOT NULL,
+            `shard` INT NOT NULL,
+            `payload` VARCHAR(128) NULL,
+            `ray_worker` VARCHAR(64) NULL
+        ) ENGINE=OLAP
+        DUPLICATE KEY(`id`)
+        DISTRIBUTED BY HASH(`id`) BUCKETS {BUCKET_COUNT}
+        PROPERTIES ("replication_num" = "3")
+        """,
+    )
+    execute(
+        config,
+        f"""
+        CREATE TABLE `{config.database}`.`{config.write_table}` (
             `id` BIGINT NOT NULL,
             `shard` INT NOT NULL,
             `payload` VARCHAR(128) NULL,

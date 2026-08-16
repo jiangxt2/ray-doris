@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 import pytest
 import ray
+import ray.data
 from _cluster import (
     SlowITConfig,
     setup_tables,
@@ -38,6 +39,7 @@ def distributed_cluster(slow_config: SlowITConfig) -> Iterator[None]:
     wait_for_flight_proxy_backend_count(slow_config, 3)
     ray.init(address="auto")
     try:
+        ray.data.DataContext.get_current()
         _wait_for_ray_workers(slow_config)
         yield
     finally:

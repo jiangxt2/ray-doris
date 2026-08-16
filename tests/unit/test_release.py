@@ -100,6 +100,8 @@ def write_slow_result(path: Path, **overrides: object) -> Path:
             "logical_endpoint_tls",
             "mysql_all_workers",
             "ray_worker_retry",
+            "stream_load_transport_fault",
+            "stream_load_write_all_workers",
         ],
     }
     data.update(overrides)
@@ -141,6 +143,8 @@ def test_slow_result_accepts_exact_full_profile_evidence(tmp_path) -> None:
                     "logical_endpoint_tls",
                     "mysql_all_workers",
                     "ray_worker_retry",
+                    "stream_load_transport_fault",
+                    "stream_load_write_all_workers",
                     "ray_worker_retry",
                 ]
             },

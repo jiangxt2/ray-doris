@@ -29,7 +29,7 @@ openssl req \
   echo "basicConstraints=critical,CA:FALSE"
   echo "keyUsage=critical,digitalSignature,keyEncipherment"
   echo "extendedKeyUsage=serverAuth"
-  echo "subjectAltName=DNS:flight-proxy,DNS:fe,IP:172.31.128.2,IP:172.31.128.6"
+  echo "subjectAltName=DNS:flight-proxy,DNS:fe,IP:172.20.128.2,IP:172.20.128.6"
 } > "${target}/fe.ext"
 
 openssl x509 \
