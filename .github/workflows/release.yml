@@ -88,7 +88,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.candidate.outputs.sha }}
-      - uses: actions/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           python-version: "3.12"
