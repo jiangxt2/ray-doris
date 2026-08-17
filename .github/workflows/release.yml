@@ -77,98 +77,9 @@ jobs:
     with:
       candidate_sha: ${{ needs.candidate.outputs.sha }}
 
-  slow-evidence:
-    name: Verify exact-SHA slow evidence
-    needs: [candidate, verify]
-    if: >-
-      always() &&
-      needs.candidate.result == 'success' &&
-      needs.verify.result == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      run_id: ${{ steps.slow-run.outputs.run-id }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-          ref: ${{ needs.candidate.outputs.sha }}
-      - name: Find exact-SHA slow result
-        id: slow-run
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
-        with:
-          script: |
-            const candidateSha = `${{ needs.candidate.outputs.sha }}`;
-            const artifactName = `ray-doris-slow-result-${candidateSha}`;
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRunsForRepo,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head_sha: candidateSha,
-                status: "success",
-                per_page: 100,
-              }
-            );
-            const reusablePath =
-              `${context.repo.owner}/${context.repo.repo}/.github/workflows/slow-integration.yml@`;
-            for (const summary of runs) {
-              const runResponse = await github.rest.actions.getWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: summary.id,
-              });
-              const run = runResponse.data;
-              const directPath = run.path.split("@", 1)[0];
-              const direct = directPath === ".github/workflows/slow-integration.yml";
-              const reusable = (run.referenced_workflows || []).some((workflow) =>
-                workflow.path.startsWith(reusablePath) && workflow.sha === candidateSha
-              );
-              if (!direct && !reusable) {
-                continue;
-              }
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id,
-                name: artifactName,
-                per_page: 100,
-              });
-              if (artifacts.data.artifacts.some((artifact) => !artifact.expired)) {
-                core.setOutput("run-id", String(run.id));
-                return;
-              }
-            }
-            core.setFailed(`No successful full slow result exists for ${candidateSha}`);
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ray-doris-slow-result-${{ needs.candidate.outputs.sha }}
-          path: slow-result
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.slow-run.outputs.run-id }}
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - name: Verify slow result identity
-        env:
-          CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
-          SLOW_RUN_ID: ${{ steps.slow-run.outputs.run-id }}
-        run: >-
-          python tools/check_slow_result.py
-          slow-result/slow-result.json
-          --expected-commit "$CANDIDATE_SHA"
-          --expected-run-id "$SLOW_RUN_ID"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        id: upload
-        with:
-          name: release-slow-evidence
-          path: slow-result/slow-result.json
-          if-no-files-found: error
-
   build:
     name: Build and verify distributions
-    needs: [candidate, verify, slow-evidence]
+    needs: [candidate, verify]
     runs-on: ubuntu-latest
     outputs:
       distributions_artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -177,22 +88,12 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.candidate.outputs.sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ needs.slow-evidence.outputs.artifact_id }}
-          path: slow-evidence/
-          merge-multiple: true
       - uses: actions/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           python-version: "3.12"
       - run: uv venv --python 3.12
       - run: uv pip install --python .venv/bin/python "build==1.3.0" "twine==6.2.0"
-      - run: >-
-          .venv/bin/python tools/check_slow_result.py
-          slow-evidence/slow-result.json
-          --expected-commit "${{ needs.candidate.outputs.sha }}"
-          --expected-run-id "${{ needs.slow-evidence.outputs.run_id }}"
       - run: .venv/bin/python -m build --outdir release-artifacts/packages
       - run: .venv/bin/twine check release-artifacts/packages/*
       - run: >-

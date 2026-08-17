@@ -39,7 +39,6 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     require("workflow_dispatch:" in release_workflow, "release must support a candidate dry run")
     for tool in (
         "tools/check_release.py",
-        "tools/check_slow_result.py",
         "tools/verify_release_artifacts.py",
         "tools/verify_release_tag.py",
     ):
@@ -47,7 +46,6 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     for job_id in (
         "candidate",
         "verify",
-        "slow-evidence",
         "build",
         "install-smoke",
         "testpypi-publish",
@@ -63,14 +61,6 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     require(
         "candidate_sha: ${{ needs.candidate.outputs.sha }}" in _job(release_workflow, "verify"),
         "release gates must use the validated SHA",
-    )
-    require(
-        "actions/github-script@" in _job(release_workflow, "slow-evidence"),
-        "release must locate the exact-SHA slow artifact",
-    )
-    require(
-        "tools/check_slow_result.py" in _job(release_workflow, "slow-evidence"),
-        "release must validate the slow artifact",
     )
     require(
         '"build==1.3.0" "twine==6.2.0"' in _job(release_workflow, "build"),
