@@ -5,6 +5,7 @@
 .ruff_cache/
 .docs-venv/
 .venv*/
+uv.lock
 __pycache__/
 build/
 doc/_build/

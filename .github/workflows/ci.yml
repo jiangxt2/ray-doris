@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      candidate_sha:
+        description: Immutable release candidate commit to test
+        required: false
+        type: string
   pull_request:
   push:
     branches: [master]
@@ -28,8 +33,11 @@ jobs:
           - python: "3.12"
             ray: "2.56.1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: ${{ matrix.python }}
       - run: uv venv --python ${{ matrix.python }}
@@ -41,8 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12
@@ -51,14 +62,25 @@ jobs:
       - run: .venv/bin/ruff check .
       - run: .venv/bin/mypy
       - run: .venv/bin/pre-commit run --all-files
+      - run: >-
+          .venv/bin/python tools/check_workflow_pins.py
+          .github/workflows/ci.yml
+          .github/workflows/release.yml
+          .github/workflows/slow-integration.yml
+      - run: >-
+          .venv/bin/python tools/check_release_workflow.py
+          .github/workflows/ci.yml .github/workflows/release.yml
 
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
       - name: Install spelling system dependency
@@ -82,7 +104,7 @@ jobs:
         run: make -C doc strict SPHINXBUILD=../.docs-venv/bin/sphinx-build
       - name: Check documentation spelling
         run: make -C doc spelling SPHINXBUILD=../.docs-venv/bin/sphinx-build
-      - uses: lycheeverse/lychee-action@v2
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.4.1
         with:
           args: >-
             --no-progress
@@ -94,8 +116,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12
@@ -105,7 +130,7 @@ jobs:
       - name: Capture Doris logs
         if: always()
         run: docker compose -f tests/integration/docker-compose.yml logs --no-color > doris-it.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: doris-it-log
@@ -119,8 +144,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ray-doris"
-version = "0.1.0a1"
+version = "1.0"
 description = "Community-maintained Apache Doris connector for Ray Data"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -50,9 +50,11 @@ Homepage = "https://github.com/jiangxt2/ray-doris"
 Issues = "https://github.com/jiangxt2/ray-doris/issues"
 
 [tool.hatch.build.targets.wheel]
+core-metadata-version = "2.4"
 packages = ["src/ray_doris"]
 
 [tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
 exclude = ["/AGENTS.md"]
 
 [tool.pytest.ini_options]

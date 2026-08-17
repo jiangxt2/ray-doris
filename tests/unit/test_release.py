@@ -18,7 +18,7 @@ def _assert_redacted_exception(exception: BaseException, caplog, sentinel: str) 
     assert exception.__cause__ is None
 
 
-def write_pyproject(path: Path, version: str = "0.1.0a1") -> Path:
+def write_pyproject(path: Path, version: str = "1.0") -> Path:
     pyproject = path / "pyproject.toml"
     pyproject.write_text(
         f'[project]\nname = "ray-doris"\nversion = "{version}"\n',
@@ -32,7 +32,7 @@ def test_verify_release_accepts_matching_tag_on_master(monkeypatch, tmp_path) ->
     monkeypatch.setattr(check_release.subprocess, "run", run)
 
     check_release.verify_release(
-        tag="v0.1.0a1",
+        tag="v1.0",
         commit="candidate-sha",
         pyproject=write_pyproject(tmp_path),
     )
@@ -66,17 +66,43 @@ def test_verify_release_rejects_commit_outside_master(monkeypatch, tmp_path) -> 
 
     with pytest.raises(RuntimeError, match="origin/master"):
         check_release.verify_release(
-            tag="v0.1.0a1",
+            tag="v1.0",
             commit="other-sha",
             pyproject=write_pyproject(tmp_path),
         )
 
 
-def test_release_main_requires_github_tag_environment(monkeypatch) -> None:
-    monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
-    monkeypatch.delenv("GITHUB_SHA", raising=False)
-    with pytest.raises(RuntimeError, match="GITHUB_REF_NAME"):
-        check_release.main()
+def test_release_main_requires_candidate_arguments() -> None:
+    with pytest.raises(SystemExit):
+        check_release.main([])
+
+
+def test_verify_candidate_accepts_matching_dry_run(monkeypatch) -> None:
+    candidate_sha = "a" * 40
+    master_sha = "b" * 40
+    monkeypatch.setattr(
+        check_release,
+        "_git",
+        Mock(side_effect=[candidate_sha, master_sha]),
+    )
+    monkeypatch.setattr(
+        check_release,
+        "_git_file",
+        lambda _sha, path: (
+            '[project]\nname = "ray-doris"\nversion = "1.0"\n'
+            if path == "pyproject.toml"
+            else '__version__ = "1.0"\n'
+            if path == "src/ray_doris/__init__.py"
+            else "# release notes\n"
+        ),
+    )
+    monkeypatch.setattr(check_release.subprocess, "run", Mock(return_value=Mock(returncode=0)))
+
+    assert check_release.verify_candidate(
+        candidate_sha="candidate-ref",
+        mode="dry-run",
+        expected_version="1.0",
+    ) == (candidate_sha, "1.0", master_sha)
 
 
 def write_slow_result(path: Path, **overrides: object) -> Path:

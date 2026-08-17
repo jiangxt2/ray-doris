@@ -67,12 +67,12 @@ jobs:
       RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds || '5' }}
       RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit || '2g' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run distributed cluster scenario
         env:
           RAY_DORIS_SLOW_LOG_DIR: ${{ runner.temp }}/ray-doris-slow-it
         run: tests/slow_integration/run.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: ray-doris-slow-it-logs
@@ -80,7 +80,7 @@ jobs:
           if-no-files-found: warn
           overwrite: true
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ success() && env.RAY_DORIS_SLOW_PROFILE == 'full' }}
         with:
           name: ray-doris-slow-result-${{ github.sha }}
