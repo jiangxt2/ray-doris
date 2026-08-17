@@ -31,10 +31,12 @@ Write Unique Key table.
 import ray
 from ray_doris import DorisConnection, DorisTable, write_doris
 
-dataset = ray.data.from_items([
-    {"id": 1, "value": "first"},
-    {"id": 2, "value": "second"},
-])
+dataset = ray.data.from_items(
+    [
+        {"id": 1, "value": "first"},
+        {"id": 2, "value": "second"},
+    ]
+)
 result = write_doris(
     dataset,
     connection=DorisConnection(

@@ -94,10 +94,12 @@ statistics; Ray's `num_rows` and `size_bytes` remain separate accounting fields.
 import ray
 from ray_doris import DorisConnection, DorisTable, write_doris
 
-dataset = ray.data.from_items([
-    {"event_id": 1, "score": 95.0},
-    {"event_id": 2, "score": 88.0},
-])
+dataset = ray.data.from_items(
+    [
+        {"event_id": 1, "score": 95.0},
+        {"event_id": 2, "score": 88.0},
+    ]
+)
 result = write_doris(
     dataset,
     connection=DorisConnection(
