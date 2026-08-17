@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import os
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Iterator
 
@@ -101,6 +103,39 @@ def _connect(config: DorisITConfig, *, database: str | None = None):
     )
 
 
+def _is_positive_capacity(value: object) -> bool:
+    parts = str(value).split(maxsplit=1)
+    if not parts:
+        return False
+    try:
+        capacity = float(parts[0])
+    except ValueError:
+        return False
+    return math.isfinite(capacity) and capacity > 0
+
+
+def _doris_backends_ready(description: Sequence[str], rows: Iterable[Sequence[object]]) -> bool:
+    try:
+        alive_index = description.index("Alive")
+        available_index = description.index("AvailCapacity")
+        total_index = description.index("TotalCapacity")
+    except ValueError:
+        return False
+    backend_rows = tuple(rows)
+    if not backend_rows:
+        return False
+    for row in backend_rows:
+        try:
+            alive = str(row[alive_index]).casefold() == "true"
+            has_available_capacity = _is_positive_capacity(row[available_index])
+            has_total_capacity = _is_positive_capacity(row[total_index])
+        except IndexError:
+            return False
+        if not (alive and has_available_capacity and has_total_capacity):
+            return False
+    return True
+
+
 def _wait_for_doris(config: DorisITConfig) -> None:
     deadline = time.monotonic() + 240
     last_error: BaseException | None = None
@@ -111,10 +146,9 @@ def _wait_for_doris(config: DorisITConfig) -> None:
                 cursor = connection.cursor()
                 try:
                     cursor.execute("SHOW BACKENDS")
-                    names = [description[0] for description in cursor.description]
-                    alive_index = names.index("Alive")
-                    rows = cursor.fetchmany(16)
-                    if rows and any(str(row[alive_index]).lower() == "true" for row in rows):
+                    description = tuple(column[0] for column in cursor.description)
+                    rows = cursor.fetchall()
+                    if _doris_backends_ready(description, rows):
                         return
                 finally:
                     cursor.close()

@@ -9,7 +9,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9 and 3.10
+    import tomli as tomllib
 
 _PROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _PACKAGE_VERSION = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
