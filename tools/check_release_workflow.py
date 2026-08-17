@@ -37,6 +37,10 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
         require(bool(_job(ci_workflow, job_id)), f"CI is missing the {job_id} job")
     require('tags: ["v*"]' in release_workflow, "release must trigger on version tags")
     require("workflow_dispatch:" in release_workflow, "release must support a candidate dry run")
+    require("formal_publish:" in release_workflow, "release must expose explicit formal recovery")
+    require(
+        "release_tag:" in release_workflow, "formal recovery must name the existing release tag"
+    )
     for tool in (
         "tools/check_release.py",
         "tools/verify_release_artifacts.py",
@@ -66,10 +70,17 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
         '"build==1.3.0" "twine==6.2.0"' in _job(release_workflow, "build"),
         "release build must use the verified build and Twine pins",
     )
-    require(
-        "github.event_name == 'push'" in _job(release_workflow, "testpypi-publish"),
-        "TestPyPI upload must be tag-only",
-    )
+    formal_jobs = ("testpypi-publish", "testpypi-smoke", "publish", "github-release")
+    for job_id in formal_jobs:
+        job = _job(release_workflow, job_id)
+        require(
+            "github.event_name == 'workflow_dispatch' && inputs.formal_publish == true" in job,
+            f"{job_id} must allow only explicit formal recovery dispatches besides tag pushes",
+        )
+        require(
+            "github.ref == 'refs/heads/master'" in job,
+            f"{job_id} recovery dispatch must run from master",
+        )
     require(
         "environment: testpypi" in _job(release_workflow, "testpypi-publish"),
         "TestPyPI upload must use the testpypi Environment",

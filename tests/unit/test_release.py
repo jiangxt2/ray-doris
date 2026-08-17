@@ -1,7 +1,7 @@
 import json
 import traceback
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from tools import check_release
@@ -103,6 +103,43 @@ def test_verify_candidate_accepts_matching_dry_run(monkeypatch) -> None:
         mode="dry-run",
         expected_version="1.0",
     ) == (candidate_sha, "1.0", master_sha)
+
+
+def test_verify_candidate_peels_annotated_tag_event_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate_sha = "a" * 40
+    master_sha = "b" * 40
+    event_tag_object_sha = "c" * 40
+    git = Mock(side_effect=[candidate_sha, master_sha, candidate_sha])
+    monkeypatch.setattr(check_release, "_git", git)
+    monkeypatch.setattr(
+        check_release,
+        "_git_file",
+        lambda _sha, path: (
+            '[project]\nname = "ray-doris"\nversion = "1.0"\n'
+            if path == "pyproject.toml"
+            else '__version__ = "1.0"\n'
+            if path == "src/ray_doris/__init__.py"
+            else "# release notes\n"
+        ),
+    )
+    monkeypatch.setattr(check_release.subprocess, "run", Mock(return_value=Mock(returncode=0)))
+
+    assert check_release.verify_candidate(
+        candidate_sha="candidate-ref",
+        mode="tag",
+        expected_version="1.0",
+        tag="v1.0",
+        event_sha=event_tag_object_sha,
+        event_created=True,
+    ) == (candidate_sha, "1.0", master_sha)
+
+    assert git.call_args_list == [
+        call("rev-parse", "candidate-ref^{commit}"),
+        call("rev-parse", "origin/master^{commit}"),
+        call("rev-parse", f"{event_tag_object_sha}^{{commit}}"),
+    ]
 
 
 def write_slow_result(path: Path, **overrides: object) -> Path:

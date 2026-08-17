@@ -125,7 +125,8 @@ def verify_candidate(
     expected_tag = f"v{version}"
     _require_release_notes(resolved_sha, version)
     if mode == "tag":
-        if tag != expected_tag or event_sha != resolved_sha:
+        event_commit_sha = _git("rev-parse", f"{event_sha}^{{commit}}")
+        if tag != expected_tag or event_commit_sha != resolved_sha:
             raise RuntimeError(
                 "release tag identity does not match the candidate commit and version"
             )
