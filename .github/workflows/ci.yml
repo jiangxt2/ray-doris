@@ -32,6 +32,8 @@ jobs:
             ray: "2.55.1"
           - python: "3.12"
             ray: "2.56.1"
+          - python: "3.13"
+            ray: "2.56.1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -42,6 +44,13 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv venv --python ${{ matrix.python }}
       - run: uv pip install -e ".[test]" "ray[data]==${{ matrix.ray }}"
+      - name: Show resolved runtime versions
+        run: >-
+          .venv/bin/python -c
+          "from importlib.metadata import version;
+          print('ray=' + version('ray'));
+          print('pyarrow=' + version('pyarrow'));
+          print('typing-extensions=' + version('typing-extensions'))"
       - run: .venv/bin/python -m pytest tests/unit tests/contract --cov=ray_doris --cov-report=term-missing
 
   quality:
@@ -58,6 +67,12 @@ jobs:
           python-version: "3.12"
       - run: uv venv --python 3.12
       - run: uv pip install -e ".[dev,flight]" "ray[data]==2.56.1"
+      - name: Show resolved quality-tool versions
+        run: >-
+          .venv/bin/python -c
+          "from importlib.metadata import version;
+          packages = ('build', 'mypy', 'pre-commit', 'pytest', 'pytest-cov', 'ruff', 'twine');
+          print('\n'.join(f'{package}={version(package)}' for package in packages))"
       - run: .venv/bin/ruff format --check .
       - run: .venv/bin/ruff check .
       - run: .venv/bin/mypy
@@ -161,3 +176,7 @@ jobs:
       - run: uv venv --python 3.12 .venv-sdist
       - run: uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
       - run: .venv-sdist/bin/python -c "import ray_doris; print(ray_doris.__version__)"
+      - run: uv venv --python 3.13 .venv-package-py313
+      - run: uv pip install --python .venv-package-py313/bin/python dist/*.whl
+      - run: uv pip check --python .venv-package-py313/bin/python
+      - run: .venv-package-py313/bin/python -c "import ray_doris; print(ray_doris.__version__)"

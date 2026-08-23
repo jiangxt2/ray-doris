@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
@@ -18,31 +18,33 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Typing :: Typed",
 ]
 dependencies = [
   "PyMySQL>=1.1.1,<2",
   "ray[data]>=2.49.2,<2.57",
+  "typing-extensions>=4.12,<5",
 ]
 
 [project.optional-dependencies]
 flight = ["adbc-driver-flightsql>=1.11.0,<2; python_version >= '3.10'"]
 test = [
-  "pytest>=8.3",
-  "pytest-cov>=6.0",
-  "pytest-timeout>=2.3",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "pytest-timeout>=2.3,<3",
   "tomli>=2.0; python_version < '3.11'",
 ]
 dev = [
-  "build>=1.2.2",
-  "mypy>=1.17,<1.18",
-  "pre-commit>=4.2",
-  "pytest>=8.3",
-  "pytest-cov>=6.0",
-  "pytest-timeout>=2.3",
+  "build>=1.2.2,<2",
+  "mypy>=1.17,<2",
+  "pre-commit>=4.2,<5",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "pytest-timeout>=2.3,<3",
   "pyarrow-stubs>=20",
-  "ruff>=0.12.8",
-  "twine>=6.1",
+  "ruff==0.16.4",
+  "twine>=7,<8",
   "types-PyMySQL>=1.1.0",
 ]
 

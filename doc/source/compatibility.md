@@ -19,6 +19,7 @@ Continuous integration covers these combinations:
 | 3.9 | 2.49.2 | Alpha legacy compatibility only; unit and public Datasink contract tests |
 | 3.10 | 2.55.1 | Unit and Ray signature compatibility tests |
 | 3.12 | 2.56.1 | Unit, public Datasink contract, and required Doris 4.0.6 read/write integration tests |
+| 3.13 | 2.56.1 | Unit, public Datasink contract, package installation, and import tests |
 
 The optional distributed suite uses Python 3.12, Ray 2.55.1, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
@@ -51,6 +52,8 @@ leader election, quorum, multi-FE failover, or an external load balancer's backe
 ## Review Python and Flight limits
 
 The core package requires Python 3.9 or newer. Python 3.9 reached end of life on October 31, 2025, so it is retained only as an Alpha legacy compatibility target. It isn't part of a stable or production profile. A future stable release will require a Python line that still receives upstream security fixes at its release date.
+
+Python 3.13 is covered by unit, public Datasink contract, package installation, and import tests. The required Doris integration suite continues to use Python 3.12, so Python 3.13 is not a separate real-Doris deployment certification.
 
 The Flight extra is conditional on Python 3.10 or newer because the supported Arrow Database Connectivity (ADBC) Flight SQL dependency doesn't install on Python 3.9. Python 3.9 can use the MySQL transport. Explicit Flight and TLS-required automatic Flight fail early when the dependency isn't available.
 
