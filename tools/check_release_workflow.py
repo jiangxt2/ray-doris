@@ -71,6 +71,8 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     for tool in (
         "tools/check_release.py",
+        "tools/check_slow_result.py",
+        "tools/find_slow_evidence.py",
         "tools/verify_release_artifacts.py",
         "tools/verify_release_tag.py",
     ):
@@ -78,6 +80,7 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     for job_id in (
         "candidate",
         "verify",
+        "slow-evidence",
         "build",
         "install-smoke",
         "testpypi-publish",
@@ -95,6 +98,42 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
         "release gates must use the validated SHA",
     )
     require(
+        "tools/find_slow_evidence.py" in _job(release_workflow, "slow-evidence"),
+        "release must locate the exact-SHA slow artifact",
+    )
+    require(
+        "FORMAL_HISTORICAL_RECOVERY" in _job(release_workflow, "slow-evidence")
+        and "inputs.release_tag == 'v1.0'" in _job(release_workflow, "slow-evidence")
+        and "needs.candidate.outputs.version == '1.0'" in _job(release_workflow, "slow-evidence"),
+        "release must scope the slow-evidence exception to formal v1.0 recovery",
+    )
+    require(
+        "steps.slow_mode.outputs.historical_recovery != 'true'"
+        in _job(release_workflow, "slow-evidence"),
+        "release slow evidence steps must honor the explicit historical exception",
+    )
+    require(
+        "artifact-ids: ${{ steps.slow_run.outputs.artifact-id }}"
+        in _job(release_workflow, "slow-evidence"),
+        "release must download the selected slow artifact by ID",
+    )
+    require(
+        "run_id: ${{ steps.slow_run.outputs.run-id }}" in _job(release_workflow, "slow-evidence"),
+        "release must export the selected slow workflow run ID",
+    )
+    require(
+        "tools/check_slow_result.py" in _job(release_workflow, "slow-evidence"),
+        "release must validate the slow artifact",
+    )
+    require(
+        "needs.slow-evidence.outputs.artifact_id" in _job(release_workflow, "build"),
+        "release build must consume the verified slow artifact",
+    )
+    require(
+        "tools/check_slow_result.py" in _job(release_workflow, "build"),
+        "release build must revalidate the slow artifact",
+    )
+    require(
         '"build==1.3.0" "twine==6.2.0"' in _job(release_workflow, "build"),
         "release build must use the verified build and Twine pins",
     )
@@ -108,6 +147,10 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
         require(
             "github.ref == 'refs/heads/master'" in job,
             f"{job_id} recovery dispatch must run from master",
+        )
+        require(
+            "needs.slow-evidence.result == 'success'" in job,
+            f"{job_id} must require exact-SHA slow evidence",
         )
     require(
         "environment: testpypi" in _job(release_workflow, "testpypi-publish"),
@@ -170,15 +213,117 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     return tuple(failures)
 
 
+def slow_policy_failures(
+    slow_workflow: str,
+    slow_runner: str,
+    slow_compose: str,
+    ray_dockerfile: str,
+) -> tuple[str, ...]:
+    """Return slow-runner and exact-evidence policy violations."""
+    failures: list[str] = []
+
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+
+    require("workflow_call:" in slow_workflow, "slow workflow must expose workflow_call")
+    require("workflow_dispatch:" in slow_workflow, "slow workflow must support manual runs")
+    require("schedule:" in slow_workflow, "slow workflow must retain scheduled runs")
+    require(
+        "runs-on: [self-hosted, linux, x64, ray-doris-slow-it, ray-doris-slow-it-node24]"
+        in slow_workflow,
+        "slow workflow must use the dedicated self-hosted runner labels",
+    )
+    require(
+        "Verify runner capacity and tools" in slow_workflow,
+        "slow workflow must verify runner capacity before checkout",
+    )
+    require(
+        'RAY_DORIS_SLOW_COMMIT_SHA}" =~ ^[0-9a-f]{40}$' in slow_workflow,
+        "slow workflow must validate the evidence commit SHA",
+    )
+    require(
+        "persist-credentials: false" in slow_workflow,
+        "slow workflow checkout must not persist credentials",
+    )
+    require(
+        "ray-doris-slow-result-${{ inputs.candidate_sha || github.sha }}" in slow_workflow,
+        "slow result artifact must bind to the tested commit",
+    )
+    require(
+        "docker compose --project-name ray-doris-it" in slow_runner,
+        "slow runner must use the isolated Compose project",
+    )
+    require(
+        'RAY_DORIS_SLOW_COMMIT_SHA}" =~ ^[0-9a-f]{40}$' in slow_runner,
+        "slow runner must validate the evidence commit SHA",
+    )
+    require(
+        "network ls" in slow_runner,
+        "slow runner must reject stale Compose networks",
+    )
+    require(
+        "name=ray-doris-it-" in slow_runner,
+        "slow runner must reject stale Compose containers",
+    )
+    require(
+        "volume ls" in slow_runner,
+        "slow runner must reject stale Compose volumes",
+    )
+    require(
+        "build ray-head fe be-1" in slow_runner,
+        "slow runner must build each custom image before startup",
+    )
+    require(
+        "up -d --no-build" in slow_runner,
+        "slow runner must start Compose with --no-build",
+    )
+    require(
+        "up -d --build" not in slow_runner,
+        "slow runner must not rebuild images during startup",
+    )
+    require(
+        "image ls --filter dangling=true" in slow_runner,
+        "slow runner must record dangling-image state",
+    )
+    require(
+        "system df" in slow_runner,
+        "slow runner must record Docker disk usage",
+    )
+    require(
+        'RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-rayproject/ray:2.58.0-py312-cpu}"' in slow_compose,
+        "slow Compose must default to Ray 2.58.0",
+    )
+    require(
+        "RAY_DORIS_SLOW_RAY_IMAGE_ID" in slow_compose,
+        "slow Compose must pass image identity to the evidence manifest",
+    )
+    require(
+        'assert ray.__version__ == "2.58.0"' in ray_dockerfile,
+        "slow Ray image must assert Ray 2.58.0",
+    )
+    return tuple(failures)
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     """Check CI and release workflow policy."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ci", type=Path)
     parser.add_argument("release", type=Path)
+    parser.add_argument("slow", type=Path)
+    parser.add_argument("slow_runner", type=Path)
+    parser.add_argument("slow_compose", type=Path)
+    parser.add_argument("ray_dockerfile", type=Path)
     options = parser.parse_args(arguments)
     failures = release_policy_failures(
         options.ci.read_text(encoding="utf-8"),
         options.release.read_text(encoding="utf-8"),
+    )
+    failures += slow_policy_failures(
+        options.slow.read_text(encoding="utf-8"),
+        options.slow_runner.read_text(encoding="utf-8"),
+        options.slow_compose.read_text(encoding="utf-8"),
+        options.ray_dockerfile.read_text(encoding="utf-8"),
     )
     if failures:
         print("release workflow policy failed:")

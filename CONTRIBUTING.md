@@ -80,8 +80,8 @@ one Ray head, three Ray workers, one Doris 4.0.6 FE, three Doris 4.0.6 BEs, and 
 TLS and Flight ingress that exposes per-BE traffic counters. The functional profile loads 10,000
 rows, executes a bounded Stream Load write across the three Ray workers with Doris readback, and
 runs repeated Flight reads for at least five seconds. The script automatically uses a
-local `ray-cluster:2.55.1` image when present and otherwise uses the fixed public
-`rayproject/ray:2.55.1-py312-cpu` base. Select a different trusted local image with
+local `ray-cluster:2.58.0` image when present and otherwise uses the fixed public
+`rayproject/ray:2.58.0-py312-cpu` base. Select a different trusted local image with
 `RAY_BASE_IMAGE`. Run high-pressure profiles only on a dedicated host, for example:
 
 ```bash
@@ -95,9 +95,14 @@ Size the dedicated host for the requested container limits; the functional profi
 at 2 GiB by default.
 
 The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
-the default CI workflow. A successful full run emits `slow-result.json`; release verification
-requires that artifact from a successful workflow run on the exact release SHA. The `core` profile
-is diagnostic only and never produces release evidence.
+the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; release
+verification requires exactly one non-expired artifact from a successful workflow run on the exact
+release SHA and revalidates its workflow run ID. The `core` profile is diagnostic only and never
+produces release evidence. The dedicated self-hosted runner must be Linux x64 with Docker Compose,
+at least 16 GiB available memory, at least 20 GiB free disk, and Actions Runner 2.327.1 or newer.
+Register it with the `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels.
+The only slow-evidence exception is formal recovery of the immutable `v1.0` release; all new tags
+and release dry runs require the full manifest.
 
 ## Documentation checks
 

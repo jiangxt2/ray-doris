@@ -16,8 +16,8 @@ The project is alpha software. The tested compatibility window is:
 | 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 
 Doris 4.0.6 is the fixed compatibility target for both required and opt-in distributed integration
-tests. The distributed suite still runs Ray 2.55.1 pending the separate exact-SHA evidence
-alignment work; it doesn't provide Ray 2.58 distributed evidence.
+tests. The slow distributed suite is aligned to Ray 2.58.0; a release candidate still needs one
+successful full run on its exact commit before that result can serve as release evidence.
 This project is not maintained or endorsed by the Ray or Apache Doris projects.
 
 ## Documentation
@@ -383,13 +383,13 @@ targeted profile without the worker/BE failure scenarios:
 RAY_DORIS_SLOW_PROFILE=core tests/slow_integration/run.sh
 ```
 
-The script automatically reuses a local `ray-cluster:2.55.1` image when present. Otherwise, the
-Dockerfile uses the fixed public base `rayproject/ray:2.55.1-py312-cpu`. You can select another
+The script automatically reuses a local `ray-cluster:2.58.0` image when present. Otherwise, the
+Dockerfile uses the fixed public base `rayproject/ray:2.58.0-py312-cpu`. You can select another
 trusted local image with `RAY_BASE_IMAGE`; the build verifies `ray.__version__` before installing
 this project:
 
 ```bash
-RAY_BASE_IMAGE=ray-cluster:2.55.1 tests/slow_integration/run.sh
+RAY_BASE_IMAGE=ray-cluster:2.58.0 tests/slow_integration/run.sh
 ```
 
 The default profile is a functional distributed integration test, not a load test. On a dedicated
@@ -407,9 +407,15 @@ Size the dedicated host for the requested container limits. The script refuses t
 existing `ray-doris-it` Compose project, preserves pytest, Ray, Doris, and HAProxy logs, and removes
 only the resources created by that exact project.
 
-Successful `full` runs write `slow-result.json`. The scheduled/reusable workflow uploads it under an
-artifact name bound to the tested commit; release verification accepts only a successful full
-manifest whose commit and workflow run ID exactly match the downloaded artifact source.
+Successful `full` runs write a schema-versioned `slow-result.json` containing the tested commit,
+workflow run, Ray/Doris/Python versions, image IDs, topology, parameters, and scenario list. The
+workflow uploads it under an artifact name bound to the tested commit; release verification accepts
+only one successful, non-expired full manifest whose commit and workflow run ID exactly match the
+downloaded artifact source. The dedicated runner must provide Linux x64, Docker Compose, at least
+16 GiB available memory, at least 20 GiB free disk, and Actions Runner 2.327.1 or newer.
+Register it with the `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels.
+Only formal recovery of the immutable `v1.0` release may bypass this slow-evidence gate; new
+release candidates and tags require the full manifest.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete checks.
 

@@ -3,6 +3,10 @@ name: Slow distributed integration
 on:
   workflow_call:
     inputs:
+      candidate_sha:
+        description: Immutable commit whose checked-out code and evidence are being tested
+        required: false
+        type: string
       profile:
         description: Slow integration profile
         required: false
@@ -25,6 +29,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      candidate_sha:
+        description: Immutable commit whose checked-out code and evidence are being tested
+        required: false
+        default: ""
+        type: string
       profile:
         description: Slow integration profile
         required: true
@@ -59,31 +68,63 @@ concurrency:
 jobs:
   distributed:
     name: Ray and Doris distributed slow integration
-    runs-on: [self-hosted, linux, x64, ray-doris-slow-it]
+    runs-on: [self-hosted, linux, x64, ray-doris-slow-it, ray-doris-slow-it-node24]
     timeout-minutes: 30
     env:
+      RAY_DORIS_SLOW_COMMIT_SHA: ${{ inputs.candidate_sha || github.sha }}
       RAY_DORIS_SLOW_PROFILE: ${{ inputs.profile || 'full' }}
       RAY_DORIS_ROW_COUNT: ${{ inputs.row_count || '10000' }}
       RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds || '5' }}
       RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit || '2g' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Verify runner capacity and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/ray-doris-slow-it"
+          {
+            [[ "${RAY_DORIS_SLOW_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]
+            test "${RUNNER_OS}" = Linux
+            test "${RUNNER_ARCH}" = X64
+            command -v docker
+            command -v awk
+            command -v df
+            available_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+            test -n "${available_kib}"
+            test "${available_kib}" -ge $((16 * 1024 * 1024))
+            free_kib=$(df -Pk "${RUNNER_TEMP}" | awk 'NR == 2 {print $4}')
+            test -n "${free_kib}"
+            test "${free_kib}" -ge $((20 * 1024 * 1024))
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            echo "available_memory_kib=${available_kib}"
+            echo "free_disk_kib=${free_kib}"
+            env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+              -u http_proxy -u https_proxy -u all_proxy docker version
+            env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+              -u http_proxy -u https_proxy -u all_proxy docker compose version
+          } 2>&1 | tee "${RUNNER_TEMP}/ray-doris-slow-it/runner-preflight.log"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha || github.sha }}
       - name: Run distributed cluster scenario
         env:
           RAY_DORIS_SLOW_LOG_DIR: ${{ runner.temp }}/ray-doris-slow-it
         run: tests/slow_integration/run.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ray-doris-slow-it-logs
+          name: ray-doris-slow-it-logs-${{ inputs.candidate_sha || github.sha }}
           path: ${{ runner.temp }}/ray-doris-slow-it/*.log
           if-no-files-found: warn
           overwrite: true
           retention-days: 30
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ success() && env.RAY_DORIS_SLOW_PROFILE == 'full' }}
         with:
-          name: ray-doris-slow-result-${{ github.sha }}
+          name: ray-doris-slow-result-${{ inputs.candidate_sha || github.sha }}
           path: ${{ runner.temp }}/ray-doris-slow-it/slow-result.json
           if-no-files-found: error
           overwrite: true

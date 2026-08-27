@@ -1,12 +1,12 @@
 name: ray-doris-it
 
 x-ray-common: &ray-common
-  image: ray-doris-it-ray:local
+  image: "${RAY_DORIS_RAY_IMAGE:-ray-doris-it-ray:local}"
   build:
     context: ../..
     dockerfile: tests/slow_integration/docker/ray.Dockerfile
     args:
-      RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-rayproject/ray:2.55.1-py312-cpu}"
+      RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-rayproject/ray:2.58.0-py312-cpu}"
       UV_DEFAULT_INDEX: "${UV_DEFAULT_INDEX:-https://pypi.org/simple}"
   environment:
     DORIS_HOST: flight-proxy
@@ -22,6 +22,12 @@ x-ray-common: &ray-common
     RAY_DORIS_SLOW_COMMIT_SHA: "${RAY_DORIS_SLOW_COMMIT_SHA:?run.sh must provide the commit SHA}"
     RAY_DORIS_SLOW_PROFILE: "${RAY_DORIS_SLOW_PROFILE:?run.sh must provide the profile}"
     RAY_DORIS_SLOW_RUN_ID: "${RAY_DORIS_SLOW_RUN_ID:?run.sh must provide the run ID}"
+    RAY_DORIS_SLOW_RAY_IMAGE_ID: "${RAY_DORIS_SLOW_RAY_IMAGE_ID:-unknown}"
+    RAY_DORIS_SLOW_DORIS_FE_IMAGE_ID: "${RAY_DORIS_SLOW_DORIS_FE_IMAGE_ID:-unknown}"
+    RAY_DORIS_SLOW_DORIS_BE_IMAGE_ID: "${RAY_DORIS_SLOW_DORIS_BE_IMAGE_ID:-unknown}"
+    RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID: "${RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID:-unknown}"
+    RAY_DORIS_SLOW_RAY_BASE_IMAGE_ID: "${RAY_DORIS_SLOW_RAY_BASE_IMAGE_ID:-unknown}"
+    RAY_DORIS_BE_MEMORY_LIMIT: "${RAY_DORIS_BE_MEMORY_LIMIT:-2g}"
     RAY_DORIS_STRESS_SECONDS: "${RAY_DORIS_STRESS_SECONDS:-5}"
     RAY_WORKER_IPS: 172.20.128.11,172.20.128.12,172.20.128.13
     RAY_USAGE_STATS_ENABLED: "0"
@@ -37,6 +43,18 @@ x-ray-common: &ray-common
     nofile:
       soft: 200000
       hard: 200000
+
+x-doris-fe: &doris-fe
+  image: "${RAY_DORIS_FE_IMAGE:-ray-doris-it-fe:local}"
+  build:
+    context: ./docker
+    dockerfile: fe.Dockerfile
+
+x-doris-be: &doris-be
+  image: "${RAY_DORIS_BE_IMAGE:-ray-doris-it-be:local}"
+  build:
+    context: ./docker
+    dockerfile: be.Dockerfile
 
 services:
   tls-init:
@@ -54,9 +72,7 @@ services:
     restart: "no"
 
   fe:
-    build:
-      context: ./docker
-      dockerfile: fe.Dockerfile
+    <<: *doris-fe
     hostname: fe
     depends_on:
       tls-init:
@@ -87,9 +103,7 @@ services:
         hard: 200000
 
   be-1:
-    build:
-      context: ./docker
-      dockerfile: be.Dockerfile
+    <<: *doris-be
     hostname: be-1
     depends_on:
       fe:
@@ -109,9 +123,7 @@ services:
         hard: 200000
 
   be-2:
-    build:
-      context: ./docker
-      dockerfile: be.Dockerfile
+    <<: *doris-be
     hostname: be-2
     depends_on:
       fe:
@@ -131,9 +143,7 @@ services:
         hard: 200000
 
   be-3:
-    build:
-      context: ./docker
-      dockerfile: be.Dockerfile
+    <<: *doris-be
     hostname: be-3
     depends_on:
       fe:

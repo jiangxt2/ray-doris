@@ -21,12 +21,12 @@ Continuous integration covers these combinations:
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
 | 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 
-The optional distributed suite uses Python 3.12, Ray 2.55.1, and Doris 4.0.6. It runs one Ray head
+The optional distributed suite uses Python 3.12, Ray 2.58.0, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
-TLS and Flight ingress. The suite continues to run against Ray 2.55.1 and will move to Ray 2.58 in
-the separate release-evidence alignment change; it doesn't yet provide Ray 2.58 distributed
-evidence. The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains
-an experimental regression path.
+TLS and Flight ingress. The workflow is now aligned to Ray 2.58.0; a future 1.1 candidate still
+needs one successful full run on its exact commit before the result can serve as release evidence.
+The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
+experimental regression path.
 
 ## Understand the Doris target
 
