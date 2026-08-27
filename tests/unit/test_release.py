@@ -501,6 +501,7 @@ def test_slow_result_writer_emits_release_manifest(monkeypatch, tmp_path) -> Non
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(write_result.ray, "__version__", "2.58.0")
+    monkeypatch.setattr(write_result.platform, "python_version", lambda: "3.12.12")
 
     manifest = tmp_path / "slow-result.json"
     write_result.write_result(manifest)
