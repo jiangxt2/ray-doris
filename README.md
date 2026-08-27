@@ -418,4 +418,6 @@ Build and validate the documentation with the commands in the
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [CHANGELOG.md](CHANGELOG.md).
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Version history is published through
+[GitHub Releases](https://github.com/jiangxt2/ray-doris/releases) from the versioned files under
+`release-notes/`.

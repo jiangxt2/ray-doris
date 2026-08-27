@@ -35,6 +35,16 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     for job_id in ("unit", "quality", "docs", "integration", "package"):
         require(bool(_job(ci_workflow, job_id)), f"CI is missing the {job_id} job")
+    docs_job = _job(ci_workflow, "docs")
+    linkcheck_paths = "README.md CONTRIBUTING.md SECURITY.md release-notes doc/source"
+    require(
+        linkcheck_paths in docs_job,
+        "CI documentation linkcheck must cover versioned release notes",
+    )
+    require(
+        "CHANGELOG.md" not in docs_job,
+        "CI documentation linkcheck must not reference CHANGELOG.md",
+    )
     integration_job = _job(ci_workflow, "integration")
     compose = "docker compose -f tests/integration/docker-compose.yml"
     require(

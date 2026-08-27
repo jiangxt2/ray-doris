@@ -124,7 +124,7 @@ jobs:
           args: >-
             --no-progress
             --max-retries 3
-            README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md doc/source
+            README.md CONTRIBUTING.md SECURITY.md release-notes doc/source
 
   integration:
     name: Doris 4.0.6 integration

@@ -16,6 +16,13 @@ except ModuleNotFoundError:  # Python 3.9 and 3.10
 
 _PROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _PACKAGE_VERSION = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
+_TWO_COMPONENT_VERSION = re.compile(r"^[0-9]+\.[0-9]+$")
+
+
+def _validate_version(value: str, source: str) -> str:
+    if _TWO_COMPONENT_VERSION.fullmatch(value) is None:
+        raise RuntimeError(f"{source} must use a two-component major.minor version")
+    return value
 
 
 def project_version(pyproject: Path) -> str:
@@ -23,7 +30,7 @@ def project_version(pyproject: Path) -> str:
     match = _PROJECT_VERSION.search(pyproject.read_text(encoding="utf-8"))
     if match is None:
         raise RuntimeError("pyproject.toml has no static project version")
-    return match.group(1)
+    return _validate_version(match.group(1), "project version")
 
 
 def package_version(package_init: Path) -> str:
@@ -31,7 +38,7 @@ def package_version(package_init: Path) -> str:
     match = _PACKAGE_VERSION.search(package_init.read_text(encoding="utf-8"))
     if match is None:
         raise RuntimeError("package initializer has no static __version__")
-    return match.group(1)
+    return _validate_version(match.group(1), "package version")
 
 
 def _git(*arguments: str) -> str:
@@ -60,12 +67,12 @@ def _git_file(candidate_sha: str, path: str) -> str:
 
 def _candidate_version(candidate_sha: str) -> tuple[str, str]:
     project = tomllib.loads(_git_file(candidate_sha, "pyproject.toml"))["project"]
-    project_value = str(project["version"])
+    project_value = _validate_version(str(project["version"]), "candidate project version")
     package_text = _git_file(candidate_sha, "src/ray_doris/__init__.py")
     package_match = _PACKAGE_VERSION.search(package_text)
     if package_match is None:
         raise RuntimeError("release candidate package initializer has no static __version__")
-    package_value = package_match.group(1)
+    package_value = _validate_version(package_match.group(1), "candidate package version")
     if project_value != package_value:
         raise RuntimeError("release candidate versions do not match")
     return project_value, package_value

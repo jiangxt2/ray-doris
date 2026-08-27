@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ def _validate_timeout(name: str, value: object) -> float:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
+        or not math.isfinite(value)
         or value <= 0
         or value > 31_536_000
     ):

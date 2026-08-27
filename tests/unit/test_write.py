@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -100,6 +101,24 @@ def test_connection_rejects_unsafe_configuration(kwargs: dict[str, Any]) -> None
     values.update(kwargs)
     with pytest.raises(DorisConfigurationError):
         DorisConnection(**values)
+
+
+@pytest.mark.parametrize("name", ["connect_timeout_seconds", "request_timeout_seconds"])
+@pytest.mark.parametrize(
+    "value",
+    [True, "30", 0, -1, math.nan, math.inf, -math.inf, 31_536_001],
+)
+def test_connection_rejects_invalid_timeout(name: str, value: object) -> None:
+    with pytest.raises(
+        DorisConfigurationError,
+        match=rf"{name} must be finite, positive, and at most 31536000 seconds",
+    ):
+        _connection(**{name: value})
+
+
+@pytest.mark.parametrize("name", ["connect_timeout_seconds", "request_timeout_seconds"])
+def test_connection_accepts_timeout_upper_bound(name: str) -> None:
+    assert getattr(_connection(**{name: 31_536_000}), name) == 31_536_000
 
 
 def test_ipv6_endpoint_is_rendered_with_brackets() -> None:

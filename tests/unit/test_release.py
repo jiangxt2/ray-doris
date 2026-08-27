@@ -28,6 +28,27 @@ def write_pyproject(path: Path, version: str = "1.0") -> Path:
     return pyproject
 
 
+@pytest.mark.parametrize("version", ["1.0", "1.10", "2.0"])
+def test_project_version_accepts_two_components(tmp_path: Path, version: str) -> None:
+    assert check_release.project_version(write_pyproject(tmp_path, version)) == version
+
+
+@pytest.mark.parametrize("version", ["1", "1.0.0", "v1.0", "1.0rc1"])
+def test_project_version_rejects_non_two_component_versions(
+    tmp_path: Path,
+    version: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=r"two-component major\.minor"):
+        check_release.project_version(write_pyproject(tmp_path, version))
+
+
+def test_package_version_rejects_three_components(tmp_path: Path) -> None:
+    package_init = tmp_path / "__init__.py"
+    package_init.write_text('__version__ = "1.0.0"\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match=r"two-component major\.minor"):
+        check_release.package_version(package_init)
+
+
 def _workflow_sources() -> tuple[str, str]:
     root = Path(__file__).parents[2]
     return (
@@ -72,6 +93,24 @@ def test_release_policy_rejects_compose_rebuild_during_startup() -> None:
 
     assert any(
         "must not rebuild Doris images" in failure
+        for failure in release_policy_failures(invalid_ci, release_workflow)
+    )
+
+
+def test_release_policy_uses_versioned_release_notes_for_linkcheck() -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_ci = ci_workflow.replace("release-notes", "missing-notes", 1)
+    assert any(
+        "linkcheck must cover versioned release notes" in failure
+        for failure in release_policy_failures(invalid_ci, release_workflow)
+    )
+
+
+def test_release_policy_rejects_reintroduced_changelog_reference() -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_ci = ci_workflow.replace("release-notes", "CHANGELOG.md release-notes", 1)
+    assert any(
+        "must not reference CHANGELOG.md" in failure
         for failure in release_policy_failures(invalid_ci, release_workflow)
     )
 
