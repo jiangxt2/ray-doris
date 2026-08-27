@@ -385,6 +385,71 @@ def test_verify_candidate_accepts_matching_dry_run(monkeypatch) -> None:
     ) == (candidate_sha, "1.0", master_sha)
 
 
+def test_verify_candidate_accepts_enterprise_release_profile(monkeypatch) -> None:
+    candidate_sha = "a" * 40
+    master_sha = "b" * 40
+    monkeypatch.setattr(
+        check_release,
+        "_git",
+        Mock(side_effect=[candidate_sha, master_sha]),
+    )
+    monkeypatch.setattr(
+        check_release,
+        "_git_file",
+        lambda _sha, path: (
+            '[project]\nname = "ray-doris"\nversion = "1.0"\n'
+            if path == "pyproject.toml"
+            else '__version__ = "1.0"\n'
+            if path == "src/ray_doris/__init__.py"
+            else "# release notes\n"
+        ),
+    )
+    monkeypatch.setattr(check_release.subprocess, "run", Mock(return_value=Mock(returncode=0)))
+
+    assert check_release.verify_candidate(
+        candidate_sha="candidate-ref",
+        mode="dry-run",
+        expected_version="1.0",
+        release_profile="enterprise",
+    ) == (candidate_sha, "1.0", master_sha)
+
+
+@pytest.mark.parametrize(
+    ("profile", "slow_required"),
+    [("alpha", "slow_required=false"), ("enterprise", "slow_required=true")],
+)
+def test_release_main_exports_slow_evidence_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile: str,
+    slow_required: str,
+) -> None:
+    monkeypatch.setattr(
+        check_release,
+        "verify_candidate",
+        lambda **_: ("a" * 40, "1.1", "b" * 40),
+    )
+    output = tmp_path / "github-output"
+    assert (
+        check_release.main(
+            [
+                "--mode",
+                "dry-run",
+                "--release-profile",
+                profile,
+                "--candidate-ref",
+                "candidate-ref",
+                "--github-output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    lines = output.read_text(encoding="utf-8").splitlines()
+    assert f"release_profile={profile}" in lines
+    assert slow_required in lines
+
+
 def test_verify_candidate_peels_annotated_tag_event_sha(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

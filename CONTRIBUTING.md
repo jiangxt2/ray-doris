@@ -95,14 +95,15 @@ Size the dedicated host for the requested container limits; the functional profi
 at 2 GiB by default.
 
 The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
-the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; release
-verification requires exactly one non-expired artifact from a successful workflow run on the exact
-release SHA and revalidates its workflow run ID. The `core` profile is diagnostic only and never
-produces release evidence. The dedicated self-hosted runner must be Linux x64 with Docker Compose,
-at least 16 GiB available memory, at least 20 GiB free disk, and Actions Runner 2.327.1 or newer.
-Register it with the `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels.
-The only slow-evidence exception is formal recovery of the immutable `v1.0` release; all new tags
-and release dry runs require the full manifest.
+the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; the
+enterprise release profile requires exactly one non-expired artifact from a successful workflow run
+on the exact release SHA and revalidates its workflow run ID. The Alpha release profile may defer
+this artifact and must not claim enterprise or stable distributed certification. The `core` profile
+is diagnostic only and never produces release evidence. The dedicated self-hosted runner must be
+Linux x64 with Docker Compose, at least 16 GiB available memory, at least 20 GiB free disk, and
+Actions Runner 2.327.1 or newer. Register it with the `ray-doris-slow-it` and
+`ray-doris-slow-it-node24` labels. Formal recovery of the immutable `v1.0` release remains a
+separate historical exception.
 
 ## Documentation checks
 

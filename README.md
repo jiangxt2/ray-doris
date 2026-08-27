@@ -16,8 +16,9 @@ The project is alpha software. The tested compatibility window is:
 | 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 
 Doris 4.0.6 is the fixed compatibility target for both required and opt-in distributed integration
-tests. The slow distributed suite is aligned to Ray 2.58.0; a release candidate still needs one
-successful full run on its exact commit before that result can serve as release evidence.
+tests. The slow distributed suite is aligned to Ray 2.58.0. Enterprise-candidate releases require
+one successful full run on the exact commit; this Alpha release does not claim that distributed
+evidence or stable/production readiness.
 This project is not maintained or endorsed by the Ray or Apache Doris projects.
 
 ## Documentation
@@ -414,8 +415,9 @@ only one successful, non-expired full manifest whose commit and workflow run ID 
 downloaded artifact source. The dedicated runner must provide Linux x64, Docker Compose, at least
 16 GiB available memory, at least 20 GiB free disk, and Actions Runner 2.327.1 or newer.
 Register it with the `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels.
-Only formal recovery of the immutable `v1.0` release may bypass this slow-evidence gate; new
-release candidates and tags require the full manifest.
+Enterprise release profiles require the full manifest. Alpha release profiles may defer the slow
+evidence, but must not claim enterprise or stable distributed certification. Formal recovery of the
+immutable `v1.0` release remains a separate historical exception.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete checks.
 

@@ -23,8 +23,9 @@ Continuous integration covers these combinations:
 
 The optional distributed suite uses Python 3.12, Ray 2.58.0, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
-TLS and Flight ingress. The workflow is now aligned to Ray 2.58.0; a future 1.1 candidate still
-needs one successful full run on its exact commit before the result can serve as release evidence.
+TLS and Flight ingress. The workflow is now aligned to Ray 2.58.0. Enterprise-candidate releases
+require one successful full run on their exact commit; the Alpha 1.1 release does not claim that
+distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
 experimental regression path.
 
@@ -93,7 +94,8 @@ The required integration suite uses the default frontend HTTP query-plan endpoin
 
 The enterprise-candidate MySQL profile requires `password_env`, strict MySQL TLS, HTTPS query
 planning with hostname verification, `on_query_plan_error="error"`, and explicit query-plan and
-MySQL socket timeouts. A release candidate also requires a successful full slow manifest bound to
-the exact release SHA and workflow run.
+MySQL socket timeouts. The enterprise release profile requires a successful full slow manifest bound
+to the exact release SHA and workflow run. The Alpha release profile may defer that evidence and
+must state the resulting distributed-certification limitation.
 
 Doris 4.0.6 advertises plaintext Flight `grpc` endpoints in the distributed suite. Flight stays on an isolated Compose network. The test doesn't establish a positive `grpc+tls` Doris server compatibility claim.

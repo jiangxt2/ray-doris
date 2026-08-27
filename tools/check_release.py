@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # Python 3.9 and 3.10
 _PROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _PACKAGE_VERSION = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _TWO_COMPONENT_VERSION = re.compile(r"^[0-9]+\.[0-9]+$")
+_RELEASE_PROFILES = ("alpha", "enterprise")
 
 
 def _validate_version(value: str, source: str) -> str:
@@ -116,8 +117,11 @@ def verify_candidate(
     event_created: bool = False,
     event_deleted: bool = False,
     event_forced: bool = False,
+    release_profile: str = "alpha",
 ) -> tuple[str, str, str]:
     """Validate a dry-run or tag candidate and return its identity tuple."""
+    if release_profile not in _RELEASE_PROFILES:
+        raise RuntimeError(f"unsupported release profile: {release_profile}")
     resolved_sha = _git("rev-parse", f"{candidate_sha}^{{commit}}")
     master_sha = _git("rev-parse", f"{master_ref}^{{commit}}")
     result = subprocess.run(
@@ -151,6 +155,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     """Validate a workflow-dispatch candidate or a newly created release tag."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("tag", "dry-run"), required=True)
+    parser.add_argument("--release-profile", choices=_RELEASE_PROFILES, default="alpha")
     parser.add_argument("--candidate-ref", required=True)
     parser.add_argument("--expected-version", default="")
     parser.add_argument("--tag", default="")
@@ -171,11 +176,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
         event_created=options.event_created.lower() == "true",
         event_deleted=options.event_deleted.lower() == "true",
         event_forced=options.event_forced.lower() == "true",
+        release_profile=options.release_profile,
     )
     if options.github_output:
         output = Path(options.github_output)
         with output.open("a", encoding="utf-8") as stream:
             stream.write(f"mode={options.mode}\nsha={candidate_sha}\nversion={version}\n")
+            stream.write(f"release_profile={options.release_profile}\n")
+            stream.write(
+                f"slow_required={'true' if options.release_profile == 'enterprise' else 'false'}\n"
+            )
             stream.write(
                 f"tag={options.tag if options.mode == 'tag' else ''}\nmaster_sha={master_sha}\n"
             )

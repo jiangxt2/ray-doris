@@ -65,6 +65,9 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     require('tags: ["v*"]' in release_workflow, "release must trigger on version tags")
     require("workflow_dispatch:" in release_workflow, "release must support a candidate dry run")
+    require(
+        "release_profile:" in release_workflow, "release must expose Alpha and enterprise profiles"
+    )
     require("formal_publish:" in release_workflow, "release must expose explicit formal recovery")
     require(
         "release_tag:" in release_workflow, "formal recovery must name the existing release tag"
@@ -93,6 +96,15 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
         "uses: ./.github/workflows/ci.yml" in _job(release_workflow, "verify"),
         "release gates must call CI",
     )
+    candidate_job = _job(release_workflow, "candidate")
+    require(
+        '--release-profile "${RELEASE_PROFILE}"' in candidate_job,
+        "release candidate validation must receive the selected release profile",
+    )
+    require(
+        "slow_required: ${{ steps.candidate.outputs.slow_required }}" in candidate_job,
+        "release candidate must expose whether slow evidence is required",
+    )
     require(
         "candidate_sha: ${{ needs.candidate.outputs.sha }}" in _job(release_workflow, "verify"),
         "release gates must use the validated SHA",
@@ -100,6 +112,19 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     require(
         "tools/find_slow_evidence.py" in _job(release_workflow, "slow-evidence"),
         "release must locate the exact-SHA slow artifact",
+    )
+    slow_job = _job(release_workflow, "slow-evidence")
+    require(
+        "slow_required: ${{ steps.slow_mode.outputs.slow_required }}" in slow_job,
+        "release slow evidence must expose its required/optional mode",
+    )
+    require(
+        "RELEASE_PROFILE" in slow_job and "slow_required=true" in slow_job,
+        "enterprise release profile must require slow evidence",
+    )
+    require(
+        "slow_required == 'true'" in slow_job,
+        "optional Alpha releases must skip slow artifact operations",
     )
     require(
         "FORMAL_HISTORICAL_RECOVERY" in _job(release_workflow, "slow-evidence")
@@ -128,6 +153,10 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     require(
         "needs.slow-evidence.outputs.artifact_id" in _job(release_workflow, "build"),
         "release build must consume the verified slow artifact",
+    )
+    require(
+        "needs.slow-evidence.outputs.slow_required == 'true'" in _job(release_workflow, "build"),
+        "release build must only consume slow evidence when required",
     )
     require(
         "tools/check_slow_result.py" in _job(release_workflow, "build"),
