@@ -6,7 +6,7 @@ environment, and target image are unchanged.
 
 | Code state | Suite/profile | Environment and coverage | Result |
 | --- | --- | --- | --- |
-| Worktree `release-evidence-alignment` at base `ebbf2e55406c482f5f938a1e23c120d08d7c2a3e` plus current uncommitted workflow/slow-infrastructure changes | `tests/slow_integration/run.sh` (`core`) | Planned Ray 2.58.0, Python 3.12, Doris 4.0.6; runner preflight, one Ray head, three Ray workers, one FE, three BEs, isolated Compose build/start/cleanup, and tablet task/worker distribution | `Planned`; do not run until the code is committed to the candidate branch and a runner with both `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels is available |
+| Merged `master` commit `a3d2ef2e90f9100f97ea646b7b59fe26fbdf1448` (the `release-evidence-alignment` worktree has been cleaned) | `tests/slow_integration/run.sh` (`core`) | Ray 2.58.0, Python 3.12, Doris 4.0.6; runner preflight, one Ray head, three Ray workers, one FE, three BEs, isolated Compose build/start/cleanup, and tablet task/worker distribution | `Code complete`; repository runner count is 0, so no `core` or `full` execution evidence exists. Run only for the final `1.1` candidate after a runner with both `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels is available |
 | Baseline `086160e` plus approved write implementation (working tree), existing two-hour Compose stack | `tests/integration` | Same coverage as the final run; the session fixture failed before tests because the reused BE reported `MEM_ALLOC_FAILED` under its 2 GiB container limit | 30 setup errors; infrastructure failure recorded in `/tmp/ray-doris-it-final-failed.log` |
 | Baseline `086160e` plus approved write implementation (working tree), freshly recreated Compose stack | `tests/integration` | Python 3.12.12, Ray 2.56.1, PyArrow 25.0.1, PyMySQL 2.2.8, Doris 4.0.6; existing reads plus Stream Load load/upsert/partial-update/aggregate, type round-trip, permissions, empty Dataset, and schema preflight | 30 passed in 51.95s; Compose log `/tmp/ray-doris-it-final.log` |
 | Review-fixed working tree after P1/P2/Nit changes | `tests/integration` | Same real Doris 4.0.6 read/write, permissions, schema, redirect, and empty Dataset coverage | 30 passed in 52.23s; pytest log `/tmp/ray-doris-it-review-fixes.log`; Compose log `/tmp/ray-doris-it-review-fixes-compose.log` |
@@ -16,14 +16,15 @@ environment, and target image are unchanged.
 | Base `40cd4b861a473988e328c84cc3d582693473854d` plus implementation diff SHA-256 `ec2e4af209d9380ac31e9bf487c4a8857d22b07d303557a0e7c0ad42fe93a158` | `tests/integration` | Python 3.12.12, Ray 2.58.0, PyArrow 25.0.1, PyMySQL 2.2.8, Doris 4.0.6; required read/write, schema, permissions, redirect, empty Dataset, Flight, and Stream Load coverage before the final constructor-time write guard | 30 passed in 56.00s; superseded for final-code evidence after static review added the empty-Dataset unsupported-Ray guard; JUnit `/tmp/ray-doris-ray258-required-it.xml`, Compose log `/tmp/ray-doris-ray258-required-it-compose.log` |
 | Base `40cd4b861a473988e328c84cc3d582693473854d` plus final implementation diff SHA-256 `ce9ae55d87ab875dc8503ff8b05b1fd836aad30a863d138eea9070f816db01b4` | `tests/integration` | Python 3.12.12, Ray 2.58.0, PyArrow 25.0.1, PyMySQL 2.2.8, Doris 4.0.6; exact final worktree code after adding constructor-time write compatibility validation | 30 passed in 56.04s; JUnit `/tmp/ray-doris-ray258-required-it-final.xml`, Compose log `/tmp/ray-doris-ray258-required-it-final-compose.log` |
 
-The final-run evidence below records the exact `git diff --no-ext-diff`, Python/Ray/PyArrow/PyMySQL
-versions, Docker and Compose versions, image digests, Compose topology, command lines, and retained
-pytest/Compose logs. All required rows have a passing result; the infrastructure-only failed attempt
-is retained separately for diagnosis.
+The historical required-write and slow-run evidence below records the exact `git diff --no-ext-diff`,
+Python/Ray/PyArrow/PyMySQL versions, Docker and Compose versions, image digests, Compose topology,
+command lines, and retained pytest/Compose logs. All completed required rows have a passing result; the
+infrastructure-only failed attempt is retained separately for diagnosis. The current Ray 2.58 release
+infrastructure row above has no runtime result because the repository has no eligible self-hosted runner.
 
-## Evidence manifest
+## Historical evidence manifest
 
-- source revision: baseline `086160eb72c6533e507100521e8f2dae9b04c922` plus uncommitted worktree changes;
+- historical source revision: baseline `086160eb72c6533e507100521e8f2dae9b04c922` plus uncommitted worktree changes;
 - Python: 3.12.12;
 - Ray: 2.56.1;
 - PyArrow: 25.0.1;
@@ -39,7 +40,7 @@ is retained separately for diagnosis.
 - package checks: isolated Hatchling build completed and `.venv/bin/twine check dist/*` passed;
 - documentation checks: `tools/check_docs.py`, Sphinx strict build, and spelling check passed.
 
-The final slow profile used the recorded local resource overrides so the three-worker Ray cluster
+The historical slow profile used the recorded local resource overrides so the three-worker Ray cluster
 could complete within the available Docker memory. The profile exercised every required scenario
 after the review fixes and its manifest records the exact override values; this is not a claim about
 the unmodified stress defaults. The only subsequent production-source edit removed an unreachable
@@ -48,7 +49,7 @@ Doris evidence remains valid under the no-runtime-change test reuse rule.
 
 ## Ray 2.58 compatibility evidence
 
-- worktree: `/Users/jiangxintong/GitHub/workspace/ray-doris-ray-258-compatibility`, branch
+- historical worktree (cleaned): `/Users/jiangxintong/GitHub/workspace/ray-doris-ray-258-compatibility`, branch
   `ray-258-compatibility`;
 - base revision: `40cd4b861a473988e328c84cc3d582693473854d`;
 - runtime implementation diff: `/tmp/ray-doris-ray258-implementation-final.diff`, SHA-256
