@@ -14,6 +14,7 @@ import pyarrow as pa
 import pytest
 from ray.data.datasource import WriteResult
 
+from ray_doris import _compat
 from ray_doris._compat import datasink_compatibility, prepare_write_remote_args
 from ray_doris._errors import (
     DorisAmbiguousWriteError,
@@ -148,6 +149,14 @@ def test_ray_datasink_compatibility_matrix_is_explicit() -> None:
     assert new.on_write_start_has_schema
     assert not new.on_write_start_on_empty_dataset
     assert new.schema_source == "first_input_bundle"
+
+
+def test_datasink_rejects_unsupported_ray_before_empty_write_can_skip_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_compat, "_RAY_VERSION", "2.59.0")
+    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.59"):
+        DorisDatasink(_connection(), DorisTable("db", "table"))
 
 
 def test_retry_policy_is_fail_closed_and_copies_mapping() -> None:

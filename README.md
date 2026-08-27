@@ -10,13 +10,14 @@ The project is alpha software. The tested compatibility window is:
 
 | Python | Ray | Verification |
 |---|---|---|
-| 3.9 | 2.49.2 | Alpha legacy compatibility only; unit and signature tests |
-| 3.10 | 2.55.1 | Unit and compatibility tests |
-| 3.12 | 2.56.1 | Doris 4.0.6 required IT |
+| 3.9 | 2.49.2 | Alpha legacy compatibility; documented ReadTask and public Datasink contracts |
+| 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
+| 3.12 | 2.58.0 | Unit, documented/public contracts, and Doris 4.0.6 required IT |
+| 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 
 Doris 4.0.6 is the fixed compatibility target for both required and opt-in distributed integration
-tests. The distributed suite runs Ray 2.55.1 so local and dedicated runners can reuse that exact
-cached image without changing the tested version.
+tests. The distributed suite still runs Ray 2.55.1 pending the separate exact-SHA evidence
+alignment work; it doesn't provide Ray 2.58 distributed evidence.
 This project is not maintained or endorsed by the Ray or Apache Doris projects.
 
 ## Documentation
@@ -48,8 +49,8 @@ Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL release
 Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains an Alpha legacy
 compatibility target for the default MySQL transport, not a stable or production profile.
 
-The package accepts `ray[data]>=2.49.2,<2.57`. The runtime guard supports final releases in that
-window and local rebuild suffixes such as `2.56.1+vendor.1`; release candidates, development
+The package accepts `ray[data]>=2.49.2,<2.59`. The runtime guard supports final releases in that
+window and local rebuild suffixes such as `2.58.0+vendor.1`; release candidates, development
 builds, and post-release builds aren't supported. Flight SQL and `transport="auto"` are
 experimental; the MySQL protocol is the only production-candidate transport. Datasource
 construction rejects an unsupported Ray release before opening a Doris connection.
@@ -328,9 +329,19 @@ uv pip install -e ".[dev,flight]"
 Run the required real Doris integration suite:
 
 ```bash
-docker compose -f tests/integration/docker-compose.yml up -d --build
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml build fe
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml build be
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml up -d --no-build
 .venv/bin/python -m pytest tests/integration
-docker compose -f tests/integration/docker-compose.yml down -v --rmi local
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml down -v --rmi local
 ```
 
 The integration fixture can use an existing isolated Doris instance when the `DORIS_*` connection

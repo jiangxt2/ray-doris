@@ -29,11 +29,11 @@ jobs:
           - python: "3.9"
             ray: "2.49.2"
           - python: "3.10"
-            ray: "2.55.1"
+            ray: "2.57.0"
           - python: "3.12"
-            ray: "2.56.1"
+            ray: "2.58.0"
           - python: "3.13"
-            ray: "2.56.1"
+            ray: "2.58.0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -66,7 +66,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12
-      - run: uv pip install -e ".[dev,flight]" "ray[data]==2.56.1"
+      - run: uv pip install -e ".[dev,flight]" "ray[data]==2.58.0"
       - name: Show resolved quality-tool versions
         run: >-
           .venv/bin/python -c
@@ -139,12 +139,29 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv venv --python 3.12
-      - run: uv pip install -e ".[test,flight]" "ray[data]==2.56.1"
-      - run: docker compose -f tests/integration/docker-compose.yml up -d --build
+      - run: uv pip install -e ".[test,flight]" "ray[data]==2.58.0"
+      - name: Build Doris FE test image
+        run: >-
+          env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+          -u http_proxy -u https_proxy -u all_proxy
+          docker compose -f tests/integration/docker-compose.yml build fe
+      - name: Build Doris BE test image
+        run: >-
+          env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+          -u http_proxy -u https_proxy -u all_proxy
+          docker compose -f tests/integration/docker-compose.yml build be
+      - name: Start Doris without rebuilding
+        run: >-
+          env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+          -u http_proxy -u https_proxy -u all_proxy
+          docker compose -f tests/integration/docker-compose.yml up -d --no-build
       - run: .venv/bin/python -m pytest tests/integration -v
       - name: Capture Doris logs
         if: always()
-        run: docker compose -f tests/integration/docker-compose.yml logs --no-color > doris-it.log
+        run: >-
+          env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+          -u http_proxy -u https_proxy -u all_proxy
+          docker compose -f tests/integration/docker-compose.yml logs --no-color > doris-it.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -152,7 +169,10 @@ jobs:
           path: doris-it.log
       - name: Stop Doris
         if: always()
-        run: docker compose -f tests/integration/docker-compose.yml down -v --rmi local
+        run: >-
+          env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+          -u http_proxy -u https_proxy -u all_proxy
+          docker compose -f tests/integration/docker-compose.yml down -v --rmi local
 
   package:
     name: Package

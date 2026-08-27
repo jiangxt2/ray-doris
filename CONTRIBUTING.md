@@ -28,29 +28,34 @@ pre-commit install --hook-type pre-commit
 .venv/bin/twine check dist/*
 ```
 
-Changes to SQL, planning, schema conversion, or either reader must also pass the Docker-backed
-Doris suite:
+Changes to SQL, planning, schema conversion, either reader, or the write path must also pass the
+Docker-backed Doris suite:
 
 ```bash
-docker compose -f tests/integration/docker-compose.yml up -d --build
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml build fe
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml build be
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml up -d --no-build
 .venv/bin/python -m pytest tests/integration -v
-docker compose -f tests/integration/docker-compose.yml down -v --rmi local
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml logs --no-color \
+  > /tmp/ray-doris-it.log
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  docker compose -f tests/integration/docker-compose.yml down -v --rmi local
 ```
 
-Write changes use the same isolated Doris project and must run the write/readback coverage in
-`tests/integration`:
-
-```bash
-docker compose -f tests/integration/docker-compose.yml up -d --build
-.venv/bin/python -m pytest tests/integration -v
-docker compose -f tests/integration/docker-compose.yml logs --no-color > /tmp/ray-doris-it.log
-docker compose -f tests/integration/docker-compose.yml down -v --rmi local
-```
-
-The integration suite covers Stream Load metadata discovery, Duplicate/Unique/Aggregate table
-models, Merge-on-Write partial updates, permissions, redirects, response classification, and
-Ray's public Datasink lifecycle. Keep the command output and Compose logs; update
-`tests/it-ledger.md` with the source SHA, dependency versions, image digest, topology, and result.
+The same isolated suite covers reads and writes, including Stream Load metadata discovery,
+Duplicate/Unique/Aggregate table models, Merge-on-Write partial updates, permissions, redirects,
+response classification, readback, and Ray's public Datasink lifecycle. Keep the command output and
+Compose logs; update `tests/it-ledger.md` with the source SHA, dependency versions, image digest,
+topology, and result.
 
 Do not skip infrastructure tests to produce a green result. Diagnose the service, retain the
 Compose logs, and fix the root cause. Never use broad Docker cleanup commands; operate only on the
@@ -115,7 +120,7 @@ not describe an untested configuration or extension point as supported behavior.
 
 ## Compatibility
 
-Code must remain compatible with the declared `ray[data]>=2.49.2,<2.57` range. Python 3.9 is an
+Code must remain compatible with the declared `ray[data]>=2.49.2,<2.59` range. Python 3.9 is an
 Alpha legacy compatibility target because it no longer receives upstream security fixes; it isn't
 a stable production baseline. Do not import modules below `ray.data._internal`. Add a unit test for
 every independently verifiable behavior, including error paths and cleanup. Unsupported Doris types

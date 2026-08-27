@@ -5,6 +5,7 @@ from unittest.mock import Mock, call
 
 import pytest
 from tools import check_release
+from tools.check_release_workflow import release_policy_failures
 from tools.check_slow_result import verify_slow_result
 
 
@@ -25,6 +26,54 @@ def write_pyproject(path: Path, version: str = "1.0") -> Path:
         encoding="utf-8",
     )
     return pyproject
+
+
+def _workflow_sources() -> tuple[str, str]:
+    root = Path(__file__).parents[2]
+    return (
+        (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"),
+        (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        (
+            "docker compose -f tests/integration/docker-compose.yml build fe",
+            "build the Doris FE image",
+        ),
+        (
+            "docker compose -f tests/integration/docker-compose.yml build be",
+            "build the Doris BE image",
+        ),
+        (
+            "docker compose -f tests/integration/docker-compose.yml up -d --no-build",
+            "start Doris with --no-build",
+        ),
+    ],
+)
+def test_release_policy_requires_prebuilt_doris_integration_images(
+    command: str,
+    message: str,
+) -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    assert release_policy_failures(ci_workflow, release_workflow) == ()
+
+    invalid_ci = ci_workflow.replace(command, "missing-doris-command", 1)
+    assert any(
+        message in failure for failure in release_policy_failures(invalid_ci, release_workflow)
+    )
+
+
+def test_release_policy_rejects_compose_rebuild_during_startup() -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_ci = ci_workflow.replace("up -d --no-build", "up -d --build", 1)
+
+    assert any(
+        "must not rebuild Doris images" in failure
+        for failure in release_policy_failures(invalid_ci, release_workflow)
+    )
 
 
 def test_verify_release_accepts_matching_tag_on_master(monkeypatch, tmp_path) -> None:

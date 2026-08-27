@@ -97,7 +97,7 @@ pyyaml==6.0.3
     # via
     #   myst-parser
     #   ray
-ray==2.56.1
+ray==2.58.0
     # via
     #   -r doc/requirements-doc.txt
     #   ray-doris (pyproject.toml)
@@ -151,6 +151,7 @@ trove-classifiers==2026.6.1.19
     # via hatchling
 typing-extensions==4.16.0
     # via
+    #   ray-doris (pyproject.toml)
     #   beautifulsoup4
     #   pydata-sphinx-theme
     #   referencing

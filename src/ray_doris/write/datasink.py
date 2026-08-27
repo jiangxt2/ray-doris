@@ -95,6 +95,7 @@ class DorisDatasink(Datasink[Mapping[str, Any]]):
         table: DorisTable,
         options: Optional[DorisWriteOptions] = None,
     ) -> None:
+        validate_datasink_signature()
         self._connection = connection
         self._table = table
         self._options = options or DorisWriteOptions()

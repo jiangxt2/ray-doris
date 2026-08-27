@@ -56,7 +56,7 @@ def test_package_version_matches_distribution_metadata() -> None:
 
 def test_distribution_metadata_bounds_supported_ray_window() -> None:
     package_requirements = requires("ray-doris") or []
-    assert "ray[data]<2.57,>=2.49.2" in package_requirements
+    assert "ray[data]<2.59,>=2.49.2" in package_requirements
 
 
 def test_distribution_metadata_declares_typing_extensions() -> None:

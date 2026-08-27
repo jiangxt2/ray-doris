@@ -15,7 +15,7 @@ from ray.data.datasource import Datasink, ReadTask
 from ray_doris._errors import DorisConfigurationError
 
 _MIN_RAY_VERSION = (2, 49, 2)
-_MAX_RAY_VERSION = (2, 57, 0)
+_MAX_RAY_VERSION = (2, 59, 0)
 _RAY_VERSION = ray.__version__
 _FINAL_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$")
 
@@ -26,7 +26,7 @@ def ensure_supported_ray_version() -> None:
     release = tuple(int(part) for part in match.groups()) if match is not None else ()
     if not _MIN_RAY_VERSION <= release < _MAX_RAY_VERSION:
         raise DorisConfigurationError(
-            "ray-doris supports final Ray releases >=2.49.2,<2.57; "
+            "ray-doris supports final Ray releases >=2.49.2,<2.59; "
             "PEP 440 local build suffixes are allowed, but prerelease and post-release builds "
             f"are unsupported; found Ray {_RAY_VERSION!r}"
         )
@@ -45,7 +45,7 @@ def make_read_task(
     if "schema" not in parameters:
         raise DorisConfigurationError(
             "installed Ray ReadTask lacks required schema support within the final "
-            "Ray >=2.49.2,<2.57 compatibility window"
+            "Ray >=2.49.2,<2.59 compatibility window"
         )
     kwargs["schema"] = schema
     if "per_task_row_limit" in parameters:

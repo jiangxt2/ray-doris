@@ -35,6 +35,24 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     for job_id in ("unit", "quality", "docs", "integration", "package"):
         require(bool(_job(ci_workflow, job_id)), f"CI is missing the {job_id} job")
+    integration_job = _job(ci_workflow, "integration")
+    compose = "docker compose -f tests/integration/docker-compose.yml"
+    require(
+        f"{compose} build fe" in integration_job,
+        "CI integration must build the Doris FE image exactly once before startup",
+    )
+    require(
+        f"{compose} build be" in integration_job,
+        "CI integration must build the Doris BE image exactly once before startup",
+    )
+    require(
+        f"{compose} up -d --no-build" in integration_job,
+        "CI integration must start Doris with --no-build",
+    )
+    require(
+        f"{compose} up -d --build" not in integration_job,
+        "CI integration must not rebuild Doris images during startup",
+    )
     require('tags: ["v*"]' in release_workflow, "release must trigger on version tags")
     require("workflow_dispatch:" in release_workflow, "release must support a candidate dry run")
     require("formal_publish:" in release_workflow, "release must expose explicit formal recovery")

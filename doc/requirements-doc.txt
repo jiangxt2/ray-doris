@@ -6,7 +6,7 @@ hatchling>=1.27
 myst-parser==5.1.0
 pymysql==1.2.0
 pydata-sphinx-theme==0.18.0
-ray[data]==2.56.1
+ray[data]==2.58.0
 sphinx==8.2.3
 sphinx-design==0.7.0
 sphinxcontrib-spelling==8.0.1
