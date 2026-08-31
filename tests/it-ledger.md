@@ -94,3 +94,33 @@ Doris evidence remains valid under the no-runtime-change test reuse rule.
 - cleanup: the exact `ray-doris-it` containers, network, volumes, and local test images were removed;
   the pre-existing dangling image set was unchanged;
 - slow full: not run; it remains assigned to the separate exact-candidate release-evidence work.
+
+## Python 3.11 CI compatibility evidence
+
+- worktree: `/Users/jiangxintong/GitHub/workspace/ray-doris-python-311-ci`, branch
+  `python-311-ci`;
+- base revision: `72da8256a3c998a031897cf3a473058a9aee8bcc`; evidence applies to the committed
+  tree containing this ledger and must be rebound after any runtime, dependency,
+  test-infrastructure, or execution-config change;
+- scope: CI matrix, package smoke, compatibility documentation, and a standard-library matrix
+  consistency checker; production source, dependencies, Doris tests, Compose, and slow execution
+  configuration are unchanged;
+- Python 3.11.15 / Ray 2.58.0: full unit and public contract suite 309 passed with 85% aggregate
+  coverage; three warnings are Ray deprecations from public contract execution;
+- Python 3.12.12 / Ray 2.58.0: full unit and public contract suite 309 passed with 85% aggregate
+  coverage; the same three Ray deprecation warnings were recorded;
+- Python 3.11 final wheel smoke: base and Flight-extra installations succeeded in separate venvs;
+  both `uv pip check` runs passed, and `ray_doris`, `adbc_driver_flightsql.dbapi`, and
+  `adbc_driver_manager.dbapi` imported successfully from the built wheel;
+- package: isolated wheel and sdist build succeeded after build dependency resolution; Twine checks
+  passed for both artifacts; Python 3.12 wheel and sdist installs, dependency checks, and imports
+  passed after the review fix added the missing `uv pip check` steps;
+- static and policy checks: Ruff format/lint, strict mypy for 18 source files, pre-commit, workflow
+  action pins, release-workflow policy, and the new nine-case matrix consistency suite passed;
+- review fixes: the Flight smoke now requires exactly one wheel before constructing the direct
+  reference; the CI indentation and missing-unit-job paths are independently tested; README and
+  compatibility verification wording and source formatting are aligned;
+- documentation: `tools/check_docs.py`, Sphinx strict, and spelling passed;
+- required Doris IT, slow distributed IT, and benchmark: not run because production source,
+  dependencies, protocol behavior, Doris tests, Compose, and execution configuration are unchanged;
+  the final Python 3.12 / Ray 2.58.0 required IT result above remains reusable.

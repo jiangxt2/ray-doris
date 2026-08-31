@@ -18,6 +18,7 @@ Continuous integration covers these combinations:
 | --- | --- | --- |
 | 3.9 | 2.49.2 | Alpha legacy compatibility; documented ReadTask and public Datasink contract tests |
 | 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
+| 3.11 | 2.58.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
 | 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 
@@ -56,7 +57,13 @@ leader election, quorum, multi-FE failover, or an external load balancer's backe
 
 The core package requires Python 3.9 or newer. Python 3.9 reached end of life on October 31, 2025, so it is retained only as an Alpha legacy compatibility target. It isn't part of a stable or production profile. A future stable release will require a Python line that still receives upstream security fixes at its release date.
 
-Python 3.13 is covered by unit, public Datasink contract, package installation, and import tests. The required Doris integration suite continues to use Python 3.12, so Python 3.13 is not a separate real-Doris deployment certification.
+Python 3.11 is covered by unit, public Datasink contract, base and Flight wheel installation,
+dependency checks, and import tests. It doesn't have a separate real-Doris deployment
+certification; the required Doris integration suite remains on Python 3.12.
+
+Python 3.13 is covered by unit, public Datasink contract, package installation, and import tests.
+The required Doris integration suite continues to use Python 3.12, so Python 3.13 is not a separate
+real-Doris deployment certification.
 
 The Flight extra is conditional on Python 3.10 or newer because the supported Arrow Database Connectivity (ADBC) Flight SQL dependency doesn't install on Python 3.9. Python 3.9 can use the MySQL transport. Explicit Flight and TLS-required automatic Flight fail early when the dependency isn't available.
 

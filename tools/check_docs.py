@@ -29,6 +29,17 @@ _HTML_META_PATTERN = re.compile(
     r"\A---\s*\n.*?html_meta:\s*\n\s+description:\s*.+?\n---\s*\n",
     re.DOTALL,
 )
+_UNIT_JOB_PATTERN = re.compile(r"(?ms)^  unit:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)")
+_CI_MATRIX_ENTRY_PATTERN = re.compile(
+    r'^          - python: "(?P<python>[0-9]+\.[0-9]+)"\s*\n'
+    r'^            ray: "(?P<ray>[0-9]+\.[0-9]+\.[0-9]+)"\s*$',
+    re.MULTILINE,
+)
+_MARKDOWN_MATRIX_ROW_PATTERN = re.compile(
+    r"^\|\s*(?P<python>[0-9]+\.[0-9]+)\s*"
+    r"\|\s*(?P<ray>[0-9]+\.[0-9]+\.[0-9]+)\s*\|",
+    re.MULTILINE,
+)
 
 _EXPECTED_NAVIGATION = (
     "quickstart",
@@ -79,6 +90,71 @@ def _toctree_targets(text: str) -> tuple[str, ...]:
         titled_target = re.fullmatch(r".+?\s*<(?P<target>[^>]+)>", line)
         targets.append(titled_target.group("target") if titled_target else line)
     return tuple(targets)
+
+
+def _ci_python_ray_matrix(text: str) -> tuple[tuple[str, str], ...]:
+    match = _UNIT_JOB_PATTERN.search(text)
+    if match is None:
+        return ()
+    return tuple(
+        (entry.group("python"), entry.group("ray"))
+        for entry in _CI_MATRIX_ENTRY_PATTERN.finditer(match.group("body"))
+    )
+
+
+def _markdown_python_ray_matrix(text: str) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (entry.group("python"), entry.group("ray"))
+        for entry in _MARKDOWN_MATRIX_ROW_PATTERN.finditer(text)
+    )
+
+
+def _duplicate_matrix_entries(
+    matrix: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    seen: set[tuple[str, str]] = set()
+    duplicates: list[tuple[str, str]] = []
+    for entry in matrix:
+        if entry in seen and entry not in duplicates:
+            duplicates.append(entry)
+        seen.add(entry)
+    return tuple(duplicates)
+
+
+def validate_compatibility_matrices(
+    ci_path: Path,
+    readme_path: Path,
+    compatibility_path: Path,
+) -> list[str]:
+    sources = (
+        (ci_path, _ci_python_ray_matrix(ci_path.read_text(encoding="utf-8"))),
+        (
+            readme_path,
+            _markdown_python_ray_matrix(readme_path.read_text(encoding="utf-8")),
+        ),
+        (
+            compatibility_path,
+            _markdown_python_ray_matrix(compatibility_path.read_text(encoding="utf-8")),
+        ),
+    )
+    errors: list[str] = []
+    for path, matrix in sources:
+        if not matrix:
+            errors.append(f"{path}: Python/Ray compatibility matrix is missing or malformed")
+            continue
+        duplicates = _duplicate_matrix_entries(matrix)
+        if duplicates:
+            errors.append(f"{path}: duplicate Python/Ray compatibility entries: {duplicates!r}")
+
+    ci_matrix = sources[0][1]
+    if ci_matrix:
+        for path, matrix in sources[1:]:
+            if matrix and matrix != ci_matrix:
+                errors.append(
+                    f"{path}: Python/Ray compatibility matrix is {matrix!r}; "
+                    f"expected CI matrix {ci_matrix!r}"
+                )
+    return errors
 
 
 def _resolve_target(target: str) -> Any:
@@ -168,6 +244,13 @@ def validate_python_examples(docs_root: Path) -> list[str]:
 def run_checks(docs_root: Path, *, static_only: bool) -> list[str]:
     errors = validate_navigation(docs_root)
     errors.extend(validate_page_metadata(docs_root))
+    errors.extend(
+        validate_compatibility_matrices(
+            REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml",
+            REPOSITORY_ROOT / "README.md",
+            docs_root / "compatibility.md",
+        )
+    )
     errors.extend(
         validate_api_reference(
             docs_root / "api" / "api.md",

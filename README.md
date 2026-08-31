@@ -12,6 +12,7 @@ The project is alpha software. The tested compatibility window is:
 |---|---|---|
 | 3.9 | 2.49.2 | Alpha legacy compatibility; documented ReadTask and public Datasink contracts |
 | 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
+| 3.11 | 2.58.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and Doris 4.0.6 required IT |
 | 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
 

@@ -30,6 +30,8 @@ jobs:
             ray: "2.49.2"
           - python: "3.10"
             ray: "2.57.0"
+          - python: "3.11"
+            ray: "2.58.0"
           - python: "3.12"
             ray: "2.58.0"
           - python: "3.13"
@@ -196,10 +198,30 @@ jobs:
       - run: .venv/bin/twine check dist/*
       - run: uv venv --python 3.12 .venv-package
       - run: uv pip install --python .venv-package/bin/python dist/*.whl
+      - run: uv pip check --python .venv-package/bin/python
       - run: .venv-package/bin/python -c "import ray_doris; print(ray_doris.__version__)"
       - run: uv venv --python 3.12 .venv-sdist
       - run: uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
+      - run: uv pip check --python .venv-sdist/bin/python
       - run: .venv-sdist/bin/python -c "import ray_doris; print(ray_doris.__version__)"
+      - run: uv venv --python 3.11 .venv-package-py311
+      - run: uv pip install --python .venv-package-py311/bin/python dist/*.whl
+      - run: uv pip check --python .venv-package-py311/bin/python
+      - run: .venv-package-py311/bin/python -c "import ray_doris; print(ray_doris.__version__)"
+      - run: uv venv --python 3.11 .venv-package-py311-flight
+      - name: Install Python 3.11 Flight wheel
+        run: |
+          shopt -s nullglob
+          packages=(dist/*.whl)
+          test "${#packages[@]}" -eq 1
+          uv pip install \
+            --python .venv-package-py311-flight/bin/python \
+            "ray-doris[flight] @ file://${GITHUB_WORKSPACE}/${packages[0]}"
+      - run: uv pip check --python .venv-package-py311-flight/bin/python
+      - run: >-
+          .venv-package-py311-flight/bin/python -c
+          "import adbc_driver_flightsql.dbapi, adbc_driver_manager.dbapi, ray_doris;
+          print(ray_doris.__version__)"
       - run: uv venv --python 3.13 .venv-package-py313
       - run: uv pip install --python .venv-package-py313/bin/python dist/*.whl
       - run: uv pip check --python .venv-package-py313/bin/python
