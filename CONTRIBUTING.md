@@ -97,7 +97,7 @@ at 2 GiB by default.
 The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
 the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; the
 enterprise release profile requires exactly one non-expired artifact from a successful workflow run
-on the exact release SHA and revalidates its workflow run ID. The Alpha release profile may defer
+on the exact release SHA and revalidates its workflow run ID. The standard release profile may defer
 this artifact and must not claim enterprise or stable distributed certification. The `core` profile
 is diagnostic only and never produces release evidence. The dedicated self-hosted runner must be
 Linux x64 with Docker Compose, at least 16 GiB available memory, at least 20 GiB free disk, and
@@ -126,8 +126,8 @@ not describe an untested configuration or extension point as supported behavior.
 
 ## Compatibility
 
-Code must remain compatible with the declared `ray[data]>=2.49.2,<2.59` range. Python 3.9 is an
-Alpha legacy compatibility target because it no longer receives upstream security fixes; it isn't
+Code must remain compatible with the declared `ray[data]>=2.49.2,<2.59` range. Python 3.9 is a
+legacy compatibility target because it no longer receives upstream security fixes; it isn't
 a stable production baseline. Do not import modules below `ray.data._internal`. Add a unit test for
 every independently verifiable behavior, including error paths and cleanup. Unsupported Doris types
 must fail closed. Datasink callback signatures and timing differ between Ray 2.49.2–2.52.x and

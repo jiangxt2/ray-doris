@@ -276,6 +276,31 @@ def test_release_policy_rejects_compose_rebuild_during_startup() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("expected", "replacement", "message"),
+    [
+        ("default: standard", "default: alpha", "default to standard"),
+        ("- standard", "- alpha", "default to standard"),
+        ("- enterprise", "- missing-enterprise", "retain the enterprise"),
+        (
+            "inputs.release_profile || 'standard'",
+            "inputs.release_profile || 'alpha'",
+            "tag releases",
+        ),
+    ],
+)
+def test_release_policy_requires_standard_defaults_and_enterprise_option(
+    expected: str,
+    replacement: str,
+    message: str,
+) -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_release = release_workflow.replace(expected, replacement, 1)
+    assert any(
+        message in failure for failure in release_policy_failures(ci_workflow, invalid_release)
+    )
+
+
 def test_release_policy_scopes_slow_exception_to_v1_0_recovery() -> None:
     ci_workflow, release_workflow = _workflow_sources()
     assert release_policy_failures(ci_workflow, release_workflow) == ()
@@ -385,7 +410,8 @@ def test_verify_candidate_accepts_matching_dry_run(monkeypatch) -> None:
     ) == (candidate_sha, "1.0", master_sha)
 
 
-def test_verify_candidate_accepts_enterprise_release_profile(monkeypatch) -> None:
+@pytest.mark.parametrize("profile", ["standard", "enterprise"])
+def test_verify_candidate_accepts_release_profiles(monkeypatch, profile: str) -> None:
     candidate_sha = "a" * 40
     master_sha = "b" * 40
     monkeypatch.setattr(
@@ -410,13 +436,13 @@ def test_verify_candidate_accepts_enterprise_release_profile(monkeypatch) -> Non
         candidate_sha="candidate-ref",
         mode="dry-run",
         expected_version="1.0",
-        release_profile="enterprise",
+        release_profile=profile,
     ) == (candidate_sha, "1.0", master_sha)
 
 
 @pytest.mark.parametrize(
     ("profile", "slow_required"),
-    [("alpha", "slow_required=false"), ("enterprise", "slow_required=true")],
+    [("standard", "slow_required=false"), ("enterprise", "slow_required=true")],
 )
 def test_release_main_exports_slow_evidence_policy(
     monkeypatch: pytest.MonkeyPatch,
@@ -427,7 +453,7 @@ def test_release_main_exports_slow_evidence_policy(
     monkeypatch.setattr(
         check_release,
         "verify_candidate",
-        lambda **_: ("a" * 40, "1.1", "b" * 40),
+        lambda **_: ("a" * 40, "1.2", "b" * 40),
     )
     output = tmp_path / "github-output"
     assert (
@@ -448,6 +474,48 @@ def test_release_main_exports_slow_evidence_policy(
     lines = output.read_text(encoding="utf-8").splitlines()
     assert f"release_profile={profile}" in lines
     assert slow_required in lines
+
+
+def test_release_main_defaults_to_standard_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    verify = Mock(return_value=("a" * 40, "1.2", "b" * 40))
+    monkeypatch.setattr(check_release, "verify_candidate", verify)
+    output = tmp_path / "github-output"
+    assert (
+        check_release.main(
+            [
+                "--mode",
+                "dry-run",
+                "--candidate-ref",
+                "candidate-ref",
+                "--github-output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert verify.call_args.kwargs["release_profile"] == "standard"
+    lines = output.read_text(encoding="utf-8").splitlines()
+    assert "release_profile=standard" in lines
+    assert "slow_required=false" in lines
+
+
+@pytest.mark.parametrize("profile", ["alpha", "beta", "unknown"])
+def test_verify_candidate_rejects_unsupported_profile_before_git(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    git = Mock()
+    monkeypatch.setattr(check_release, "_git", git)
+    with pytest.raises(RuntimeError, match="unsupported release profile"):
+        check_release.verify_candidate(
+            candidate_sha="candidate-ref",
+            mode="dry-run",
+            release_profile=profile,
+        )
+    git.assert_not_called()
 
 
 def test_verify_candidate_peels_annotated_tag_event_sha(

@@ -124,3 +124,34 @@ Doris evidence remains valid under the no-runtime-change test reuse rule.
 - required Doris IT, slow distributed IT, and benchmark: not run because production source,
   dependencies, protocol behavior, Doris tests, Compose, and execution configuration are unchanged;
   the final Python 3.12 / Ray 2.58.0 required IT result above remains reusable.
+
+## Version 1.2 release preparation evidence
+
+- worktree: `/Users/jiangxintong/GitHub/workspace/ray-doris-release-maturity`, branch
+  `release-maturity`; base revision: `a1f1f60b740d28a4dd5625577e443c7fa3c86349`;
+- scope: version metadata, current maturity wording, default release profile naming, workflow policy,
+  and release unit tests; runtime behavior, dependency bounds, Doris tests, Compose, and distributed
+  execution configuration are unchanged;
+- Python 3.12.12 / Ray 2.58.0 / PyArrow 25.0.1 / PyMySQL 2.2.8: final full unit and public contract
+  suite 318 passed with 85% aggregate coverage; the three warnings are Ray public-context
+  deprecations; targeted release tests passed all 66 cases;
+- static and policy checks: Ruff format/lint, strict mypy for 18 source files, pre-commit, workflow
+  action pins, release-workflow policy, and `git diff --check` passed;
+- documentation: `tools/check_docs.py`, Sphinx strict, spelling, and the separately executed external
+  linkcheck passed;
+- package: isolated version 1.2 wheel and sdist build, Twine checks, and SHA-256 manifest validation
+  passed. Both distribution metadata records and embedded package versions match 1.2 and contain
+  no Development Status classifier. Four isolated Python 3.12 wheel/sdist base/Flight installations
+  passed dependency checks and imports outside the repository;
+- logs: `/private/tmp/ray-doris-release-maturity.EFfzme`, including `unit-contract.xml`,
+  `unit-contract.log`, `release-unit.log`, `static.log`, `docs.log`, `linkcheck.log`, `package.log`,
+  `install-smoke.log`, and `SHA256SUMS`; package checks apply to the tested tree before this
+  evidence-only ledger append;
+- required Doris IT: not rerun locally; the existing final Python 3.12 / Ray 2.58.0 / Doris 4.0.6
+  result above remains reusable because runtime behavior and infrastructure are unchanged;
+- full distributed evidence: deferred under the standard release profile. Renaming that profile
+  does not establish stable or enterprise distributed certification; the enterprise profile still
+  requires a successful full manifest for the exact release candidate;
+- release state: local preparation only. No 1.2 commit, push, tag, TestPyPI, PyPI, or GitHub Release
+  has been created. Exact candidate SHA, workflow results, and published artifact hashes must be
+  recorded after the separately approved external steps.

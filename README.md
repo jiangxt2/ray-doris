@@ -6,11 +6,11 @@ or Arrow Flight SQL, and writes bounded batches through Doris HTTP Stream Load. 
 imports `ray.data._internal`. Ray marks `ReadTask` as DeveloperAPI, so the supported Ray window is
 intentionally bounded and tested by minor release.
 
-The project is alpha software. The tested compatibility window is:
+The tested compatibility window is:
 
 | Python | Ray | Verification |
 |---|---|---|
-| 3.9 | 2.49.2 | Alpha legacy compatibility; documented ReadTask and public Datasink contracts |
+| 3.9 | 2.49.2 | Legacy compatibility; documented ReadTask and public Datasink contracts |
 | 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
 | 3.11 | 2.58.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and Doris 4.0.6 required IT |
@@ -18,8 +18,8 @@ The project is alpha software. The tested compatibility window is:
 
 Doris 4.0.6 is the fixed compatibility target for both required and opt-in distributed integration
 tests. The slow distributed suite is aligned to Ray 2.58.0. Enterprise-candidate releases require
-one successful full run on the exact commit; this Alpha release does not claim that distributed
-evidence or stable/production readiness.
+one successful full run on the exact commit; the standard release profile does not claim
+that distributed evidence or stable/production readiness.
 This project is not maintained or endorsed by the Ray or Apache Doris projects.
 
 ## Documentation
@@ -48,7 +48,7 @@ pip install "ray-doris[flight]"
 ```
 
 Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
-Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains an Alpha legacy
+Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains a legacy
 compatibility target for the default MySQL transport, not a stable or production profile.
 
 The package accepts `ray[data]>=2.49.2,<2.59`. The runtime guard supports final releases in that
@@ -416,7 +416,7 @@ only one successful, non-expired full manifest whose commit and workflow run ID 
 downloaded artifact source. The dedicated runner must provide Linux x64, Docker Compose, at least
 16 GiB available memory, at least 20 GiB free disk, and Actions Runner 2.327.1 or newer.
 Register it with the `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels.
-Enterprise release profiles require the full manifest. Alpha release profiles may defer the slow
+Enterprise release profiles require the full manifest. Standard release profiles may defer the slow
 evidence, but must not claim enterprise or stable distributed certification. Formal recovery of the
 immutable `v1.0` release remains a separate historical exception.
 
