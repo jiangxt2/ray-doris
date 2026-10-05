@@ -14,12 +14,12 @@ on:
         required: true
         type: string
       release_profile:
-        description: Release evidence profile; Alpha permits deferred distributed evidence
+        description: Release evidence profile; standard permits deferred distributed evidence
         required: false
-        default: alpha
+        default: standard
         type: choice
         options:
-          - alpha
+          - standard
           - enterprise
       formal_publish:
         description: Publish using an existing immutable release tag after recovery approval
@@ -72,7 +72,7 @@ jobs:
           CANDIDATE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.ref }}
           EXPECTED_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_version || '' }}
           MODE: ${{ github.event_name == 'push' && 'tag' || inputs.formal_publish == true && 'tag' || 'dry-run' }}
-          RELEASE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_profile || 'alpha' }}
+          RELEASE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_profile || 'standard' }}
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.formal_publish == true && inputs.release_tag || '' }}
           EVENT_SHA: ${{ github.event_name == 'push' && github.event.after || inputs.formal_publish == true && inputs.candidate_sha || '' }}
           EVENT_CREATED: ${{ github.event_name == 'push' || inputs.formal_publish == true }}

@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # Python 3.9 and 3.10
 _PROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _PACKAGE_VERSION = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 _TWO_COMPONENT_VERSION = re.compile(r"^[0-9]+\.[0-9]+$")
-_RELEASE_PROFILES = ("alpha", "enterprise")
+_RELEASE_PROFILES = ("standard", "enterprise")
 
 
 def _validate_version(value: str, source: str) -> str:
@@ -117,7 +117,7 @@ def verify_candidate(
     event_created: bool = False,
     event_deleted: bool = False,
     event_forced: bool = False,
-    release_profile: str = "alpha",
+    release_profile: str = "standard",
 ) -> tuple[str, str, str]:
     """Validate a dry-run or tag candidate and return its identity tuple."""
     if release_profile not in _RELEASE_PROFILES:
@@ -155,7 +155,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     """Validate a workflow-dispatch candidate or a newly created release tag."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("tag", "dry-run"), required=True)
-    parser.add_argument("--release-profile", choices=_RELEASE_PROFILES, default="alpha")
+    parser.add_argument("--release-profile", choices=_RELEASE_PROFILES, default="standard")
     parser.add_argument("--candidate-ref", required=True)
     parser.add_argument("--expected-version", default="")
     parser.add_argument("--tag", default="")

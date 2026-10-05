@@ -66,7 +66,14 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     require('tags: ["v*"]' in release_workflow, "release must trigger on version tags")
     require("workflow_dispatch:" in release_workflow, "release must support a candidate dry run")
     require(
-        "release_profile:" in release_workflow, "release must expose Alpha and enterprise profiles"
+        "release_profile:" in release_workflow,
+        "release must expose standard and enterprise profiles",
+    )
+    require(
+        "default: standard" in release_workflow
+        and "- standard" in release_workflow
+        and "- enterprise" in release_workflow,
+        "release must default to standard and retain the enterprise evidence profile",
     )
     require("formal_publish:" in release_workflow, "release must expose explicit formal recovery")
     require(
@@ -98,6 +105,10 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     candidate_job = _job(release_workflow, "candidate")
     require(
+        "inputs.release_profile || 'standard'" in candidate_job,
+        "tag releases must default to the standard evidence profile",
+    )
+    require(
         '--release-profile "${RELEASE_PROFILE}"' in candidate_job,
         "release candidate validation must receive the selected release profile",
     )
@@ -124,7 +135,7 @@ def release_policy_failures(ci_workflow: str, release_workflow: str) -> tuple[st
     )
     require(
         "slow_required == 'true'" in slow_job,
-        "optional Alpha releases must skip slow artifact operations",
+        "optional standard releases must skip slow artifact operations",
     )
     require(
         "FORMAL_HISTORICAL_RECOVERY" in _job(release_workflow, "slow-evidence")

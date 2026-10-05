@@ -48,4 +48,4 @@ __all__ = [
     "write_doris",
 ]
 
-__version__ = "1.1"
+__version__ = "1.2"

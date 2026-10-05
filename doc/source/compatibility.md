@@ -16,7 +16,7 @@ Continuous integration covers these combinations:
 
 | Python | Ray | Verification |
 | --- | --- | --- |
-| 3.9 | 2.49.2 | Alpha legacy compatibility; documented ReadTask and public Datasink contract tests |
+| 3.9 | 2.49.2 | Legacy compatibility; documented ReadTask and public Datasink contract tests |
 | 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
 | 3.11 | 2.58.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
@@ -25,8 +25,8 @@ Continuous integration covers these combinations:
 The optional distributed suite uses Python 3.12, Ray 2.58.0, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
 TLS and Flight ingress. The workflow is now aligned to Ray 2.58.0. Enterprise-candidate releases
-require one successful full run on their exact commit; the Alpha 1.1 release does not claim that
-distributed evidence or stable/production readiness.
+require one successful full run on their exact commit; the standard release profile does not claim
+that distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
 experimental regression path.
 
@@ -55,7 +55,7 @@ leader election, quorum, multi-FE failover, or an external load balancer's backe
 
 ## Review Python and Flight limits
 
-The core package requires Python 3.9 or newer. Python 3.9 reached end of life on October 31, 2025, so it is retained only as an Alpha legacy compatibility target. It isn't part of a stable or production profile. A future stable release will require a Python line that still receives upstream security fixes at its release date.
+The core package requires Python 3.9 or newer. Python 3.9 reached end of life on October 31, 2025, so it is retained only as a legacy compatibility target. It isn't part of a stable or production profile. Use a Python line that still receives upstream security fixes for production deployments.
 
 Python 3.11 is covered by unit, public Datasink contract, base and Flight wheel installation,
 dependency checks, and import tests. It doesn't have a separate real-Doris deployment
@@ -102,7 +102,7 @@ The required integration suite uses the default frontend HTTP query-plan endpoin
 The enterprise-candidate MySQL profile requires `password_env`, strict MySQL TLS, HTTPS query
 planning with hostname verification, `on_query_plan_error="error"`, and explicit query-plan and
 MySQL socket timeouts. The enterprise release profile requires a successful full slow manifest bound
-to the exact release SHA and workflow run. The Alpha release profile may defer that evidence and
+to the exact release SHA and workflow run. The standard release profile may defer that evidence and
 must state the resulting distributed-certification limitation.
 
 Doris 4.0.6 advertises plaintext Flight `grpc` endpoints in the distributed suite. Flight stays on an isolated Compose network. The test doesn't establish a positive `grpc+tls` Doris server compatibility claim.

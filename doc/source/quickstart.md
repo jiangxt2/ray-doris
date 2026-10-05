@@ -29,7 +29,7 @@ uv pip install -e ".[flight]"
 
 Flight SQL requires Python 3.10 or newer. The default MySQL transport remains available on Python 3.9.
 
-Flight SQL and `auto` are experimental. Use the default MySQL transport for the production-candidate profile. Python 3.9 is retained only as an Alpha legacy compatibility target because it no longer receives upstream security fixes.
+Flight SQL and `auto` are experimental. Use the default MySQL transport for the production-candidate profile. Python 3.9 is retained only as a legacy compatibility target because it no longer receives upstream security fixes.
 
 ## Prepare Doris access
 
