@@ -1,3 +1,4 @@
+import importlib
 import json
 import traceback
 from pathlib import Path
@@ -616,7 +617,7 @@ def test_slow_result_accepts_exact_full_profile_evidence(tmp_path) -> None:
 
 def test_slow_result_writer_emits_release_manifest(monkeypatch, tmp_path) -> None:
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "slow_integration"))
-    import write_result
+    write_result = importlib.import_module("write_result")
 
     environment = {
         "RAY_DORIS_SLOW_COMMIT_SHA": "a" * 40,
