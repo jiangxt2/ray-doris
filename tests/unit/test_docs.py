@@ -8,9 +8,10 @@ from tools.check_docs import validate_compatibility_matrices
 MATRIX = (
     ("3.9", "2.49.2"),
     ("3.10", "2.57.0"),
-    ("3.11", "2.58.0"),
+    ("3.11", "2.59.0"),
     ("3.12", "2.58.0"),
-    ("3.13", "2.58.0"),
+    ("3.12", "2.59.0"),
+    ("3.13", "2.59.0"),
 )
 
 
@@ -75,7 +76,7 @@ def test_compatibility_matrices_accept_matching_sources(tmp_path: Path) -> None:
     ("source", "matrix"),
     [
         ("readme", MATRIX[:-1]),
-        ("compatibility", (*MATRIX, ("3.14", "2.58.0"))),
+        ("compatibility", (*MATRIX, ("3.14", "2.59.0"))),
         ("readme", (MATRIX[0], MATRIX[2], MATRIX[1], *MATRIX[3:])),
         ("compatibility", (*MATRIX[:2], ("3.11", "2.57.0"), *MATRIX[3:])),
     ],

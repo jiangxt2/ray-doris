@@ -1,11 +1,11 @@
-ARG RAY_BASE_IMAGE=rayproject/ray:2.58.0-py312-cpu
+ARG RAY_BASE_IMAGE=ray-doris-ray-base:2.59.0-py312
 FROM ${RAY_BASE_IMAGE}
 ARG UV_DEFAULT_INDEX=https://pypi.org/simple
 
 USER root
 WORKDIR /workspace
 
-RUN python -c 'import ray; assert ray.__version__ == "2.58.0", ray.__version__' \
+RUN python -c 'import ray; assert ray.__version__ == "2.59.0", ray.__version__' \
     && openssl version
 
 COPY pyproject.toml README.md LICENSE NOTICE ./

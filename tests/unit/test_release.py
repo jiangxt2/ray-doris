@@ -35,7 +35,7 @@ def test_project_version_accepts_two_components(tmp_path: Path, version: str) ->
     assert check_release.project_version(write_pyproject(tmp_path, version)) == version
 
 
-@pytest.mark.parametrize("version", ["1", "1.0.0", "v1.0", "1.0rc1"])
+@pytest.mark.parametrize("version", ["1", "1.0.0", "v1.0", "1.0rc1", "1.3.dev0"])
 def test_project_version_rejects_non_two_component_versions(
     tmp_path: Path,
     version: str,
@@ -47,6 +47,13 @@ def test_project_version_rejects_non_two_component_versions(
 def test_package_version_rejects_three_components(tmp_path: Path) -> None:
     package_init = tmp_path / "__init__.py"
     package_init.write_text('__version__ = "1.0.0"\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match=r"two-component major\.minor"):
+        check_release.package_version(package_init)
+
+
+def test_package_version_rejects_development_release(tmp_path: Path) -> None:
+    package_init = tmp_path / "__init__.py"
+    package_init.write_text('__version__ = "1.3.dev0"\n', encoding="utf-8")
     with pytest.raises(RuntimeError, match=r"two-component major\.minor"):
         check_release.package_version(package_init)
 
@@ -566,14 +573,14 @@ def write_slow_result(path: Path, **overrides: object) -> Path:
         "transport": "mysql",
         "endpoint_mode": "logical",
         "doris_version": "4.0.6",
-        "ray_version": "2.58.0",
+        "ray_version": "2.59.0",
         "python_version": "3.12.12",
         "initial_frontend_count": 1,
         "initial_backend_count": 3,
         "initial_ray_worker_count": 3,
         "row_count": 10_000,
         "parameters": {
-            "be_memory_limit": "2g",
+            "be_memory_limit": "3g",
             "row_count": 10_000,
             "stress_seconds": 5,
         },
@@ -625,7 +632,7 @@ def test_slow_result_writer_emits_release_manifest(monkeypatch, tmp_path) -> Non
         "RAY_DORIS_SLOW_PROFILE": "full",
         "RAY_DORIS_ROW_COUNT": "10000",
         "RAY_DORIS_STRESS_SECONDS": "5",
-        "RAY_DORIS_BE_MEMORY_LIMIT": "2g",
+        "RAY_DORIS_BE_MEMORY_LIMIT": "3g",
         "RAY_DORIS_SLOW_DORIS_BE_IMAGE_ID": "sha256:" + "1" * 64,
         "RAY_DORIS_SLOW_DORIS_FE_IMAGE_ID": "sha256:" + "2" * 64,
         "RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID": "sha256:" + "3" * 64,
@@ -634,7 +641,7 @@ def test_slow_result_writer_emits_release_manifest(monkeypatch, tmp_path) -> Non
     }
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(write_result.ray, "__version__", "2.58.0")
+    monkeypatch.setattr(write_result.ray, "__version__", "2.59.0")
     monkeypatch.setattr(write_result.platform, "python_version", lambda: "3.12.12")
 
     manifest = tmp_path / "slow-result.json"
@@ -659,6 +666,16 @@ def test_slow_result_writer_emits_release_manifest(monkeypatch, tmp_path) -> Non
         ({"initial_ray_worker_count": 2}, "initial_ray_worker_count"),
         ({"row_count": 0}, "row_count"),
         ({"parameters": {}}, "be_memory_limit"),
+        (
+            {
+                "parameters": {
+                    "be_memory_limit": "2g",
+                    "row_count": 10_000,
+                    "stress_seconds": 5,
+                }
+            },
+            "be_memory_limit",
+        ),
         (
             {
                 "parameters": {
