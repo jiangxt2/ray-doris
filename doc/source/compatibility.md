@@ -8,7 +8,7 @@ myst:
 
 # Compatibility
 
-The package dependency accepts `ray[data]>=2.49.2,<2.59`. Ray marks `ReadTask` as DeveloperAPI, so each new Ray minor must pass the compatibility matrix before the upper bound advances.
+The package dependency accepts `ray[data]>=2.49.2,<2.60`. Ray marks `ReadTask` as DeveloperAPI, so each new Ray minor must pass the compatibility matrix before the upper bound advances.
 
 ## Review the tested matrix
 
@@ -18,13 +18,14 @@ Continuous integration covers these combinations:
 | --- | --- | --- |
 | 3.9 | 2.49.2 | Legacy compatibility; documented ReadTask and public Datasink contract tests |
 | 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
-| 3.11 | 2.58.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
-| 3.12 | 2.58.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
-| 3.13 | 2.58.0 | Unit, documented/public contracts, package installation, and import tests |
+| 3.11 | 2.59.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
+| 3.12 | 2.58.0 | Unit, documented/public contracts, and previous-minor public contract regression |
+| 3.12 | 2.59.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
+| 3.13 | 2.59.0 | Unit, documented/public contracts, package installation, and import tests |
 
-The optional distributed suite uses Python 3.12, Ray 2.58.0, and Doris 4.0.6. It runs one Ray head
+The optional distributed suite uses Python 3.12, Ray 2.59.0, and Doris 4.0.6. It runs one Ray head
 with no scheduling CPUs, three one-CPU Ray workers, one Doris frontend, three Doris backends, and a
-TLS and Flight ingress. The workflow is now aligned to Ray 2.58.0. Enterprise-candidate releases
+TLS and Flight ingress. The workflow is now aligned to Ray 2.59.0. Enterprise-candidate releases
 require one successful full run on their exact commit; the standard release profile does not claim
 that distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
@@ -77,7 +78,7 @@ layer explicitly models the Datasink generation split:
 | Ray version | `on_write_start` | Empty non-file Dataset | Schema source |
 | --- | --- | --- | --- |
 | 2.49.2–2.52.x | `on_write_start()` with no argument, called before execution | Callback still runs; metadata setup is observable | Worker blocks |
-| 2.53.0–2.58.x | `on_write_start(schema)` may receive the first bundle schema | No callback when no input bundle exists | First input bundle, with worker validation |
+| 2.53.0–2.59.x | `on_write_start(schema)` may receive the first bundle schema | No callback when no input bundle exists | First input bundle, with worker validation |
 
 The public contract tests also assert one-row task summaries in `write_returns`, the separation
 between Doris counters and Ray `WriteResult.num_rows`/`size_bytes`, and the zero-bundle behavior of
@@ -87,8 +88,8 @@ the sink's optional schema parameter and is covered by the explicit `_compat.py`
 The compatibility layer requires the `ReadTask` constructor to accept a schema, and the package dependency starts at Ray 2.49.2. It passes `per_task_row_limit` only when the installed constructor supports that argument.
 
 Datasource construction also checks the installed Ray release before any Doris network request.
-It accepts final releases in `>=2.49.2,<2.59` and local rebuild suffixes such as
-`2.58.0+vendor.1`. Release candidates, development builds, and post-release builds aren't
+It accepts final releases in `>=2.49.2,<2.60` and local rebuild suffixes such as
+`2.59.0+vendor.1`. Release candidates, development builds, and post-release builds aren't
 supported.
 
 Advanced keyword support in `ray.data.read_datasource()` belongs to the installed Ray version. The convenience function exposes the cross-version arguments validated by this project: `concurrency`, `override_num_blocks`, and `ray_remote_args`.

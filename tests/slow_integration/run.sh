@@ -31,6 +31,8 @@ be_image="ray-doris-it-be:${RAY_DORIS_SLOW_IMAGE_TAG}"
 export RAY_DORIS_RAY_IMAGE=${ray_image}
 export RAY_DORIS_FE_IMAGE=${fe_image}
 export RAY_DORIS_BE_IMAGE=${be_image}
+flight_proxy_image=${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.2.21-alpine}
+export RAY_DORIS_FLIGHT_PROXY_IMAGE=${flight_proxy_image}
 
 compose=(
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
@@ -55,13 +57,42 @@ fi
 
 mkdir -p "${log_dir}"
 
-if [[ -z "${RAY_BASE_IMAGE:-}" ]] &&
-  docker_cmd image inspect ray-cluster:2.58.0 >/dev/null 2>&1; then
-  export RAY_BASE_IMAGE=ray-cluster:2.58.0
-fi
 if [[ -z "${RAY_BASE_IMAGE:-}" ]]; then
-  export RAY_BASE_IMAGE=rayproject/ray:2.58.0-py312-cpu
+  ray_base_source="docker.m.daocloud.io/rayproject/ray@sha256:0ffca209fb4c984d648db550b8dbe7879bdba3bbb5d96ee5894843cf6ac12eb5"
+  if ! docker_cmd image inspect "${ray_base_source}" >/dev/null 2>&1; then
+    docker_cmd pull "${ray_base_source}" 2>&1 | tee -a "${compose_log}"
+  fi
+  export RAY_BASE_IMAGE=ray-doris-ray-base:2.59.0-py312
+  source_id=$(docker_cmd image inspect --format '{{.Id}}' "${ray_base_source}")
+  if cached_id=$(docker_cmd image inspect --format '{{.Id}}' "${RAY_BASE_IMAGE}" 2>/dev/null); then
+    if [[ "${cached_id}" != "${source_id}" ]]; then
+      echo "The Ray base tag points to an unexpected image: ${RAY_BASE_IMAGE}" >&2
+      exit 1
+    fi
+  else
+    docker_cmd tag "${ray_base_source}" "${RAY_BASE_IMAGE}"
+  fi
+  docker_cmd image inspect --format '{{json .RepoDigests}}' "${ray_base_source}" >> "${compose_log}"
 fi
+
+for component in fe be; do
+  cached_base="apache/doris:${component}-4.0.6"
+  local_base="ray-doris-${component}-base:4.0.6"
+  if ! docker_cmd image inspect "${cached_base}" >/dev/null 2>&1; then
+    mirror_base="docker.m.daocloud.io/${cached_base}"
+    docker_cmd pull "${mirror_base}" 2>&1 | tee -a "${compose_log}"
+    docker_cmd tag "${mirror_base}" "${cached_base}"
+  fi
+  source_id=$(docker_cmd image inspect --format '{{.Id}}' "${cached_base}")
+  if cached_id=$(docker_cmd image inspect --format '{{.Id}}' "${local_base}" 2>/dev/null); then
+    if [[ "${cached_id}" != "${source_id}" ]]; then
+      echo "The Doris base tag points to an unexpected image: ${local_base}" >&2
+      exit 1
+    fi
+  else
+    docker_cmd tag "${cached_base}" "${local_base}"
+  fi
+done
 
 baseline_project_dangling_ids=$(
   docker_cmd image ls --filter label=com.docker.compose.project=ray-doris-it --filter dangling=true -q
@@ -180,7 +211,7 @@ wait_for_marker() {
 RAY_DORIS_SLOW_RAY_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${ray_image}")
 RAY_DORIS_SLOW_DORIS_FE_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${fe_image}")
 RAY_DORIS_SLOW_DORIS_BE_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${be_image}")
-RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' haproxy:3.2.21-alpine)
+RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${flight_proxy_image}")
 RAY_DORIS_SLOW_RAY_BASE_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${RAY_BASE_IMAGE}")
 export RAY_DORIS_SLOW_RAY_IMAGE_ID RAY_DORIS_SLOW_DORIS_FE_IMAGE_ID
 export RAY_DORIS_SLOW_DORIS_BE_IMAGE_ID RAY_DORIS_SLOW_FLIGHT_PROXY_IMAGE_ID
@@ -190,11 +221,11 @@ export RAY_DORIS_SLOW_RAY_BASE_IMAGE_ID
   docker_cmd image inspect --format "image=ray tag=${ray_image} id={{.Id}} created={{.Created}}" "${ray_image}"
   docker_cmd image inspect --format "image=doris-fe tag=${fe_image} id={{.Id}} created={{.Created}}" "${fe_image}"
   docker_cmd image inspect --format "image=doris-be tag=${be_image} id={{.Id}} created={{.Created}}" "${be_image}"
-  docker_cmd image inspect --format 'image=flight-proxy tag=haproxy:3.2.21-alpine id={{.Id}} created={{.Created}}' haproxy:3.2.21-alpine
+  docker_cmd image inspect --format "image=flight-proxy tag=${flight_proxy_image} id={{.Id}} created={{.Created}}" "${flight_proxy_image}"
   docker_cmd image inspect --format "image=ray-base tag=${RAY_BASE_IMAGE} id={{.Id}} created={{.Created}}" "${RAY_BASE_IMAGE}"
 } >> "${compose_log}" 2>&1
 
-"${compose[@]}" up -d --no-build 2>&1 | tee -a "${compose_log}"
+"${compose[@]}" up -d --no-build --wait --wait-timeout 300 2>&1 | tee -a "${compose_log}"
 
 wait_for_service_log \
   fe \

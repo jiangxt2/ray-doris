@@ -13,6 +13,12 @@ truncate, Stream Load 2PC, or arbitrary SQL writes.
 
 ## Local checks
 
+`master` uses the development version `1.3.dev0`. Formal releases use exactly two
+components, `major.minor`, and are prepared from an explicitly reviewed source revision.
+Synchronize project metadata, `ray_doris.__version__`, the `v<version>` tag, and versioned
+release notes when preparing a formal candidate. Release validation rejects `.dev0`;
+development builds do not determine the next formal release version.
+
 Use Python 3.12 for the main development environment:
 
 ```bash
@@ -79,9 +85,10 @@ The suite requires a Docker host with at least 16 GiB of available memory. Its d
 one Ray head, three Ray workers, one Doris 4.0.6 FE, three Doris 4.0.6 BEs, and a production-style
 TLS and Flight ingress that exposes per-BE traffic counters. The functional profile loads 10,000
 rows, executes a bounded Stream Load write across the three Ray workers with Doris readback, and
-runs repeated Flight reads for at least five seconds. The script automatically uses a
-local `ray-cluster:2.58.0` image when present and otherwise uses the fixed public
-`rayproject/ray:2.58.0-py312-cpu` base. Select a different trusted local image with
+runs repeated Flight reads for at least five seconds. The script pulls the digest-pinned
+Ray 2.59.0 base through the domestic mirror when it is not cached, verifies the cached local
+image identity, and builds from a local base tag.
+Select a different trusted local image with
 `RAY_BASE_IMAGE`. Run high-pressure profiles only on a dedicated host, for example:
 
 ```bash
@@ -92,7 +99,8 @@ tests/slow_integration/run.sh
 ```
 
 Size the dedicated host for the requested container limits; the functional profile keeps each BE
-at 2 GiB by default.
+at 3 GiB by default; the 2 GiB profile can leave insufficient allocator headroom after BE
+startup. The Ray head has a 4 GiB limit and each Ray node uses a 128 MiB object store.
 
 The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
 the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; the
@@ -126,7 +134,7 @@ not describe an untested configuration or extension point as supported behavior.
 
 ## Compatibility
 
-Code must remain compatible with the declared `ray[data]>=2.49.2,<2.59` range. Python 3.9 is a
+Code must remain compatible with the declared `ray[data]>=2.49.2,<2.60` range. Python 3.9 is a
 legacy compatibility target because it no longer receives upstream security fixes; it isn't
 a stable production baseline. Do not import modules below `ray.data._internal`. Add a unit test for
 every independently verifiable behavior, including error paths and cleanup. Unsupported Doris types

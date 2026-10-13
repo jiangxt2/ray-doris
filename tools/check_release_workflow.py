@@ -331,16 +331,16 @@ def slow_policy_failures(
         "slow runner must record Docker disk usage",
     )
     require(
-        'RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-rayproject/ray:2.58.0-py312-cpu}"' in slow_compose,
-        "slow Compose must default to Ray 2.58.0",
+        'RAY_BASE_IMAGE: "${RAY_BASE_IMAGE:-ray-doris-ray-base:2.59.0-py312}"' in slow_compose,
+        "slow Compose must default to Ray 2.59.0",
     )
     require(
         "RAY_DORIS_SLOW_RAY_IMAGE_ID" in slow_compose,
         "slow Compose must pass image identity to the evidence manifest",
     )
     require(
-        'assert ray.__version__ == "2.58.0"' in ray_dockerfile,
-        "slow Ray image must assert Ray 2.58.0",
+        'assert ray.__version__ == "2.59.0"' in ray_dockerfile,
+        "slow Ray image must assert Ray 2.59.0",
     )
     return tuple(failures)
 

@@ -62,7 +62,7 @@ class SlowITConfig:
             value.strip()
             for value in os.environ.get(
                 "RAY_WORKER_IPS",
-                "172.20.128.11,172.20.128.12,172.20.128.13",
+                "10.253.0.11,10.253.0.12,10.253.0.13",
             ).split(",")
             if value.strip()
         )

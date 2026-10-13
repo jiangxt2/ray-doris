@@ -173,8 +173,8 @@ def test_ray_datasink_compatibility_matrix_is_explicit() -> None:
 def test_datasink_rejects_unsupported_ray_before_empty_write_can_skip_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_compat, "_RAY_VERSION", "2.59.0")
-    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.59"):
+    monkeypatch.setattr(_compat, "_RAY_VERSION", "2.60.0")
+    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.60"):
         DorisDatasink(_connection(), DorisTable("db", "table"))
 
 

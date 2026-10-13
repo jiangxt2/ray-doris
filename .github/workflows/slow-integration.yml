@@ -25,7 +25,7 @@ on:
       be_memory_limit:
         description: Memory limit for each Doris BE container
         required: false
-        default: 2g
+        default: 3g
         type: string
   workflow_dispatch:
     inputs:
@@ -53,7 +53,7 @@ on:
       be_memory_limit:
         description: Memory limit for each Doris BE container
         required: true
-        default: "2g"
+        default: "3g"
         type: string
   schedule:
     - cron: "17 3 * * 0"
@@ -75,7 +75,7 @@ jobs:
       RAY_DORIS_SLOW_PROFILE: ${{ inputs.profile || 'full' }}
       RAY_DORIS_ROW_COUNT: ${{ inputs.row_count || '10000' }}
       RAY_DORIS_STRESS_SECONDS: ${{ inputs.stress_seconds || '5' }}
-      RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit || '2g' }}
+      RAY_DORIS_BE_MEMORY_LIMIT: ${{ inputs.be_memory_limit || '3g' }}
     steps:
       - name: Verify runner capacity and tools
         shell: bash
