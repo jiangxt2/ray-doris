@@ -284,6 +284,34 @@ def test_release_policy_rejects_compose_rebuild_during_startup() -> None:
     )
 
 
+def test_release_policy_rejects_static_candidate_version_output() -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_release = release_workflow.replace(
+        "version: ${{ steps.candidate.outputs.version }}",
+        'version: "1.0"',
+        1,
+    )
+
+    assert any(
+        "validated package version" in failure
+        for failure in release_policy_failures(ci_workflow, invalid_release)
+    )
+
+
+def test_release_policy_rejects_hardcoded_testpypi_smoke_version() -> None:
+    ci_workflow, release_workflow = _workflow_sources()
+    invalid_release = release_workflow.replace(
+        "VERSION: ${{ needs.candidate.outputs.version }}",
+        'VERSION: "1.3"',
+        1,
+    )
+
+    assert any(
+        "testpypi-smoke must use" in failure
+        for failure in release_policy_failures(ci_workflow, invalid_release)
+    )
+
+
 @pytest.mark.parametrize(
     ("expected", "replacement", "message"),
     [
