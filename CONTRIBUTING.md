@@ -13,11 +13,11 @@ truncate, Stream Load 2PC, or arbitrary SQL writes.
 
 ## Local checks
 
-`master` uses the development version `1.3.dev0`. Formal releases use exactly two
-components, `major.minor`, and are prepared from an explicitly reviewed source revision.
-Synchronize project metadata, `ray_doris.__version__`, the `v<version>` tag, and versioned
-release notes when preparing a formal candidate. Release validation rejects `.dev0`;
-development builds do not determine the next formal release version.
+Development builds use a `.dev0` version. A formal release candidate uses the matching
+two-component `major.minor` version in its reviewed source revision. Synchronize project
+metadata, `ray_doris.__version__`, the `v<version>` tag, and versioned release notes when
+preparing a formal candidate. Release validation rejects `.dev0`; development builds do not
+determine the next formal release version.
 
 Use Python 3.12 for the main development environment:
 
