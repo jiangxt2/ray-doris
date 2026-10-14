@@ -36,9 +36,9 @@ implementation details, and the [FAQ](doc/source/faq.md) records explicit scope 
 
 ## Installation
 
-Development checkouts on `master` declare `1.3.dev0`. The latest published release is
-`1.2`; package-index installations use published distributions. A development version
-does not select the next formal release version.
+This source builds `ray-doris` 1.3. Package-index installations use the latest
+published distribution; source checkouts use the compatibility matrix and package
+version declared in this repository.
 
 Install the default MySQL transport:
 
