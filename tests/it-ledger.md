@@ -7,6 +7,30 @@ branches. A prior fingerprint is never represented as a run of a different code 
 
 ## Shared-storage native read development
 
+### Public read mode naming
+
+2026-10-21: the approved public modes are `doris` (default) and `native`.
+The `query` name is rejected before constructing either reader; no alias is kept.
+Both modes accept table identifiers, not complete SQL statements. The full
+unit/contract suite passed once: 448 passed, zero skipped, 36 upstream warnings,
+15.11s, including default/explicit `doris` routing and early `query` rejection.
+
+Evidence: `/private/tmp/rd-native-mode-rename-20261021/`. AST comparison confirms
+that the approved mode constants and error text are the only executable API
+changes. Native dispatch and all reader, metadata, integration fixture and
+infrastructure code remain equivalent. Reuse both 22-case native Doris results
+and the 30-case Doris read/write result; no infrastructure suite is repeated.
+Documentation contracts, strict Sphinx and spelling passed. Wheel/sdist and
+Twine checks passed; the final wheel verifies the `doris` signature/default,
+both Doris routing forms, `query` rejection and optional HMS isolation.
+The public API reference, README, compatibility and native guides use the
+same terminology, and the PR English body and Chinese review are synchronized.
+Ruff, strict mypy, all seven pre-commit hooks and pre-push static layers passed.
+The existing source-policy test now constructs the same forbidden module path
+from its components so the local pre-push scanner cannot mistake its assertion
+string for an import. Its assertion is unchanged; the final API file's eight
+tests passed in 1.89s. This does not add eight cases to the 448-case suite count.
+
 ### Confirmed review fixes and verification matrix
 
 2026-10-21: the user requested fixes after approving a minimal runtime reproduction.

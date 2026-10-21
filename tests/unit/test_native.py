@@ -69,7 +69,7 @@ def test_native_options_bounds(kwargs):
 def test_native_routes_without_constructing_doris_datasource(monkeypatch):
     delegate = Mock(return_value="native dataset")
     monkeypatch.setattr("ray_doris._native.read_native", delegate)
-    forbidden = Mock(side_effect=AssertionError("query path used"))
+    forbidden = Mock(side_effect=AssertionError("Doris read path used"))
     monkeypatch.setattr("ray_doris._api.DorisDatasource", forbidden)
     assert (
         read_doris(

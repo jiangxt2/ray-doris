@@ -25,7 +25,7 @@ def read_doris(
     *,
     table: str,
     host: str,
-    read_mode: Literal["query", "native"] = "query",
+    read_mode: Literal["doris", "native"] = "doris",
     catalog: Optional[str] = None,
     native_options: Optional[NativeReadOptions] = None,
     mysql_port: int = 9030,
@@ -53,16 +53,20 @@ def read_doris(
 ) -> Dataset:
     """Read an internal Doris table, or explicitly opt into native Hive Parquet reads.
 
+    ``doris`` is the default and reads an internal table through Doris.
+    Both modes take a table identifier; complete SQL statements are not accepted.
+
     ``native`` delegates to Ray's public Parquet reader and requires a catalog,
     independent HMS/storage access and immutable published files. SQL filters
-    and tablet/Flight settings are query-only. It never falls back to SQL.
+    and tablet/Flight settings apply only to ``doris``. Native reads never fall
+    back to a Doris data query.
 
     See {doc}`the native Hive Parquet guide </user-guide/native-read>` for
     per-file footer overhead, version limits and independent source authorization.
     Native reads do not execute Doris row filters or column masking.
     """
-    if read_mode not in ("query", "native"):
-        raise DorisConfigurationError("read_mode must be 'query' or 'native'")
+    if read_mode not in ("doris", "native"):
+        raise DorisConfigurationError("read_mode must be 'doris' or 'native'")
     if read_mode == "native":
         if catalog is None:
             raise DorisConfigurationError("native reads require catalog")
@@ -80,7 +84,9 @@ def read_doris(
             or flight_scheme != "grpc"
             or http_ca_file is not None
         ):
-            raise DorisConfigurationError("native reads reject SQL filters and query-only options")
+            raise DorisConfigurationError(
+                "native reads reject SQL filters and options for Doris reads"
+            )
         if native_options is not None and not isinstance(native_options, NativeReadOptions):
             raise DorisConfigurationError("native_options must be NativeReadOptions")
         native = import_module("ray_doris._native")

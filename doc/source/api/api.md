@@ -32,6 +32,10 @@ ReadTask payload.
 :members:
 ```
 
+Use `read_mode="doris"` (the default) to read an internal table through Doris, or
+explicitly select `read_mode="native"` for eligible shared files. Both modes accept
+a table identifier; complete SQL statements and automatic SQL rewriting are unsupported.
+
 See [shared-storage reads](../user-guide/native-read.md) for the experimental
 `read_mode="native"` scope and independent HMS/filesystem authorization.
 

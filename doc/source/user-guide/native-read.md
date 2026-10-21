@@ -8,8 +8,9 @@ myst:
 
 The experimental `read_mode="native"` identifies an ordinary Hive table through
 Doris, discovers its storage metadata, and returns a Dataset from Ray's public
-Parquet reader. The default `query` mode continues to read internal Doris tables.
-Native reads never fall back to a Doris data query.
+Parquet reader. The default `read_mode="doris"` reads internal Doris tables.
+Both modes accept a table identifier; complete SQL statements and automatic SQL
+rewriting are unsupported. Native reads never fall back to a Doris data query.
 
 From a source checkout containing this experimental feature, install the optional
 metadata SDK and the initial Ray baseline. This development work has not yet been
@@ -103,7 +104,7 @@ not the metadata query execution requirements.
 Native reads do not execute Doris row filters or column masking. Use them only
 where direct source access is independently authorized for the complete selected
 data. Use an appropriate Doris SQL client when required policies depend on Doris
-execution. This connector's default query mode currently targets internal tables;
+execution. This connector's default `doris` mode currently targets internal tables;
 it does not provide a general external-table SQL fallback.
 
 ## Use Ray execution controls
