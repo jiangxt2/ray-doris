@@ -1,5 +1,88 @@
 # Integration test ledger
 
+## Native metadata capability discovery
+
+User-approved code update on base `533f787f51b798ea3d8d1092ad1264c0f39329b8`.
+Native selection now probes structured metadata and public reader capabilities,
+without exact Doris/Ray patch whitelists. The package Ray window is unchanged.
+Authentication, connectivity, malformed results, source errors and contradictory
+metadata remain errors. Discovery does not replay a running native read.
+
+| Suite | Scope, state and reason | Result |
+| --- | --- | --- |
+| Primary unit/public contracts | Python 3.12.12, Ray 2.59.0, Arrow 26.0.0; shared metadata, legacy reader adapter and DESCRIBE nullability fix | 614 passed, zero skipped, 31.07s; `describe-fix/unit-contract.xml` |
+| Minimum Ray native contracts | Python 3.9.25, Ray 2.49.2, Arrow 21.0.0; legacy V1, projection, typed partitions, empty schemas and error boundaries | 36 passed, zero skipped, 5.56s; `ray249-native-final.xml` |
+| Previous Ray minor native contracts | Python 3.12.12, Ray 2.58.0, Arrow 26.0.0; public V1/V2 reader capabilities and actual files | 62 passed, zero skipped, 7.87s; `ray258-native-final.xml` |
+| Native Doris 4.0.6 | Existing 32 cases plus 6 secondary-interface, unknown-build and shared DESCRIBE cases | Final approved retry: 38 passed, zero skipped, 59.70s; `matrix-final/native-4.0.6.xml` |
+| Native Doris 3.0.6.2 | Same complete native suite on the second cached Doris baseline | Final approved retry: 38 passed, zero skipped, 98.48s; `matrix-final/native-3.0.6.2.xml` |
+| Required Doris 4.0.6 read/write regression | Shared planner changed since the merge; 49 existing protocol, projection, predicate and write cases | Final approved retry: 49 passed, zero skipped, 662.93s; `matrix-final/query-regression.xml` |
+
+Evidence root: `/private/tmp/rd-native-capability-20261021/`. Final runtime/test
+fingerprint after the nullability fix: `1fa4ec07b68df1bb0eb2ef851f10ad65f033c8dbec8e6f2f16240db71652e426`;
+the manifest excludes this evidence-only Markdown ledger. Earlier 94-case
+infrastructure results predate these changes and cannot certify the new fallback
+interfaces. The new cases inject only known absence at the preferred interface;
+alternate SQL and full data comparisons run against real Doris after authorization.
+They do not establish compatibility with an untested older Doris release.
+
+Diagnostics remain separate: the first primary run passed 601 cases and the
+first Ray 2.58.0 subset passed 58. Ray 2.49.2 initially passed 28 and failed 5:
+its Parquet reader references an uninitialized partition variable for a projected
+read with `partitioning=None`. The legacy public-signature adapter now supplies
+an explicit empty partition scheme, preserving projection without synthesizing
+parent keys. Final suites above cover the changed code; no runtime error is
+swallowed, no private Ray implementation is imported and no test is skipped.
+
+Ruff format/lint, strict mypy, static PR precheck and all applicable hooks passed.
+Wheel/sdist and Twine checks passed; all 23 Python modules in the wheel match
+the source. Final documentation checks and static self-review are recorded in
+the same evidence directory. Both cached Doris versions and all fixture base
+images are available; the isolated test project has no existing containers.
+The user approved exactly one 125-case final infrastructure run. The runner
+stopped after 10 passes and 1 failure; 114 cases were not executed. Its tested
+fingerprint was `67dc6122e6d42b4ae36b1f251400f1542a305d5e59f725611fe9a33eac908e9a`.
+The real Catalog alternate SQL passed. The DESCRIBE alternate failed because
+Doris emits `Yes`/`No` but the adapter passed those values to the strict
+`YES`/`NO` information-schema parser unchanged. Both Doris 4.0.6 and 3.0.6 tagged
+`IndexSchemaProcNode` implementations confirm the presentation difference.
+
+The minimal fix uppercases only string nullability in the external DESCRIBE
+adapter; the system-table parser remains strict. Tests now cover actual mixed
+case, uppercase/lowercase and invalid non-string/unknown values. Focused tests
+passed 205 cases, followed by the final 614-case suite above. The previous
+605-case primary result is diagnostic evidence, not the fixed implementation's
+final result. Ray file reader/compatibility/schema and contract files are
+byte-identical, so their 36/62-case results remain applicable without repetition.
+Ruff, mypy, hooks, static precheck, build and Twine passed; the rebuilt wheel's
+23 Python modules match the fixed source. The public documentation is unchanged.
+
+`matrix/cleanup.json` confirms no owned resources remain. Shared base image IDs
+and the unique pre-existing dangling image IDs were verified preserved.
+Execution and failure records are `it-execution-plan.json`, `it-attempt-result.json`
+and `describe-fix/results.json`. The user subsequently approved exactly one complete 125-case retry followed by
+a cumulative self-review. `it-retry-execution-plan.json` records the repaired
+source and the new `matrix-final/` evidence directory. The final retry completed:
+125 passed, zero failures/errors/skips, verified from the three JUnit files.
+Actual alternate metadata SQL, full native/Doris data comparisons, original raw
+partition identities and both workers' hard-pinned HDFS/S3 reads passed on both
+Doris targets. The required suite also passed MySQL, Flight, auto, combined
+predicate/projection branches, permissions, typed empty reads and existing writes.
+
+The complete runtime/test manifest remains identical to the 614-case unit state.
+Runner fingerprint `7395830de845d43165df88ca6d655e3633b11634c1417b46657ac6a62cc27a97`
+was recomputed after execution, including the pinned Hadoop source manifest.
+The immutable upstream JNI source blobs were rechecked. `matrix-final/cleanup.json`
+confirms no owned containers, networks, volumes or custom image tags remain;
+shared base IDs and the unique pre-existing dangling image IDs were preserved.
+`it-final-result.json` records the verified totals, fingerprints and worker evidence.
+
+Cumulative self-review covered the complete PR diff against master, including
+all 42 tracked changes and 3 new files, plus affected surrounding code. No
+remaining blocking code issue or required validation gap was identified for the
+approved experimental scope. Wider Doris deployments and older-Ray HDFS/S3
+clusters are not certified by capability detection or local-file contracts.
+No commit, push or remote PR update is authorized by the test approval.
+
 ## Shared-storage and master merge validation
 
 The user approved minimal conflict resolution for PR #13, merging master

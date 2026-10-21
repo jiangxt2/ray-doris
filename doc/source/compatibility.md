@@ -39,14 +39,22 @@ are DeveloperAPI alpha despite their public import path. The
 
 ## Understand the Doris target
 
-The experimental `auto_native_read=True` optimization is a separate opt-in profile targeting
-Doris 4.0.6 and 3.0.6.2 with Ray 2.59.0. It uses structured Doris metadata,
+The experimental `auto_native_read=True` optimization is a separate opt-in profile whose
+eligibility uses structured metadata and public reader capabilities, without an exact
+Doris/Ray patch whitelist. The Ray package window remains `>=2.49.2,<2.60`.
+Its real Doris integration baselines are 4.0.6 and 3.0.6.2 with Ray 2.59.0;
+these are tested targets, not minimum Doris versions. It uses structured Doris metadata,
 independent plain-Thrift HMS access and native Ray Parquet reads from HDFS/S3.
 See [native reads](user-guide/native-read.md) for exact restrictions and
 `tests/it-ledger.md` for recorded validation evidence. Unsupported native contexts
-retain Doris reading. External Catalog reads use one fully qualified Doris query
+retain Doris reading. Known absent metadata interfaces try structured alternate sources;
+authorization, connection and contradictory-result errors do not trigger that fallback.
+External Catalog reads use one fully qualified Doris query
 without internal tablet planning. These additional profiles require their own
 validation; the default internal-table matrix does not certify them.
+The native Parquet local-file contracts additionally pass on Ray 2.49.2 V1 and
+2.58.0 V1/V2. This verifies public reader adaptation, projection and partition
+synthesis; HDFS/S3 distributed integration remains on Ray 2.59.0.
 
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
 

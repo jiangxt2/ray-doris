@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 import time
@@ -25,6 +26,7 @@ from ray_doris import (
     DorisPlanningError,
     NativeReadOptions,
     _external_metadata,
+    _metadata,
     _native,
     read_doris,
 )
@@ -32,6 +34,7 @@ from ray_doris._hms import open_hms
 
 pytestmark = pytest.mark.integration
 BASE = "hdfs://hms:9000/native"
+PARQUET_SIGNATURE = inspect.signature(ray.data.read_parquet)
 DATA_COLUMNS = [
     ("id", "int"),
     ("payload", "string"),
@@ -393,6 +396,77 @@ def test_schema_from_table_catalog_uses_doris_columns():
     assert dataset.schema().base_schema == pa.schema([("q", pa.int64()), ("id", pa.int32())])
 
 
+@pytest.mark.parametrize("provider", ["catalog", "columns", "session", "partitions", "version"])
+def test_metadata_capabilities_use_real_secondary_interfaces(provider):
+    original = _external_metadata._rows
+    statements = []
+
+    def query(cursor, statement, params=None):
+        statements.append(statement)
+        if provider == "version" and "@@version_comment" in statement:
+            return [{"build": "vendor build without a Doris version tag"}]
+        if provider == "catalog" and "FROM catalogs()" in statement:
+            raise pymysql.err.OperationalError(1305, "FUNCTION catalogs does not exist")
+        if provider == "columns" and "information_schema" in statement:
+            raise pymysql.err.OperationalError(1054, "Unknown column COLUMN_TYPE")
+        if provider == "session" and "@@hive_parquet_use_column_names" in statement:
+            raise pymysql.err.OperationalError(1193, "Unknown system variable")
+        if provider == "partitions" and "$partitions" in statement:
+            raise pymysql.err.OperationalError(1105, "Unknown table leading_zero$partitions")
+        return original(cursor, statement, params)
+
+    table = "leading_zero" if provider == "partitions" else "hdfs_partitioned"
+    with (
+        patch.object(_external_metadata, "_rows", query),
+        patch(
+            "ray_doris.datasource.DorisDatasource.get_read_tasks",
+            side_effect=AssertionError("Doris data path used"),
+        ),
+    ):
+        dataset = reader(table, "hdfs")
+        names = dataset.schema().names
+        rows = sorted(dataset.take_all(), key=lambda row: row["id"])
+    expected = sql(
+        "SELECT "
+        + ",".join(f"`{name}`" for name in names)
+        + f" FROM native_hive.native_it.{table} ORDER BY id"
+    )
+    assert [tuple(row[name] for name in names) for row in rows] == list(expected)
+    assert rows
+    required = {
+        "catalog": "SHOW CATALOG",
+        "columns": "DESCRIBE",
+        "session": "SHOW VARIABLES",
+        "partitions": "SHOW PARTITIONS",
+        "version": "SELECT @@version_comment",
+    }
+    assert any(statement.startswith(required[provider]) for statement in statements)
+
+
+def test_doris_schema_uses_real_describe_when_columns_interface_is_absent():
+    original = _metadata.metadata_rows
+    statements = []
+
+    def query(cursor, statement, params=None):
+        statements.append(statement)
+        if "information_schema" in statement:
+            raise pymysql.err.OperationalError(1054, "Unknown column COLUMN_TYPE")
+        return original(cursor, statement, params)
+
+    with patch.object(_metadata, "metadata_rows", query):
+        dataset = reader("hdfs_plain", "hdfs", auto_native_read=False)
+        names = dataset.schema().names
+        rows = sorted(dataset.take_all(), key=lambda row: row["id"])
+    expected = sql(
+        "SELECT "
+        + ",".join(f"`{name}`" for name in names)
+        + " FROM native_hive.native_it.hdfs_plain ORDER BY id"
+    )
+    assert [tuple(row[name] for name in names) for row in rows] == list(expected)
+    assert len(rows) == 240
+    assert any(statement.startswith("DESCRIBE") for statement in statements)
+
+
 def test_typed_partition_collisions_preserve_original_hms_locations(cluster):
     assert sorted(sql("SELECT q FROM native_hive.native_it.`leading_zero$partitions`")) == [
         (1,),
@@ -405,7 +479,9 @@ def test_typed_partition_collisions_preserve_original_hms_locations(cluster):
 
 
 def test_partition_limit_retains_full_doris_read():
-    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+    with patch(
+        "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+    ) as native_reader:
         dataset = read_doris(
             host="fe",
             table="native_it.hdfs_partitioned",
@@ -419,14 +495,18 @@ def test_partition_limit_retains_full_doris_read():
 
 @pytest.mark.parametrize("table", ["missing", "missing_partition"])
 def test_unsupported_locations_and_partition_values_fail_before_read(table):
-    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+    with patch(
+        "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+    ) as native_reader:
         with pytest.raises(DorisPlanningError):
             reader(table, "hdfs")
         native_reader.assert_not_called()
 
 
 def test_file_limit_retains_full_doris_read():
-    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+    with patch(
+        "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+    ) as native_reader:
         dataset = read_doris(
             host="fe",
             table="native_it.hdfs_plain",
@@ -486,7 +566,12 @@ def test_distributed_reads_use_two_workers(medium):
         affinity = NodeAffinitySchedulingStrategy(node_id, soft=False)
         # Assert the real native reader receives the hard scheduling constraint;
         # downstream map placement alone would not prove source accessibility.
-        with patch.object(_native.ray.data, "read_parquet", wraps=original_reader) as native_reader:
+        with patch.object(
+            _native.ray.data,
+            "read_parquet",
+            wraps=original_reader,
+            __signature__=PARQUET_SIGNATURE,
+        ) as native_reader:
             dataset = reader(
                 medium + "_plain",
                 medium,
@@ -537,7 +622,9 @@ def test_disabled_switch_reads_through_doris_without_native_probe(medium):
 @pytest.mark.parametrize("medium", ["hdfs", "s3"])
 def test_orc_falls_back_to_doris_and_preserves_values(medium):
     name = medium + "_orc"
-    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+    with patch(
+        "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+    ) as native_reader:
         dataset = reader(name, medium)
         rows = sorted(dataset.take_all(), key=lambda row: row["id"])
         names = dataset.schema().names
@@ -562,7 +649,9 @@ def test_predicate_and_custom_batch_keep_doris_execution(medium):
 
 @pytest.mark.parametrize("table", ["nested", "custom_location", "null_partition"])
 def test_unsupported_native_layouts_retain_doris_results(table):
-    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+    with patch(
+        "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+    ) as native_reader:
         dataset = reader(table, "hdfs", columns=["id"])
         rows = dataset.take_all()
         expected = sql(f"SELECT id FROM native_hive.native_it.{table}")
@@ -581,7 +670,9 @@ def test_unsupported_native_layouts_retain_doris_results(table):
 def test_session_semantics_outside_native_profile_retain_doris(setting, value, reset):
     sql(f"SET GLOBAL {setting} = {value}")
     try:
-        with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        with patch(
+            "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+        ) as native_reader:
             dataset = reader("hdfs_plain", "hdfs", columns=["id", "ts"])
             rows = sorted((row["id"], row["ts"]) for row in dataset.take_all())
             assert rows == list(
@@ -600,7 +691,9 @@ def test_ray_v2_limitations_retain_doris_data(table):
     context.use_datasource_v2 = True
     try:
         columns = ["path"] if table == "reserved_path" else ["id"]
-        with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        with patch(
+            "ray_doris._native.ray.data.read_parquet", __signature__=PARQUET_SIGNATURE
+        ) as native_reader:
             rows = reader(table, "hdfs", columns=columns).take_all()
             expected = sql(f"SELECT `{columns[0]}` FROM native_hive.native_it.{table}")
             assert rows and sorted(row[columns[0]] for row in rows) == sorted(

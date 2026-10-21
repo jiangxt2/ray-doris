@@ -22,14 +22,15 @@ from ray_doris._errors import (
     DorisPlanningError,
     DorisSchemaError,
 )
+from ray_doris._metadata import ExternalMetadataReader
 from ray_doris._models import (
     DorisInputSplit,
     DorisPlan,
     DorisPlanningSnapshot,
     DorisReadConfig,
 )
-from ray_doris._schema import build_arrow_schema, parse_describe_rows, parse_information_schema_rows
-from ray_doris._sql import build_describe_sql, build_external_columns_sql, build_read_sql
+from ray_doris._schema import DorisColumn, build_arrow_schema, parse_describe_rows
+from ray_doris._sql import build_describe_sql, build_read_sql
 
 _MYSQL_AUTHENTICATION_ERROR_CODES = {1045}
 _MYSQL_PERMISSION_ERROR_CODES = {1044, 1142, 1143, 1221, 1227, 5087}
@@ -372,22 +373,16 @@ class DorisPlanner:
                 try:
                     if self._config.catalog is None:
                         cursor.execute(build_describe_sql(self._config.table))
+                        rows: List[Sequence[Any]] = []
+                        while True:
+                            batch = cursor.fetchmany(256)
+                            if not batch:
+                                break
+                            rows.extend(batch)
+                        columns: Sequence[DorisColumn] = parse_describe_rows(rows)
                     else:
-                        cursor.execute(
-                            build_external_columns_sql(self._config.catalog),
-                            (self._config.table.database, self._config.table.table),
-                        )
-                    rows: List[Any] = []
-                    while True:
-                        batch = cursor.fetchmany(256)
-                        if not batch:
-                            break
-                        rows.extend(batch)
-                    if self._config.catalog is not None and not rows:
-                        # An empty metadata view is not proof of table visibility.
-                        cursor.execute(build_describe_sql(self._config.table, self._config.catalog))
-                        raise DorisPlanningError(
-                            "external columns are empty despite table visibility"
+                        columns = ExternalMetadataReader(cursor).columns(
+                            self._config.table, self._config.catalog
                         )
                 finally:
                     cursor.close()
@@ -395,6 +390,10 @@ class DorisPlanner:
                 connection.close()
         except DorisConfigurationError:
             raise
+        except DorisSchemaError as exc:
+            raise DorisSchemaError(
+                f"failed to build Arrow schema for {_table_context(self._config)}: {exc}"
+            ) from exc
         except OSError:
             context = _table_context(self._config)
             if _mysql_tls_is_configured(self._config):
@@ -416,11 +415,6 @@ class DorisPlanner:
                 f"failed to discover Doris schema for {context} (MySQL error {code!r})"
             ) from None
         try:
-            columns = (
-                parse_describe_rows(rows)
-                if self._config.catalog is None
-                else parse_information_schema_rows(rows)
-            )
             return build_arrow_schema(columns, self._config.columns)
         except DorisSchemaError as exc:
             raise DorisSchemaError(

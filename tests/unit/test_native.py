@@ -122,18 +122,17 @@ def test_doris_build_version(comment, expected):
 
 
 @pytest.mark.parametrize(
-    "comment",
+    "comment, expected",
     [
-        "5.7.99",
-        "Doris version 1.2.2",
-        "Doris version 3.0.6",
-        "Doris version 4.0.6.1",
-        "Doris version 3.0.6.3",
+        ("5.7.99", ()),
+        ("Doris version 1.2.2", (1, 2, 2)),
+        ("Doris version 3.0.6", (3, 0, 6)),
+        ("Doris version 4.0.6.1", (4, 0, 6, 1)),
+        ("Doris version 3.0.6.3", (3, 0, 6, 3)),
     ],
 )
-def test_unverified_doris_build_rejected(comment):
-    with pytest.raises(DorisPlanningError):
-        doris_build_version(comment)
+def test_doris_version_is_diagnostic_only(comment, expected):
+    assert doris_build_version(comment) == expected
 
 
 def storage():
@@ -264,17 +263,13 @@ def test_driver_metadata_never_sets_internal_default_database(monkeypatch, code)
 
 
 @pytest.mark.parametrize("version", ["2.49.2", "2.58.0"])
-def test_native_unsupported_ray_retains_doris_without_native_io(monkeypatch, version):
+def test_native_ray_capabilities_are_independent_of_patch_whitelist(monkeypatch, version):
     monkeypatch.setattr("ray_doris._compat._RAY_VERSION", version)
-    connect = Mock(side_effect=AssertionError("unexpected metadata I/O"))
-    monkeypatch.setattr("ray_doris._external_metadata.pymysql.connect", connect)
-    read = Mock(return_value="doris dataset")
-    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
-    assert read_doris(host="unused", table="db.t", catalog="hive", auto_native_read=True) == (
-        "doris dataset"
-    )
-    read.assert_called_once()
-    connect.assert_not_called()
+    discover = Mock(side_effect=RuntimeError("metadata reached"))
+    monkeypatch.setattr("ray_doris._native.discover_external", discover)
+    with pytest.raises(RuntimeError, match="metadata reached"):
+        read_doris(host="unused", table="db.t", catalog="hive", auto_native_read=True)
+    discover.assert_called_once()
 
 
 def test_disabled_flag_does_not_import_or_probe_native(monkeypatch):
@@ -432,6 +427,68 @@ def metadata_connection(monkeypatch, responses):
     monkeypatch.setattr("ray_doris._external_metadata._rows", Mock(side_effect=responses))
     monkeypatch.setattr("ray_doris._external_metadata.validate_native_session", Mock())
     return connection
+
+
+@pytest.mark.parametrize("version", ["Doris version 3.1.4", "Doris version 4.0.7", "vendor build"])
+def test_unknown_build_can_use_complete_metadata_capabilities(monkeypatch, version):
+    metadata_connection(
+        monkeypatch,
+        [
+            [{"build": version}],
+            [
+                {
+                    "CatalogType": "hms",
+                    "Property": "hive.metastore.uris",
+                    "Value": "thrift://hms:9083",
+                }
+            ],
+            [{"COLUMN_NAME": "id", "COLUMN_TYPE": "INT", "IS_NULLABLE": "YES"}],
+        ],
+    )
+    client = Mock()
+    client.table.return_value = HiveTable(storage(), (), (), "EXTERNAL_TABLE")
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", lambda *args: nullcontext(client))
+    result = discover_external(
+        DorisReadConfig(host="fe", table=parse_table("db.t"), user="u"), "hive", NativeReadOptions()
+    )
+    assert result.schema == pa.schema([("id", pa.int32())])
+    assert result.version == doris_build_version(version)
+
+
+@pytest.mark.parametrize("shown,expected", [(["p=01", "p=1"], None), (["p=2"], DorisPlanningError)])
+def test_partition_metadata_fallback_keeps_raw_hms_identities(monkeypatch, shown, expected):
+    metadata_connection(
+        monkeypatch,
+        [
+            [{"build": "unidentified build"}],
+            [
+                {
+                    "CatalogType": "hms",
+                    "Property": "hive.metastore.uris",
+                    "Value": "thrift://hms:9083",
+                }
+            ],
+            [
+                {"COLUMN_NAME": "id", "COLUMN_TYPE": "INT", "IS_NULLABLE": "YES"},
+                {"COLUMN_NAME": "p", "COLUMN_TYPE": "BIGINT", "IS_NULLABLE": "YES"},
+            ],
+            pymysql.err.OperationalError(1105, "Unknown table t$partitions"),
+            [{"Partition": name} for name in shown],
+        ],
+    )
+    client = Mock()
+    client.table.return_value = HiveTable(storage(), (("p", "bigint"),), (), "EXTERNAL_TABLE")
+    client.partitions.return_value = tuple(
+        HivePartition("p=" + value, (value,), storage(), ()) for value in ("01", "1")
+    )
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", lambda *args: nullcontext(client))
+    options = DorisReadConfig(host="fe", table=parse_table("db.t"), user="u")
+    if expected is not None:
+        with pytest.raises(expected, match="identities differ"):
+            discover_external(options, "hive", NativeReadOptions())
+    else:
+        result = discover_external(options, "hive", NativeReadOptions())
+        assert [part.name for part in result.partitions] == ["p=01", "p=1"]
 
 
 def test_nested_native_schema_retains_doris_before_hms_access(monkeypatch):

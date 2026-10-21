@@ -49,6 +49,15 @@ distinct raw partitions `01`/`1`, empty registered partitions and missing
 registered locations. Cleanup handles SIGTERM, reaps active CLI children and
 verifies the absence of owned resources before reporting success.
 
+Capability tests inject only the preferred interface's known absence and execute
+the alternate `SHOW CATALOG`, `DESCRIBE`, `SHOW VARIABLES` or `SHOW PARTITIONS`
+against real Doris. They compare complete rows with Doris SQL, preserve raw
+`01`/`1` identities and also verify the shared column fallback on the Doris path.
+These cases prove the alternate interface contracts on the selected baselines;
+they do not certify an untested older Doris release. An unknown diagnostic build
+string must not prevent otherwise eligible native reading. Reader spies retain
+the public function signature so capability checks execute the intended branch.
+
 When an unchanged query/write regression result is explicitly reused, pass
 `--skip-query-regression` and record the reason and prior evidence in the ledger.
 This does not skip either selected version's native suite.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -17,10 +18,13 @@ from ray_doris._errors import (
     _NativeReadNotApplicableError,
 )
 from ray_doris._hms import HivePartition, HiveStorage, HiveTable, open_hms
+from ray_doris._metadata import ExternalMetadataReader, capability_missing, named_row
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._planner import _mysql_access_error, _mysql_connection_kwargs, _mysql_error_code
-from ray_doris._schema import build_arrow_schema, doris_type_to_arrow, parse_information_schema_rows
-from ray_doris._sql import build_external_columns_sql, quote_identifier
+from ray_doris._schema import build_arrow_schema, doris_type_to_arrow
+from ray_doris._sql import quote_identifier
+
+logger = logging.getLogger(__name__)
 
 _PARQUET_INPUT = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
 _PARQUET_SERDE = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
@@ -39,12 +43,8 @@ def doris_build_version(comment: str) -> Tuple[int, ...]:
     match = re.search(
         r"\bdoris\s+version\s+(?:doris-)?(\d+\.\d+\.\d+(?:\.\d+)?)(?![\d.])", comment, re.I
     )
-    if match is None:
-        raise _NativeReadNotApplicableError("cannot identify a verified native Doris build")
-    version = tuple(int(part) for part in match.group(1).split("."))
-    if version not in ((3, 0, 6, 2), (4, 0, 6)):
-        raise _NativeReadNotApplicableError("native reads currently target Doris 3.0.6.2 and 4.0.6")
-    return version
+    # Diagnostic only: the actual metadata contracts determine eligibility.
+    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
 
 
 def _hive_type(value: str, name: str) -> pa.DataType:
@@ -120,20 +120,21 @@ def _rows(cursor: Any, sql: str, parameters: Any = None) -> List[Dict[str, Any]]
     return list(cursor.fetchall())
 
 
-def validate_native_session(cursor: Any, schema: pa.Schema) -> None:
+def validate_native_session(
+    cursor: Any, schema: pa.Schema, reader: ExternalMetadataReader | None = None
+) -> None:
     """Keep the file reader within the verified Doris name/UTC semantics."""
-    rows = _rows(
-        cursor,
-        "SELECT @@hive_parquet_use_column_names AS use_names, @@time_zone AS timezone",
-    )
-    if len(rows) != 1 or not isinstance(rows[0].get("timezone"), str) or not rows[0]["timezone"]:
+    reader = reader or ExternalMetadataReader(cursor, _rows)
+    timestamp = any(pa.types.is_timestamp(column.type) for column in schema)
+    use_names, timezone = reader.native_settings(timestamp=timestamp)
+    if timestamp and (not isinstance(timezone, str) or not timezone):
         raise DorisPlanningError("Doris returned incomplete native session settings")
-    by_name = str(rows[0].get("use_names")).lower()
+    by_name = str(use_names).lower()
     if by_name in ("false", "0"):
         raise _NativeReadNotApplicableError("positional Parquet mapping requires Doris execution")
     if by_name not in ("true", "1"):
         raise DorisPlanningError("Doris returned invalid Parquet name mapping")
-    if any(pa.types.is_timestamp(column.type) for column in schema) and rows[0]["timezone"] not in (
+    if timestamp and timezone not in (
         "UTC",
         "GMT",
         "Etc/UTC",
@@ -162,23 +163,17 @@ def discover_external(
     try:
         with pymysql.connect(**kwargs) as connection, connection.cursor() as cursor:
             stage = "version"
-            version = doris_build_version(
-                str(_rows(cursor, "SELECT @@version_comment AS build")[0]["build"])
-            )
+            try:
+                version = doris_build_version(
+                    str(_rows(cursor, "SELECT @@version_comment AS build")[0]["build"])
+                )
+            except pymysql.MySQLError as error:
+                if not capability_missing(error, "session"):
+                    raise
+                version = ()
+            reader = ExternalMetadataReader(cursor, _rows)
             stage = "catalog"
-            rows = _rows(
-                cursor,
-                "SELECT CatalogType, Property, Value FROM catalogs() WHERE CatalogName = %s",
-                (catalog,),
-            )
-            if not rows:
-                # The relational view filters invisible catalogs instead of raising.
-                # A direct metadata statement distinguishes denial from an empty view.
-                _rows(cursor, f"SHOW CATALOG {quote_identifier(catalog)}")
-                raise DorisPlanningError("the requested Hive catalog is not visible")
-            if any(str(row["CatalogType"]).lower() != "hms" for row in rows):
-                raise _NativeReadNotApplicableError("native reads require a visible Hive catalog")
-            props = {str(row["Property"]): str(row["Value"]) for row in rows}
+            props = reader.catalog(catalog)
             if props.get("access_controller.class", "") or any(
                 key.startswith("access_controller.properties.") for key in props
             ):
@@ -205,21 +200,14 @@ def discover_external(
             if uri not in uris:
                 raise DorisPlanningError("HMS URI must match the Doris catalog")
             stage = "columns"
-            rows = _rows(
-                cursor,
-                build_external_columns_sql(catalog),
-                (config.table.database, config.table.table),
-            )
-            if not rows:
-                raise DorisPlanningError("Doris column metadata is empty or inaccessible")
-            columns = parse_information_schema_rows(rows)
+            columns = reader.columns(config.table, catalog)
             if any(
                 column.doris_type.strip().upper().startswith(("ARRAY<", "MAP<", "STRUCT<"))
                 for column in columns
             ):
                 raise _NativeReadNotApplicableError("nested types require Doris execution")
             schema = build_arrow_schema(columns)
-            validate_native_session(cursor, schema)
+            validate_native_session(cursor, schema, reader)
             with open_hms(uri, options.metadata_timeout) as hms:
                 table = hms.table(config.table.database, config.table.table)
                 validate_table(table, schema)
@@ -232,9 +220,45 @@ def discover_external(
                 )
                 if table.partition_keys:
                     stage = "partition-values"
-                    values = _rows(
-                        cursor, f"SELECT * FROM {qualified} LIMIT {options.max_partitions + 1}"
-                    )
+                    try:
+                        values = _rows(
+                            cursor, f"SELECT * FROM {qualified} LIMIT {options.max_partitions + 1}"
+                        )
+                    except pymysql.MySQLError as error:
+                        if not capability_missing(error, "partitions"):
+                            raise
+                        table_name = ".".join(
+                            quote_identifier(part)
+                            for part in (catalog, config.table.database, config.table.table)
+                        )
+                        try:
+                            shown = _rows(cursor, f"SHOW PARTITIONS FROM {table_name}")
+                        except pymysql.MySQLError as secondary:
+                            if not capability_missing(secondary, "show-partitions"):
+                                raise
+                            raise _NativeReadNotApplicableError(
+                                "Doris lacks registered Hive partition metadata"
+                            ) from None
+                        names = []
+                        for item in shown:
+                            row = named_row(item)
+                            if "partition" not in row:
+                                raise _NativeReadNotApplicableError(
+                                    "Hive partition identity metadata is unavailable"
+                                ) from None
+                            if not isinstance(row["partition"], str):
+                                raise DorisPlanningError(
+                                    "Doris returned invalid partition identities"
+                                ) from None
+                            names.append(row["partition"])
+                        if Counter(names) != Counter(part.name for part in partitions):
+                            raise DorisPlanningError(
+                                "Doris and HMS registered partition identities differ"
+                            ) from None
+                        reader.origins["partitions"] = "show-partitions"
+                        values = None
+                    else:
+                        reader.origins["partitions"] = "$partitions"
                     declared = Counter(
                         tuple(
                             partition_value(value, type_name)
@@ -242,8 +266,12 @@ def discover_external(
                         )
                         for part in partitions
                     )
-                    observed = Counter(
-                        tuple(row[name] for name, _ in table.partition_keys) for row in values
+                    observed = (
+                        Counter(
+                            tuple(row[name] for name, _ in table.partition_keys) for row in values
+                        )
+                        if values is not None
+                        else declared
                     )
                     if observed != declared:
                         raise DorisPlanningError("Doris and HMS registered partition values differ")
@@ -256,6 +284,7 @@ def discover_external(
                         raise DorisSchemaError(
                             "partition schema or value count differs from the table"
                         )
+            logger.info("Doris native metadata origins=%s", reader.origins)
             return ExternalMetadata(
                 schema, table.storage, partitions, table.partition_keys, version
             )

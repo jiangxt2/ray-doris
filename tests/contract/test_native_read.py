@@ -15,13 +15,8 @@ from ray_doris import DorisSchemaError
 from ray_doris._errors import _NativeReadNotApplicableError
 from ray_doris._native import NativeReadPlan, read_native_plan
 
-pytestmark = [
-    pytest.mark.contract,
-    pytest.mark.skipif(
-        ray.__version__.split("+", 1)[0] != "2.59.0",
-        reason="native reader contracts target Ray 2.59.0; legacy rejection is unit-tested",
-    ),
-]
+pytestmark = pytest.mark.contract
+HAS_READER_SWITCH = hasattr(ray.data.DataContext.get_current(), "use_datasource_v2")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -31,13 +26,15 @@ def native_ray():
     ray.shutdown()
 
 
-@pytest.fixture(params=[False, True], ids=["v1", "v2"])
+@pytest.fixture(params=[False, True] if HAS_READER_SWITCH else [False])
 def reader_version(request):
     context = ray.data.DataContext.get_current()
-    previous = context.use_datasource_v2
-    context.use_datasource_v2 = request.param
+    previous = context.use_datasource_v2 if HAS_READER_SWITCH else None
+    if HAS_READER_SWITCH:
+        context.use_datasource_v2 = request.param
     yield request.param
-    context.use_datasource_v2 = previous
+    if HAS_READER_SWITCH:
+        context.use_datasource_v2 = previous
 
 
 @pytest.mark.parametrize("keys", [(), (("p", "bigint"),), (("p", "BIGINT"),)])
@@ -80,6 +77,20 @@ def test_native_empty_dataset_preserves_projected_schema(tmp_path):
     assert ds.schema().base_schema == pa.schema([("p", pa.string())])
 
 
+def test_unpartitioned_projection_ignores_partition_like_parent(tmp_path, reader_version):
+    root = tmp_path / "p=parent"
+    root.mkdir()
+    file = root / "data.parquet"
+    schema = pa.schema([("id", pa.int32()), ("p", pa.string())])
+    pq.write_table(pa.Table.from_pylist([{"id": 7, "p": "physical"}], schema=schema), file)
+    plan = NativeReadPlan(schema, (str(file),), fs.LocalFileSystem(), str(root), ())
+    dataset = read_native_plan(
+        plan, ("p", "id"), concurrency=1, override_num_blocks=1, ray_remote_args=None
+    )
+    assert dataset.take_all() == [{"p": "physical", "id": 7}]
+    assert dataset.schema().base_schema == pa.schema([schema.field("p"), schema.field("id")])
+
+
 @pytest.mark.parametrize("partitioned", [False, True])
 @pytest.mark.parametrize("projection", [None, ("p", "id")])
 def test_zero_row_parquet_files_preserve_logical_schema(
@@ -113,19 +124,21 @@ def test_extensionless_v2_rejected_and_public_v1_works(tmp_path):
     pq.write_table(pa.table({"id": pa.array([1], type=pa.int32())}), file)
     plan = NativeReadPlan(schema, (str(file),), fs.LocalFileSystem(), str(tmp_path), ())
     context = ray.data.DataContext.get_current()
-    previous = context.use_datasource_v2
+    previous = context.use_datasource_v2 if HAS_READER_SWITCH else None
     try:
-        context.use_datasource_v2 = True
-        with pytest.raises(_NativeReadNotApplicableError, match="extensionless"):
-            read_native_plan(
-                plan, None, concurrency=None, override_num_blocks=None, ray_remote_args=None
-            )
-        context.use_datasource_v2 = False
+        if HAS_READER_SWITCH:
+            context.use_datasource_v2 = True
+            with pytest.raises(_NativeReadNotApplicableError, match="extensionless"):
+                read_native_plan(
+                    plan, None, concurrency=None, override_num_blocks=None, ray_remote_args=None
+                )
+            context.use_datasource_v2 = False
         assert read_native_plan(
             plan, None, concurrency=None, override_num_blocks=None, ray_remote_args=None
         ).take_all() == [{"id": 1}]
     finally:
-        context.use_datasource_v2 = previous
+        if HAS_READER_SWITCH:
+            context.use_datasource_v2 = previous
 
 
 @pytest.mark.parametrize("projection", [None, ("path",), ("path", "id")])

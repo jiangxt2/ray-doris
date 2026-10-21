@@ -14,11 +14,11 @@ The API accepts a table identifier; complete SQL statements and SQL rewriting ar
 unsupported. There is no `read_mode` parameter or force-native public mode.
 
 From a source checkout containing this experimental feature, install the optional
-metadata SDK and the initial Ray baseline. This development work has not yet been
+metadata SDK. This development work has not yet been
 published as a package release:
 
 ```bash
-pip install -e ".[native]" "ray[data]==2.59.0"
+pip install -e ".[native]"
 ```
 
 ```python
@@ -44,7 +44,7 @@ The driver makes one source decision before returning the Dataset:
 | Condition | Selected path |
 | --- | --- |
 | The flag is disabled | Read through Doris without native discovery |
-| The Hive table, session, files and Ray version fit the native profile | Use public Ray Parquet reading |
+| The Hive table, session, files and public Ray capabilities fit the native profile | Use public Ray Parquet reading |
 | A known valid context is outside that profile | Keep Doris reading and log the reason |
 | Authentication, connection, source access, missing objects or contradictory metadata fail | Raise the error |
 | An error occurs after native execution starts | Raise the error without replaying through Doris |
@@ -57,9 +57,15 @@ their existing planning behavior. Ray output blocks do not multiply that externa
 
 ## Review the experimental boundary
 
-The initial validation targets are Doris 4.0.6 and 3.0.6.2 with Python 3.12 and
-Ray 2.59.0. See the integration ledger for actual results; listing a target does
-not certify every deployment or authentication provider.
+Eligibility is determined by metadata and reader capabilities, without an exact
+Doris or Ray patch-version whitelist. The package's Ray installation window
+remains `>=2.49.2,<2.60`. The real Doris integration targets are 4.0.6 and
+3.0.6.2 with Python 3.12 and Ray 2.59.0. These are test baselines, not minimum
+Doris releases. A different Doris release can qualify when the same contracts
+are available; this does not certify every deployment or authentication provider.
+See `tests/it-ledger.md` for actual validation results.
+Real local-file reader contracts also cover Ray 2.49.2 V1 and Ray 2.58.0 V1/V2;
+these checks do not extend the HDFS/S3 cluster matrix to those Ray releases.
 
 - Native selection requires Hive Parquet without transactions, with standard
   InputFormat and SerDe on HDFS or S3. Other formats, Hive ACID, views,
@@ -99,11 +105,36 @@ combinations remain unverified; this is not a promise of general timezone parity
 
 ## Configure independent source access
 
-Doris supplies catalog properties, logical columns, and typed partition values.
+Doris supplies catalog properties, logical columns, and registered partition metadata.
 HMS supplies the original partition identifiers, storage descriptors and actual
 locations. Native discovery currently requires plain Thrift HMS in a trusted network;
 SASL/Kerberos and catalog name remapping retain Doris execution. An explicit `hms_uri`
 must match a URI advertised by the Doris catalog.
+
+### Discover metadata capabilities
+
+The driver reuses Doris's structured metadata, in this priority order:
+
+| Required fact | Preferred source | Alternate source |
+| --- | --- | --- |
+| Catalog identity and properties | `catalogs()` | `SHOW CATALOG` plus `SHOW CATALOGS` |
+| Column names, complete types and nullability | External `information_schema.columns` | Fully qualified `DESCRIBE` |
+| Registered partitions, for partitioned tables only | Typed `$partitions` values | `SHOW PARTITIONS` names compared with original HMS identities |
+| Effective Parquet mapping and timestamp timezone | Session `@@` variables | `SHOW VARIABLES LIKE ...` |
+
+The external Doris planner shares the same column discovery and type parser with
+the native path. External `DESCRIBE` display aliases such as `TEXT` are normalized
+locally; logical types must still agree with HMS. The driver never infers raw
+partition paths from typed values: names such as `q=01` and `q=1` remain distinct.
+Only timestamp tables require the timezone setting. The Doris build string is
+diagnostic and does not select a metadata strategy.
+
+A recognized absent interface permits the next provider. Empty relational catalog
+or column metadata triggers a native visibility check. Permission, connection,
+malformed-result and consistency errors remain errors. If no compatible catalog,
+partition or required setting interface exists, automatic selection retains Doris
+execution. Doris execution still needs a usable column description. Discovery
+results and their origins belong to one driver read, without a global metadata cache.
 
 Storage access is independent of Doris permissions. Supply an Arrow `filesystem`
 in `NativeReadOptions`, or configure Arrow's standard environment and credential
@@ -145,7 +176,17 @@ types. Footer checks add one metadata read per file; they do not provide a snaps
 An empty file list or files whose footer row counts are all zero return an empty
 Dataset with the declared schema, including projected partition columns.
 
-Ray 2.59's default V2 reader replaces `file_extensions=None` with its default
+The connector checks named public parameters on `read_parquet`, `map_batches`
+and, for partitioned tables, `Partitioning`. It passes optional reader arguments
+only when they are explicitly supported; legacy readers do not receive the newer
+`ignore_missing_paths` argument. A public `use_datasource_v2` setting identifies
+the active reader. The legacy public signature without that setting and without
+`ignore_missing_paths` identifies V1; an unknown combination retains Doris reading.
+No reader implementation is selected from a Doris or Ray version string.
+Legacy readers receive an explicit empty partition scheme for tables without
+partition keys, preserving column projection without inferring keys from parent directories.
+
+The configured V2 reader replaces `file_extensions=None` with its default
 Parquet suffix filter. Visible input files without the `.parquet` suffix therefore
 retain Doris reading, preventing silent omission in mixed lists. A caller can
 explicitly select Ray's public V1 setting to make validated Parquet files without a suffix
@@ -157,7 +198,7 @@ import ray.data
 ray.data.DataContext.get_current().use_datasource_v2 = False
 ```
 
-Ray 2.59 V2 also reserves the physical data-column name `path`. Nonempty tables
+V2 also reserves the physical data-column name `path`. Nonempty tables
 containing that data column retain Doris reading under V2; the same public V1
 setting permits native reading. A path-derived partition key named `path` is
 not a physical data column and does not have this restriction.

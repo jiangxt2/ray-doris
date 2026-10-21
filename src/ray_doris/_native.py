@@ -16,7 +16,12 @@ import ray.data
 from ray.data import Dataset
 from ray.data.datasource.partitioning import Partitioning, PartitionStyle, PathPartitionParser
 
-from ray_doris._compat import ensure_native_ray_version, native_uses_datasource_v2
+from ray_doris._compat import (
+    ensure_native_partitioning,
+    ensure_native_ray_version,
+    native_parquet_options,
+    native_uses_datasource_v2,
+)
 from ray_doris._errors import (
     DorisConfigurationError,
     DorisPlanningError,
@@ -50,6 +55,8 @@ def _location(value: str) -> Tuple[str, str, str]:
 
 
 def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> NativeReadPlan:
+    if metadata.partition_keys:
+        ensure_native_partitioning()
     scheme, authority, root = _location(metadata.storage.location)
     normalized_uri = urlunparse((scheme, authority, root, "", "", ""))
     try:
@@ -178,18 +185,20 @@ def read_native_plan(
     partition_names = {name for name, _ in plan.partition_keys}
     if use_v2 and "path" in plan.schema.names and "path" not in partition_names:
         raise _NativeReadNotApplicableError(
-            "Ray 2.59 V2 cannot preserve the data column 'path'; explicitly configure "
+            "the configured Ray V2 reader cannot preserve the data column 'path'; "
+            "explicitly configure "
             "DataContext.use_datasource_v2=False to read this table"
         )
     if use_v2 and any(not path.endswith(".parquet") for path in plan.files):
         raise _NativeReadNotApplicableError(
-            "Ray 2.59 V2 filters extensionless Parquet; explicitly configure "
+            "the configured Ray V2 reader filters extensionless Parquet; explicitly configure "
             "DataContext.use_datasource_v2=False to read this layout"
         )
     if _validate_file_schemas(plan) == 0:
         return ray.data.from_arrow(pa.Table.from_batches([], schema=selected))
     partitioning = None
     if plan.partition_keys:
+        ensure_native_partitioning()
         partitioning = Partitioning(
             PartitionStyle.HIVE,
             base_dir=plan.base_dir,
@@ -203,12 +212,13 @@ def read_native_plan(
         list(plan.files),
         filesystem=plan.filesystem,
         columns=list(columns) if columns is not None else None,
-        partitioning=partitioning,
         file_extensions=None,
-        ignore_missing_paths=False,
         concurrency=concurrency,
         override_num_blocks=override_num_blocks,
         ray_remote_args=dict(ray_remote_args) if ray_remote_args is not None else {},
+        **native_parquet_options(
+            base_dir=plan.base_dir, filesystem=plan.filesystem, partitioning=partitioning
+        ),
     )
     # Let Ray infer the physical data schema and synthesize partitions first.
     # Pinning the full logical schema makes V1 retain NULL partition placeholders.
@@ -245,7 +255,7 @@ def read_native(
     )
     logger.info(
         "Doris read path=native reader=read_parquet doris_version=%s partitions=%d files=%d",
-        ".".join(str(part) for part in metadata.version),
+        ".".join(str(part) for part in metadata.version) or "unknown",
         len(metadata.partitions),
         len(plan.files),
     )
