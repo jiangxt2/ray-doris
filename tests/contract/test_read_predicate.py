@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+from functools import partial
 from typing import Iterable
+from unittest.mock import patch
 
 import pyarrow as pa
 import pytest
 import ray
 
 from ray_doris import DorisDatasource
-from ray_doris._compat import supports_native_predicates
+from ray_doris._compat import make_read_task, supports_native_predicates
 from ray_doris._models import DorisPlanningSnapshot
 from ray_doris._sql import build_read_sql
 
@@ -44,6 +46,25 @@ def _read_fixture(config, split, schema):
         connection.close()
 
 
+def _run_fixture_reader(read_fn):
+    with patch("ray_doris.datasource.read_split", _read_fixture):
+        yield from read_fn()
+
+
+class SQLFixtureDatasource(DorisDatasource):
+    def get_read_tasks(self, parallelism, per_task_row_limit=None, data_context=None):
+        tasks = super().get_read_tasks(parallelism, per_task_row_limit, data_context)
+        return [
+            make_read_task(
+                partial(_run_fixture_reader, task.read_fn),
+                task.metadata,
+                task.schema,
+                per_task_row_limit,
+            )
+            for task in tasks
+        ]
+
+
 @pytest.fixture(scope="module", autouse=True)
 def ray_runtime() -> Iterable[None]:
     started = not ray.is_initialized()
@@ -68,7 +89,7 @@ def source_factory(monkeypatch):
         lambda planner: DorisPlanningSnapshot(describe(planner), (1,)),
     )
     monkeypatch.setattr("ray_doris.datasource.read_split", _read_fixture)
-    return lambda **kwargs: DorisDatasource(table="db.records", host="fixture", **kwargs)
+    return lambda **kwargs: SQLFixtureDatasource(table="db.records", host="fixture", **kwargs)
 
 
 def test_native_acceptance_and_complete_residual_match_ray(source_factory, monkeypatch) -> None:
@@ -137,3 +158,29 @@ def test_trusted_filter_and_native_filter_compose(source_factory) -> None:
 
     dataset = ray.data.read_datasource(source_factory(filter="text LIKE 'a%' OR id % 2 = 0"))
     assert sorted(row["id"] for row in dataset.filter(expr=col("id") > 1).take_all()) == [2, 4]
+
+
+@pytest.mark.parametrize("predicate_first", [False, True])
+@pytest.mark.parametrize("empty_projection", [False, True])
+def test_native_predicate_survives_projection_of_its_dependency(
+    source_factory, predicate_first, empty_projection
+) -> None:
+    if not supports_native_predicates():
+        assert not source_factory().supports_predicate_pushdown()
+        return
+
+    root = ray.data.read_datasource(source_factory())
+    dataset = root if predicate_first else root.select_columns(["text", "n", "id"])
+    filtered = dataset.filter(expr=col("n") > 1)
+    selected = filtered.select_columns([] if empty_projection else ["text", "id"]).materialize()
+    if empty_projection:
+        native = ray.data.from_items([{"id": 3}, {"id": 4}]).select_columns([]).materialize()
+        assert selected.count() == native.count() == 2
+        assert selected.take_all() == native.take_all()
+    else:
+        assert sorted(selected.take_all(), key=lambda row: row["id"]) == [
+            {"text": "c", "id": 3},
+            {"text": "d", "id": 4},
+        ]
+        assert selected.schema().names == ["text", "id"]
+    assert root.count() == 4

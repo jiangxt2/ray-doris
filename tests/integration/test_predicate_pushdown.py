@@ -187,3 +187,38 @@ def test_residual_limit_trusted_filter_and_branches(
     assert projected.take_all() == [{"id": 3, "text": "f"}]
     trusted = read_doris(**dict(kwargs, filter="text LIKE 'a%' OR id % 2 = 0"))
     assert sorted(row["id"] for row in trusted.filter(expr=col("id") >= 0).take_all()) == [0, 2]
+
+
+@pytest.mark.parametrize("transport", ["mysql", "flight"])
+def test_native_predicate_and_projection_share_sql_and_isolate_branches(
+    doris_config, predicate_table, transport
+) -> None:
+    recorder = QueryRecorder.remote()
+    try:
+        source = RecordingDatasource(
+            recorder,
+            **doris_config.reader_kwargs(table=predicate_table, transport=transport),
+        )
+        source.get_read_tasks(2)
+        root = ray.data.read_datasource(source)
+        selected = root.filter(expr=col("id") >= 2).select_columns(["text"]).materialize()
+        assert sorted(row["text"] for row in selected.take_all()) == ["e", "f"]
+        assert selected.schema().names == ["text"]
+        queries = ray.get(recorder.read.remote())
+        assert queries and all(sql.startswith("SELECT `text` FROM") for _, sql, _ in queries)
+        if transport == "mysql":
+            assert all("`id` >= %s" in sql and params == (2,) for _, sql, params in queries)
+        else:
+            assert all("`id` >= 2" in sql for _, sql, _ in queries)
+        assert sorted(
+            root.select_columns(["id"]).filter(expr=col("id") >= 2).take_all(),
+            key=lambda row: row["id"],
+        ) == [
+            {"id": 2},
+            {"id": 3},
+        ]
+        assert root.filter(expr=col("id") >= 2).select_columns([]).count() == 2
+        assert root.count() == 6
+        assert source.config.columns is None and source.config.predicate is None
+    finally:
+        ray.kill(recorder)

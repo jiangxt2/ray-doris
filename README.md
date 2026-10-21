@@ -82,6 +82,13 @@ print(dataset.schema())
 print(dataset.take(5))
 ```
 
+On Ray 2.58.0 and 2.59.0, a later `dataset.select_columns(...)` can automatically
+prune the columns queried from Doris. Explicit `columns` remains the initial
+visible-column boundary. Other accepted Ray releases keep the existing behavior
+and require explicit `columns` to reduce the scan. See the
+[projection guide](doc/source/user-guide/read-data.md#project-columns) for filter,
+clone, and empty-projection behavior.
+
 `table` must be an exact `database.table` reference in Doris's internal catalog. External
 catalog tables, joins, and multi-table query planning are not supported. `filter` is a trusted
 SQL scalar expression: do not pass untrusted user input. Doris uses the `WHERE` expression for

@@ -28,6 +28,7 @@ from ray.data.aggregate import Count, Max, Min, Sum
 from ray.data.datasource import ReadTask
 from ray.data.expressions import col
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+from tests.projection_helpers import RecordingDorisDatasource, SQLRecorder
 
 from ray_doris import (
     DorisAmbiguousWriteError,
@@ -435,6 +436,38 @@ def test_native_predicate_serializes_to_distributed_readers(slow_config, transpo
     selected = root.filter(expr=(col("id") >= 1) & (col("id") <= 10))
     assert sorted(row["id"] for row in selected.take_all()) == list(range(1, 11))
     assert root.filter(expr=col("id") < 0).take_all() == []
+
+
+@pytest.mark.parametrize("transport", ["mysql", "flight"])
+def test_projected_read_executes_on_all_ray_workers(slow_config, transport):
+    recorder = SQLRecorder.remote()
+    try:
+        source = RecordingDorisDatasource(
+            recorder=recorder,
+            **slow_config.reader_kwargs(
+                table=slow_config.distributed_table,
+                transport=transport,
+                tablet_size=1,
+                batch_size=5_000,
+            ),
+        )
+        dataset = ray.data.read_datasource(
+            source,
+            concurrency=3,
+            override_num_blocks=BUCKET_COUNT,
+            ray_remote_args={"num_cpus": 1, "scheduling_strategy": "SPREAD"},
+        ).select_columns(["id"])
+        rows = dataset.take_all()
+        assert len(rows) == slow_config.row_count
+        assert sum(row["id"] for row in rows) == slow_config.expected_id_sum
+        records = ray.get(recorder.read.remote())
+        queries = [(sql, node) for stage, sql, node in records if stage == "worker"]
+        assert queries and all(sql.startswith("SELECT `id` FROM") for sql, _ in queries)
+        assert {node for _, node in queries} == {
+            node["NodeID"] for node in _ray_worker_nodes(slow_config)
+        }
+    finally:
+        ray.kill(recorder)
 
 
 def test_stream_load_write_executes_on_all_ray_workers(

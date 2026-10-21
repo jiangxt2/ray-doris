@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import copy
 from dataclasses import replace
 from functools import partial
-from typing import Any, Callable, List, Mapping, Optional, Sequence, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 import pyarrow as pa
 from ray import cloudpickle
@@ -15,10 +28,13 @@ from ray.data.datasource import Datasource, ReadTask
 from ray_doris._compat import (
     ensure_supported_ray_version,
     make_read_task,
+    project_empty_block,
     supports_native_predicates,
+    supports_projection_pushdown,
 )
 from ray_doris._errors import DorisConfigurationError
 from ray_doris._models import (
+    DorisInputSplit,
     DorisPlanningSnapshot,
     DorisReadConfig,
     FlightScheme,
@@ -35,6 +51,19 @@ from ray_doris._sql import normalize_columns, normalize_filter, parse_table
 def _read_empty(schema: pa.Schema) -> List[pa.Table]:
     """Return one schema-carrying Arrow block without querying Doris."""
     return [pa.Table.from_batches([], schema=schema)]
+
+
+def _read_zero_columns(
+    config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
+) -> Iterator[pa.Table]:
+    """Read with the existing physical schema and apply Ray's native empty projection."""
+    # All transports return generators. Closing the wrapper must also close an
+    # active reader when a consumer stops before EOF or projection fails.
+    with closing(
+        cast(Generator[pa.Table, None, None], read_split(config, split, schema))
+    ) as blocks:
+        for block in blocks:
+            yield project_empty_block(block)
 
 
 def _validate_config_serialization(config: DorisReadConfig) -> None:
@@ -112,6 +141,7 @@ class DorisDatasource(Datasource):
             flight_options=flight_options,
         )
         _validate_config_serialization(self._config)
+        self._projection_columns = self._config.columns
         self._planning_snapshot: Optional[DorisPlanningSnapshot] = None
         self._predicate_expr: Optional[Any] = None
         if self._config.transport == "flight" or (
@@ -158,6 +188,35 @@ class DorisDatasource(Datasource):
         clone._planning_snapshot = None
         return clone
 
+    def supports_projection_pushdown(self) -> bool:
+        """Advertise only the Ray releases with verified projection contracts."""
+        return supports_projection_pushdown()
+
+    def get_projection_map(self) -> Optional[Dict[str, str]]:
+        """Return a fresh identity map without exposing mutable source state."""
+        if self._projection_columns is None:
+            return None
+        return {name: name for name in self._projection_columns}
+
+    def apply_projection(self, projection_map: Optional[Dict[str, str]]) -> DorisDatasource:
+        """Clone this source with a narrower, ordered projection and isolated planning."""
+        columns: Optional[Tuple[str, ...]] = self._projection_columns
+        if projection_map is not None:
+            columns = normalize_columns(projection_map) if projection_map else ()
+            if self._projection_columns is not None and any(
+                name not in self._projection_columns for name in columns or ()
+            ):
+                raise DorisConfigurationError("projection cannot restore columns outside this read")
+        clone = copy(self)
+        if columns != self._projection_columns:
+            clone._projection_columns = columns
+            # A zero-column projection retains the previous physical read. Its
+            # blocks are projected with Ray's public API after bounded reading.
+            if columns:
+                clone._config = replace(self._config, columns=columns)
+            clone._planning_snapshot = None
+        return clone
+
     def get_read_tasks(
         self,
         parallelism: int,
@@ -171,6 +230,12 @@ class DorisDatasource(Datasource):
         if self._planning_snapshot is None:
             self._planning_snapshot = planner.discover()
         plan = planner.plan_from_snapshot(self._planning_snapshot, parallelism)
+        zero_columns = self._projection_columns == ()
+        schema = (
+            project_empty_block(pa.Table.from_batches([], schema=plan.schema)).schema
+            if zero_columns
+            else plan.schema
+        )
         if not plan.splits:
             metadata = BlockMetadata(
                 num_rows=0,
@@ -180,20 +245,21 @@ class DorisDatasource(Datasource):
             )
             return [
                 make_read_task(
-                    partial(_read_empty, plan.schema),
+                    partial(_read_empty, schema),
                     metadata,
-                    plan.schema,
+                    schema,
                     per_task_row_limit,
                 )
             ]
         tasks = []
         for split in plan.splits:
-            read_fn = partial(read_split, self._config, split, plan.schema)
+            reader = _read_zero_columns if zero_columns else read_split
+            read_fn = partial(reader, self._config, split, plan.schema)
             metadata = BlockMetadata(
                 num_rows=None,
                 size_bytes=None,
                 exec_stats=None,
                 input_files=None,
             )
-            tasks.append(make_read_task(read_fn, metadata, plan.schema, per_task_row_limit))
+            tasks.append(make_read_task(read_fn, metadata, schema, per_task_row_limit))
         return tasks

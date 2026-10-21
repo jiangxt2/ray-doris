@@ -210,3 +210,67 @@ Doris evidence remains valid under the no-runtime-change test reuse rule.
 User-approved development identity `1.3.dev0` on 2026-10-13; source-state SHA-256 excluding this ledger: `0eb9014d10761750af78cd3018ee0893e5f56952c6c1632f85051803b931a37c`. Primary runtime: Python 3.12.12 / Ray 2.59.0. Full unit suite: 320 passed, zero skipped; Ruff format/lint, mypy, workflow/version policies and strict documentation/spelling passed. Wheel/sdist build, Twine checks and isolated non-editable installs passed, with exact development metadata, public imports, dependency checks and production source-byte comparisons. Logs, artifact hashes and XML: `/tmp/ray-259-development-versions-20261013/`.
 
 This follow-up changes version metadata, release/CI validation and direct regressions, with no additional data-path or test-infrastructure change. Retain the recorded functional contracts and real database/cluster IT; no such IT was rerun. It does not certify an exact published release SHA or a remote Actions run. No commit, push or publication performed.
+
+## V1 projection pushdown validation
+
+Evidence recorded on 2026-10-21 for the uncommitted `projection-pushdown` worktree on
+base `36efb8ff46c89efc5c16875bba3ab869c6534a70`. Production changes are limited to
+`datasource.py` and `_compat.py`; the source fingerprints and complete logs are retained
+under `/tmp/ray-doris-projection-validation/`. The approved implementation preserves the
+installation window and enables automatic column pruning only on verified Ray 2.58.0/2.59.0.
+
+| Suite | Runtime and scope | Result |
+| --- | --- | --- |
+| Primary unit and public contracts | Python 3.12.12 / Ray 2.59.0; complete suite | 352 passed, zero skipped. After the test recorder correction, the final 9-case projection contract passed again; repeated runs are not counted as additional coverage. |
+| Compatibility | Ray 2.58.0 enabled; Ray 2.57.0 and 2.49.2 retain native behavior | 47 affected unit cases and 9 projection contracts passed on each target; the corrected recorder was exercised by all four Ray contract baselines. |
+| Initial required IT | Doris 4.0.6 / Ray 2.59.0; checked-in 2 GiB BE limit | 27 passed, 15 failed in 137.96s. One new assertion used an iterable as an iterator; BE logs also showed 1.87 GiB RSS above a 1.80 GiB process limit, rejecting reads and existing writes. Retained in `doris/`; this is failed evidence. |
+| Approved required IT recovery | Python 3.12.12 / Ray 2.59.0 / PyArrow 26.0.0 / PyMySQL 1.2.3 / ADBC 1.12.0 / Doris 4.0.6; corrected tests and temporary 3 GiB BE override | 42 passed, zero skipped, 214.14s. Includes actual MySQL/Flight execute-boundary SQL, cached branches, column order/nullability, filter dependencies, native empty projections, planning fallback and existing write regressions. Logs and source fingerprints: `doris-recovery/`. |
+| Initial distributed core | Ray 2.59.0 / Doris 4.0.6; three workers and three 3 GiB BEs | 1 passed, 2 failed in 22.14s. Projected SQL, row counts and sums passed; node checks failed because the test recorder reported its actor node instead of the caller. Retained in `core/`. |
+| Approved corrected core | Python 3.12.14 / fixed Ray 2.59.0 base / Doris 4.0.6; one head, three workers, one FE and three 3 GiB BEs | 3 passed, zero skipped, 21.59s. Actual projected MySQL and Flight SQL, expected row counts/sums and participation by all three workers passed. Logs and source fingerprints: `core-recovery/`. |
+
+Both recovery suites ran once after explicit user approval and exited successfully. Compose
+startup used `--no-build`; proxy variables were cleared for Docker operations. Per-run images
+and the exact test project containers, networks and volumes were reclaimed. Shared base images
+were retained. The core profile does not generate full slow-suite or release evidence.
+
+Ruff lint/format, strict mypy, documentation contracts, Sphinx strict/spelling, shell syntax,
+whitespace checks and cumulative static self-review passed. No remaining production-code
+defect was identified. The checked-in required-IT BE default remains 2 GiB: successful local
+evidence applies to the approved temporary 3 GiB profile, and the recorded 2 GiB memory
+rejection remains a CI resource risk. No commit, push, PR, tag or release was performed.
+
+Pre-push test-only import cleanup passed the same 56 affected unit/contract cases on each of
+Ray 2.49.2, 2.57.0, 2.58.0 and 2.59.0. Production source, query execution, schema/row checks
+and caller-node recording are unchanged. The lazy optional Flight import now reports missing
+ADBC explicitly; the successful installed-ADBC path uses the same Cursor. The required IT and
+core results above remain applicable without repeating those long suites.
+
+## Predicate and projection merge validation
+
+User-approved conflict resolution on 2026-10-21 merges projection base
+`d795631536e1e2e5d7119ae48e9fff02b9db9ca0` into predicate head
+`cd1d56e2eda8870cdcd684566148a72cb74aeda8`, without a commit or push. Both
+datasource capabilities and both distributed test functions are retained. Synthetic
+projection fixtures keep filtering in Ray; SQL-backed native contracts independently
+exercise combined filtering, projection order, omitted dependency columns and empty
+projections. Production SHA-256 is
+`6774d754fbfaf7c898f0818c288549011ec974666dc1d7c7a422a2f85bef1cfd`.
+
+| Suite | Coverage, code state and overlap | Result |
+| --- | --- | --- |
+| Focused diagnostics | Merged datasource, predicate units and both public read contracts; initial fixture corrections before final evidence | Final focused run: 27 passed in 18.39s. Initial diagnostics identified a native empty-projection representation assertion and a worker-side fixture patch; both were corrected without production logic changes. Sandbox Ray startup failure is retained separately. |
+| Final unit and contracts | Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0; merged production and final tests | 375 passed, zero skipped, four upstream warnings, 25.32s. One complete primary run after focused corrections. |
+| Required Doris IT | Exactly one complete suite on Doris 4.0.6 / Ray 2.59.0; required BE remains 2 GiB, confirmed as 2147483648 bytes | 29 passed, 20 failed, zero skipped, 391.20s. MySQL and Flight native SQL-recording cases passed; auto and later read/write cases failed with Doris runtime exceptions. BE logs show repeated `MEM_ALLOC_FAILED` and process memory above its 1.80 GiB limit. Combined real-protocol cases did not pass; no automatic retry or memory increase. |
+| Distributed targeted | Exactly the two conflicting test functions, each on MySQL and Flight; three Ray workers, three BEs, Python 3.12.14 / Ray 2.59.0 / Doris 4.0.6; runtime-only BE override of 2 GiB for this request | Four failed in 11.25s with Doris read exceptions. Cluster logs confirm `MEM_ALLOC_FAILED` at the 1.80 GiB process limit; all three containers were inspected at 2147483648 bytes. No slow full run, release result or additional retry. |
+| Static and documentation | Ruff lint/format, strict mypy, documentation checker, Sphinx strict/spelling, whitespace and cumulative self-review | Passed. Sphinx inventory downloads required host/proxy access; no documentation error remained. Six core datasource methods retain the corresponding predicate/projection parent ASTs. |
+| Reused evidence | Unchanged SQL compiler/rendering/reader behavior and version gates; unaffected full slow scenarios and separate-feature compatibility checks | Retain earlier evidence with its recorded runtime and memory settings. Earlier 3 GiB results do not prove that the merged 2 GiB runs pass. |
+
+Complete logs, JUnit XML, failure classification, source manifest, runtime versions,
+AST comparison and actual diffs are under
+`/tmp/ray-doris-predicate-merge-validation/`. Temporary configurations isolate network
+addresses and service ports; Python source and tests match the worktree. Required
+Compose and CI workflows are unchanged. The slow suite's checked-in 3 GiB default is
+also unchanged; only this targeted invocation used `RAY_DORIS_BE_MEMORY_LIMIT=2g`.
+Both precise Compose projects, their volumes/networks and custom images were cleaned;
+the two pre-existing dangling images were retained. No tests were skipped, assertions
+relaxed, infrastructure memory increased, commit created or remote branch pushed.

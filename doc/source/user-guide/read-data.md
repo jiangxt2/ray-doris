@@ -48,6 +48,44 @@ dataset = read_doris(
 
 The list must be non-empty and can't contain duplicates. Schema discovery rejects a projected name that `DESCRIBE` doesn't return.
 
+On verified Ray 2.58.0 and 2.59.0 releases, Dataset column selections can also
+prune the Doris scan automatically:
+
+```python
+dataset = read_doris(table="analytics.events", host="doris-fe.example.com")
+selected = dataset.select_columns(["score", "event_id"])
+```
+
+When Ray pushes this selection into the V1 datasource, both planning SQL and
+worker SQL select the requested columns in that order. Types and nullability
+are preserved. An explicit `columns` list limits the available columns; a later
+selection cannot restore a column omitted earlier. Renames and computed
+expressions remain Ray operations.
+
+Each projection produces a new datasource. A changed selection or order clears
+the clone's planning cache, leaving other Dataset branches unchanged. Repeated
+planning of the same clone still reuses its discovery snapshot. This is not
+database snapshot isolation.
+
+Ray operations such as residual filters can prevent a selection from reaching
+the read. Keep their dependency columns available. Accepted native predicates
+are retained when a later projection removes their columns from the output.
+See [native Dataset predicates](#use-native-dataset-predicates) for the supported
+subset. A trusted SQL `filter` can also reference a column that is not selected
+for output.
+
+An optimizer-requested empty projection preserves Ray's native row-count
+semantics using its documented block interface. It retains the previous
+physical scan columns and applies the empty projection to bounded output
+batches, so this case does not reduce Doris column transfer. Public
+`read_doris(columns=[])` remains invalid. An empty materialized Datasource read
+may have unknown schema, as it does without this optimization.
+
+Automatic column pruning is disabled on other accepted Ray versions, including
+unverified patch releases. Explicit `columns` works throughout the supported
+window. The version gate also checks the public hook signatures before enabling
+the optimization.
+
 ## Apply a trusted filter
 
 Use `filter` for a trusted Doris SQL scalar expression:

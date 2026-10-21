@@ -3,9 +3,10 @@ from unittest.mock import Mock
 import pyarrow as pa
 import pytest
 from ray import cloudpickle
+from ray.data.block import BlockAccessor
 
 from ray_doris._models import DorisPlanningSnapshot
-from ray_doris.datasource import DorisDatasource
+from ray_doris.datasource import DorisDatasource, _read_zero_columns
 
 
 def test_estimate_size_returns_none_without_planning() -> None:
@@ -124,3 +125,136 @@ def test_get_read_tasks_rejects_parallelism_before_discovery(monkeypatch) -> Non
     with pytest.raises(ValueError, match="parallelism"):
         datasource.get_read_tasks(0)
     discover.assert_not_called()
+
+
+def test_projection_is_ordered_immutable_and_preserves_subclass_state() -> None:
+    class TaggedSource(DorisDatasource):
+        tag = "retained"
+
+    source = TaggedSource(table="db.table", host="fe", columns=["id", "value", "other"])
+    requested = {"value": "alias-is-not-applied", "id": "id"}
+    clone = source.apply_projection(requested)
+    requested.clear()
+    assert isinstance(clone, TaggedSource)
+    assert clone.tag == "retained"
+    assert clone is not source
+    assert clone.config.columns == ("value", "id")
+    assert clone.get_projection_map() == {"value": "value", "id": "id"}
+    returned = clone.get_projection_map()
+    returned.clear()
+    assert clone.get_projection_map() == {"value": "value", "id": "id"}
+    assert source.config.columns == ("id", "value", "other")
+    second = clone.apply_projection({"id": "id"})
+    assert second.config.columns == ("id",)
+    assert clone.config.columns == ("value", "id")
+    assert second.apply_projection(None).get_projection_map() == {"id": "id"}
+
+
+def test_projection_cannot_restore_explicit_or_previously_removed_columns() -> None:
+    source = DorisDatasource(table="db.table", host="fe", columns=["id", "value"])
+    for projected in (source, source.apply_projection({"id": "id"})):
+        with pytest.raises(ValueError, match="cannot restore"):
+            projected.apply_projection({"other": "other"})
+    empty = source.apply_projection({})
+    assert empty.get_projection_map() == {}
+    assert empty.config.columns == ("id", "value")
+    with pytest.raises(ValueError, match="cannot restore"):
+        empty.apply_projection({"id": "id"})
+
+
+@pytest.mark.parametrize("name", ["bad-name", "x;select", "", 1])
+def test_projection_reuses_identifier_validation(name) -> None:
+    source = DorisDatasource(table="db.table", host="fe")
+    with pytest.raises(ValueError):
+        source.apply_projection({name: name})
+
+
+def test_projection_invalidates_only_changed_clone_cache(monkeypatch) -> None:
+    schema = pa.schema([pa.field("id", pa.int64(), nullable=False), ("value", pa.string())])
+    discovered = []
+
+    def discover(planner):
+        columns = planner._config.columns or schema.names
+        selected = pa.schema([schema.field(name) for name in columns])
+        discovered.append(tuple(columns))
+        return DorisPlanningSnapshot(schema=selected, tablet_ids=(7, 8))
+
+    monkeypatch.setattr("ray_doris.datasource.DorisPlanner.discover", discover)
+    source = DorisDatasource(table="db.table", host="fe")
+    source.get_read_tasks(2)
+    same = source.apply_projection(None)
+    same.get_read_tasks(1)
+    clone = source.apply_projection({"value": "value", "id": "id"})
+    assert clone.get_read_tasks(2)[0].schema.names == ["value", "id"]
+    assert not clone.get_read_tasks(1)[0].schema.field("id").nullable
+    assert source.get_read_tasks(1)[0].schema == schema
+    assert discovered == [("id", "value"), ("value", "id")]
+    restored = cloudpickle.loads(cloudpickle.dumps(clone))
+    assert restored.get_read_tasks(2)[0].schema.names == ["value", "id"]
+    assert discovered == [("id", "value"), ("value", "id")]
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_empty_projection_preserves_batches_and_closes_reader(monkeypatch, abort) -> None:
+    table = pa.table({"id": [1, 2, 3]})
+    closed = []
+    monkeypatch.setattr(
+        "ray_doris.datasource.DorisPlanner.discover",
+        lambda self: DorisPlanningSnapshot(schema=table.schema, tablet_ids=(7,)),
+    )
+
+    def read(*args):
+        try:
+            yield table.slice(0, 2)
+            yield table.slice(2, 1)
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr("ray_doris.datasource.read_split", read)
+    source = DorisDatasource(table="db.table", host="fe").apply_projection({})
+    task = source.get_read_tasks(1)[0]
+    reader = iter(task.read_fn())
+    first = next(reader)
+    assert first.equals(BlockAccessor.for_block(table.slice(0, 2)).select([]))
+    assert first.schema == task.schema
+    if abort:
+        reader.close()
+    else:
+        second = next(reader)
+        assert second.equals(BlockAccessor.for_block(table.slice(2, 1)).select([]))
+        assert list(reader) == []
+    assert closed == [True]
+
+
+def test_empty_projection_closes_reader_if_projection_fails(monkeypatch) -> None:
+    closed = []
+
+    def read(*args):
+        try:
+            yield pa.table({"id": [1]})
+        finally:
+            closed.append(True)
+
+    def fail(block):
+        raise RuntimeError("projection failed")
+
+    monkeypatch.setattr("ray_doris.datasource.read_split", read)
+    monkeypatch.setattr("ray_doris.datasource.project_empty_block", fail)
+    with pytest.raises(RuntimeError, match="projection failed"):
+        list(_read_zero_columns(None, None, None))
+    assert closed == [True]
+
+
+def test_empty_projection_keeps_empty_plan_schema_without_querying(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ray_doris.datasource.DorisPlanner.discover",
+        lambda self: DorisPlanningSnapshot(schema=pa.schema([("id", pa.int64())]), tablet_ids=()),
+    )
+    reader = Mock(side_effect=AssertionError("empty plan queried Doris"))
+    monkeypatch.setattr("ray_doris.datasource.read_split", reader)
+    source = DorisDatasource(table="db.table", host="fe").apply_projection({})
+    task = source.get_read_tasks(1)[0]
+    assert list(task())[0].num_rows == 0
+    assert task.metadata.num_rows == 0
+    assert list(task())[0].schema == task.schema
+    reader.assert_not_called()

@@ -9,8 +9,9 @@ from ray import cloudpickle
 from test_readers import FakeConnection, FakeCursor, make_config
 
 from ray_doris import _readers
-from ray_doris._compat import supports_native_predicates
+from ray_doris._compat import project_empty_block, supports_native_predicates
 from ray_doris._models import DorisInputSplit, DorisPlanningSnapshot, DorisReadConfig
+from ray_doris._planner import DorisPlanner
 from ray_doris._predicate import compile_predicate
 from ray_doris._sql import build_read_sql, parse_table
 from ray_doris.datasource import DorisDatasource
@@ -144,6 +145,57 @@ def test_schema_is_validated_before_acceptance_and_errors_are_not_swallowed(monk
     describe.side_effect = RuntimeError("schema discovery failed")
     with pytest.raises(RuntimeError, match="schema discovery failed"):
         source.apply_predicate(col("id") == 1)
+
+
+@pytest.mark.parametrize("predicate_first", [False, True])
+@pytest.mark.parametrize("empty_projection", [False, True])
+def test_predicate_and_projection_preserve_sql_cache_and_branches(
+    monkeypatch, predicate_first, empty_projection
+) -> None:
+    source = DorisDatasource(table="db.table", host="fe")
+    if not supports_native_predicates():
+        assert not source.supports_predicate_pushdown()
+        return
+
+    def describe(planner):
+        columns = planner._config.columns
+        return SCHEMA if columns is None else pa.schema([SCHEMA.field(name) for name in columns])
+
+    monkeypatch.setattr("ray_doris.datasource.DorisPlanner.describe_schema", describe)
+    monkeypatch.setattr(
+        "ray_doris.datasource.DorisPlanner.discover",
+        lambda planner: DorisPlanningSnapshot(describe(planner), (7,)),
+    )
+    source.get_read_tasks(1)
+    snapshot = source._planning_snapshot
+    if predicate_first:
+        filtered = source.apply_predicate(col("id") > 1)
+    else:
+        filtered = source.apply_projection({"text": "text", "id": "id"})
+        filtered.get_read_tasks(1)
+        filtered = filtered.apply_predicate(col("id") > 1)
+    clone = filtered.apply_projection({} if empty_projection else {"text": "text"})
+    assert clone._planning_snapshot is None
+    assert clone.config.predicate.parameters == (1,)
+    assert clone.get_current_predicate() is filtered.get_current_predicate()
+    query, parameters = build_read_sql(clone.config, (7,), bind=True)
+    assert "WHERE `id` > %s" in query and parameters == (1,)
+    if not empty_projection:
+        assert query.startswith("SELECT `text` FROM")
+        assert clone.apply_predicate(col("id") > 2) is clone
+    task = clone.get_read_tasks(1)[0]
+    if empty_projection:
+        expected = project_empty_block(
+            pa.Table.from_batches([], schema=describe(DorisPlanner(clone.config)))
+        )
+        assert task.schema == expected.schema
+    else:
+        assert task.schema.names == ["text"]
+    assert source._planning_snapshot is snapshot and source.config.predicate is None
+    assert source.config.columns is None and source.get_projection_map() is None
+    restored = cloudpickle.loads(cloudpickle.dumps(clone))
+    assert restored.config == clone.config
+    assert restored.get_projection_map() == clone.get_projection_map()
 
 
 def test_query_forms_preserve_trusted_filter_and_bind_only_native_values() -> None:
