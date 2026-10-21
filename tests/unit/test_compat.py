@@ -118,3 +118,37 @@ def test_make_read_task_does_not_retry_internal_type_error(monkeypatch) -> None:
     with pytest.raises(TypeError, match="constructor bug"):
         _compat.make_read_task(read_fn, metadata(), pa.schema([]), None)
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("version", "enabled"),
+    [
+        ("2.49.2", False),
+        ("2.57.0", False),
+        ("2.58.0", True),
+        ("2.59.0", True),
+        ("2.58.0+vendor.1", True),
+        ("2.58.1", False),
+        ("2.59.1", False),
+    ],
+)
+def test_projection_gate_requires_verified_release_and_public_signature(
+    monkeypatch, version, enabled
+) -> None:
+    class ProjectionSource:
+        def supports_projection_pushdown(self):
+            return False
+
+        def get_projection_map(self):
+            return None
+
+        def apply_projection(self, projection_map):
+            return self
+
+    monkeypatch.setattr(_compat, "Datasource", ProjectionSource)
+    monkeypatch.setattr(_compat, "_RAY_VERSION", version)
+    assert _compat.supports_projection_pushdown() is enabled
+    monkeypatch.setattr(ProjectionSource, "apply_projection", lambda self, changed: self)
+    assert not _compat.supports_projection_pushdown()
+    monkeypatch.delattr(ProjectionSource, "apply_projection")
+    assert not _compat.supports_projection_pushdown()

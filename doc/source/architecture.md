@@ -67,6 +67,19 @@ The query-plan client disables redirects and validates both HTTP failures and Do
 
 Schema and tablet IDs form one immutable planning snapshot. `get_read_tasks()` reuses it when Ray requests tasks more than once, then groups the same tablet IDs using the new parallelism hint.
 
+On verified Ray releases, public V1 projection hooks create a shallow datasource
+clone with a new immutable, ordered column configuration. A changed projection
+invalidates only the clone's planning snapshot. Existing SQL, schema mapping,
+and transport readers consume the projected configuration. The connector does
+not depend on Ray's private projection state or translate Ray filters into SQL.
+
+For an empty optimizer projection, the clone retains its physical configuration
+and uses the documented `BlockAccessor` interface to project each bounded
+output batch. Ray supplies its native row-preserving representation. ReadTask
+schema matches the produced blocks, and closing the wrapper closes the active
+transport generator. This conservative case avoids introducing constant-query
+SQL or changing the public non-empty `columns` requirement.
+
 ## Execute on workers
 
 The MySQL reader distinguishes normal EOF from consumer abort. Normal completion closes the cursor and then the connection. Abort closes the connection first and detaches the active server-side cursor so PyMySQL can't drain the unread result. The Flight reader consumes RecordBatch objects, uses safe Arrow casts, verifies nullability, and slices tables into connector output batches. Both readers enforce the same result-column and non-nullable NULL contract.

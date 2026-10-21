@@ -9,8 +9,8 @@ from typing import Any, Callable, Iterable, Literal, Mapping, Optional
 
 import pyarrow as pa
 import ray
-from ray.data.block import BlockMetadata
-from ray.data.datasource import Datasink, ReadTask
+from ray.data.block import BlockAccessor, BlockMetadata
+from ray.data.datasource import Datasink, Datasource, ReadTask
 
 from ray_doris._errors import DorisConfigurationError
 
@@ -18,6 +18,28 @@ _MIN_RAY_VERSION = (2, 49, 2)
 _MAX_RAY_VERSION = (2, 60, 0)
 _RAY_VERSION = ray.__version__
 _FINAL_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$")
+_PROJECTION_RELEASES = {(2, 58, 0), (2, 59, 0)}
+
+
+def supports_projection_pushdown() -> bool:
+    """Enable projection only for releases with verified public read contracts."""
+    if _parse_final_release(_RAY_VERSION) not in _PROJECTION_RELEASES:
+        return False
+    for name, parameters in (
+        ("supports_projection_pushdown", ("self",)),
+        ("get_projection_map", ("self",)),
+        ("apply_projection", ("self", "projection_map")),
+    ):
+        method = getattr(Datasource, name, None)
+        if not callable(method) or tuple(inspect.signature(method).parameters) != parameters:
+            return False
+    return tuple(inspect.signature(BlockAccessor.select).parameters) == ("self", "columns")
+
+
+def project_empty_block(block: pa.Table) -> pa.Table:
+    """Use Ray's public block API to preserve native empty-projection row counts."""
+    selected = BlockAccessor.for_block(block).select([])
+    return BlockAccessor.for_block(selected).to_arrow()
 
 
 def ensure_supported_ray_version() -> None:

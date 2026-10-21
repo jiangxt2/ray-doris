@@ -243,6 +243,7 @@ if [[ "${profile}" == "core" ]]; then
     python -m pytest \
     -m slow_integration \
     tests/slow_integration/test_distributed_cluster.py::test_mysql_read_executes_on_all_ray_workers \
+    tests/slow_integration/test_distributed_cluster.py::test_projected_read_executes_on_all_ray_workers \
     -vv -s 2>&1 | tee -a "${pytest_log}"
   exit 0
 fi
