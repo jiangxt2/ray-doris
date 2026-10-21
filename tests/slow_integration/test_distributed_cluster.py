@@ -26,6 +26,7 @@ from _cluster import (
 )
 from ray.data.aggregate import Count, Max, Min, Sum
 from ray.data.datasource import ReadTask
+from ray.data.expressions import col
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from tests.projection_helpers import RecordingDorisDatasource, SQLRecorder
 
@@ -423,6 +424,18 @@ def test_flight_read_executes_on_all_ray_workers(
     slow_config: SlowITConfig,
 ) -> None:
     _assert_read_executes_on_all_ray_workers(slow_config, transport="flight")
+
+
+@pytest.mark.parametrize("transport", ["mysql", "flight"])
+def test_native_predicate_serializes_to_distributed_readers(slow_config, transport) -> None:
+
+    kwargs = slow_config.reader_kwargs(
+        table=slow_config.distributed_table, transport=transport, columns=["id"], tablet_size=1
+    )
+    root = read_doris(**kwargs, concurrency=3)
+    selected = root.filter(expr=(col("id") >= 1) & (col("id") <= 10))
+    assert sorted(row["id"] for row in selected.take_all()) == list(range(1, 11))
+    assert root.filter(expr=col("id") < 0).take_all() == []
 
 
 @pytest.mark.parametrize("transport", ["mysql", "flight"])

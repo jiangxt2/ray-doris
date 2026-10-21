@@ -91,6 +91,11 @@ class RecordingDorisDatasource(DorisDatasource):
     def supports_projection_pushdown(self):
         return self.projection_enabled and super().supports_projection_pushdown()
 
+    def supports_predicate_pushdown(self):
+        # Arrow fixtures model projection only; keep their filters in Ray.
+        # Real database reads retain both native datasource capabilities.
+        return self.fixture_table is None and super().supports_predicate_pushdown()
+
     def get_read_tasks(self, parallelism, per_task_row_limit=None, data_context=None):
         if self.fixture_table is not None:
             table = self.fixture_table

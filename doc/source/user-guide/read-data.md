@@ -68,9 +68,11 @@ planning of the same clone still reuses its discovery snapshot. This is not
 database snapshot isolation.
 
 Ray operations such as residual filters can prevent a selection from reaching
-the read. Keep their dependency columns available; the connector does not parse
-or push down Ray filter expressions. A trusted SQL `filter` can reference a
-column that is not selected for output.
+the read. Keep their dependency columns available. Accepted native predicates
+are retained when a later projection removes their columns from the output.
+See [native Dataset predicates](#use-native-dataset-predicates) for the supported
+subset. A trusted SQL `filter` can also reference a column that is not selected
+for output.
 
 An optimizer-requested empty projection preserves Ray's native row-count
 semantics using its documented block interface. It retains the previous
@@ -101,6 +103,36 @@ dataset = read_doris(
 `ray-doris` rejects statement separators, SQL comment tokens outside quoted literals, and unterminated quotes. It doesn't parse or parameterize the expression. Never build `filter` from untrusted request values.
 
 Doris uses the filter during `_query_plan`, so predicate pruning can reduce the returned tablet set. The worker uses the same expression in each split query.
+
+## Use native Dataset predicates
+
+On Ray 2.57, 2.58, and 2.59, use expressions from `ray.data.expressions` to filter a Dataset:
+
+```python
+from ray.data.expressions import col
+
+filtered = dataset.filter(expr=(col("score") >= 80) & col("score").is_not_null())
+```
+
+The datasource accepts comparisons between a signed 8-, 16-, 32-, or 64-bit integer column and
+an in-range Python integer literal, boolean equality and inequality with Python boolean literals,
+and null checks on these column types. It accepts `AND`, `OR`, and `NOT` only when the complete
+predicate supplied by Ray is supported. Comparing with `None` is not rewritten into a null check.
+IN, floating-point, decimal, string, date/time, arithmetic, column-to-column comparisons, and user
+functions remain in Ray. Use the explicit trusted SQL `filter` for other Doris expressions.
+
+Ray may split its own convertible conjuncts from a residual filter. The connector never drops an
+unsupported child: it returns the original datasource to preserve Ray's Filter. Column names and
+types are checked against the visible output schema before acceptance; missing columns keep Ray's
+normal error behavior. The expression nodes are DeveloperAPI alpha, so native predicate support is limited
+to the verified Ray minors. Earlier supported Ray versions retain their existing reads.
+
+Accepted predicates are combined with the existing trusted SQL filter using parenthesized AND.
+MySQL scan values use parameter binding. HTTP query planning and Flight use validated integer and
+boolean literals. New predicates create independent datasource clones and invalidate tablet
+planning; they do not change other Dataset branches or provide a database snapshot. A clone may
+repeat schema discovery. SQL LIMIT is not generated: Ray retains residual filtering and limit
+ordering. Native predicates do not promise output ordering or a particular reduction in tablet count.
 
 ## Choose planning failure behavior
 

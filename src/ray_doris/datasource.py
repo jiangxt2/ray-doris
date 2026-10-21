@@ -29,6 +29,7 @@ from ray_doris._compat import (
     ensure_supported_ray_version,
     make_read_task,
     project_empty_block,
+    supports_native_predicates,
     supports_projection_pushdown,
 )
 from ray_doris._errors import DorisConfigurationError
@@ -42,6 +43,7 @@ from ray_doris._models import (
     Transport,
 )
 from ray_doris._planner import DorisPlanner, _validate_parallelism
+from ray_doris._predicate import compile_predicate
 from ray_doris._readers import _ensure_flight_available, read_split
 from ray_doris._sql import normalize_columns, normalize_filter, parse_table
 
@@ -141,6 +143,7 @@ class DorisDatasource(Datasource):
         _validate_config_serialization(self._config)
         self._projection_columns = self._config.columns
         self._planning_snapshot: Optional[DorisPlanningSnapshot] = None
+        self._predicate_expr: Optional[Any] = None
         if self._config.transport == "flight" or (
             self._config.transport == "auto" and self._config.flight_scheme == "grpc+tls"
         ):
@@ -154,6 +157,36 @@ class DorisDatasource(Datasource):
     def estimate_inmemory_data_size(self) -> Optional[int]:
         """Avoid an expensive COUNT or sampling query during Ray auto-parallelism."""
         return None
+
+    def supports_predicate_pushdown(self) -> bool:
+        """Advertise the verified public V1 predicate contract without network I/O."""
+        return supports_native_predicates()
+
+    def apply_predicate(self, predicate_expr: Any) -> DorisDatasource:
+        """Accept a complete equivalent predicate or preserve Ray's residual Filter."""
+        if not self.supports_predicate_pushdown():
+            return self
+        schema = (
+            self._planning_snapshot.schema
+            if self._planning_snapshot is not None
+            else DorisPlanner(self._config).describe_schema()
+        )
+        compiled = compile_predicate(predicate_expr, schema)
+        if compiled is None:
+            return self
+        clone = copy(self)
+        previous = self._config.predicate
+        clone._config = replace(
+            self._config, predicate=compiled if previous is None else previous.and_with(compiled)
+        )
+        clone._predicate_expr = (
+            predicate_expr
+            if self._predicate_expr is None
+            else self._predicate_expr & predicate_expr
+        )
+        # Predicate-sensitive tablet pruning must never leak across Dataset branches.
+        clone._planning_snapshot = None
+        return clone
 
     def supports_projection_pushdown(self) -> bool:
         """Advertise only the Ray releases with verified projection contracts."""
