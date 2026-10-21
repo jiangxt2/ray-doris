@@ -72,6 +72,14 @@ The Flight extra is conditional on Python 3.10 or newer because the supported Ar
 
 `ray-doris` uses Ray's documented Datasource extension interfaces and doesn't import `ray.data._internal` modules. Ray documents `ReadTask` as DeveloperAPI, not a minor-version-stable public API.
 
+Automatic V1 column pruning is enabled only on verified final Ray 2.58.0
+and 2.59.0 releases, including accepted local build suffixes, with matching
+public hook signatures. Other versions in the dependency window retain their
+existing behavior; use explicit `columns` to prune their scans. This feature
+does not narrow the installation range. Native empty projections use the
+documented `BlockAccessor` DeveloperAPI, whose compatibility is tested alongside
+the datasource hooks. No private Ray module is imported.
+
 Writes use the documented `Datasink` and `Dataset.write_datasink()` interfaces. The compatibility
 layer explicitly models the Datasink generation split:
 
