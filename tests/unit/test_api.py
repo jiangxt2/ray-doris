@@ -4,11 +4,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from ray_doris import DorisConfigurationError, __version__, read_doris
+from ray_doris import __version__, read_doris
 
 
-@pytest.mark.parametrize("mode_options", [{}, {"read_mode": "doris"}], ids=["default", "doris"])
-def test_read_doris_uses_public_ray_entrypoint(monkeypatch, mode_options) -> None:
+@pytest.mark.parametrize("read_options", [{}, {"auto_native_read": False}], ids=["default", "off"])
+def test_read_doris_uses_public_ray_entrypoint(monkeypatch, read_options) -> None:
     read_datasource = Mock(return_value="dataset")
     monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read_datasource)
     result = read_doris(
@@ -23,7 +23,7 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch, mode_options) -> Non
         concurrency=2,
         override_num_blocks=4,
         ray_remote_args={"num_cpus": 0.25},
-        **mode_options,
+        **read_options,
     )
     assert result == "dataset"
     datasource = read_datasource.call_args.args[0]
@@ -40,13 +40,14 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch, mode_options) -> Non
     }
 
 
-def test_read_doris_rejects_query_mode_before_constructing_reader(monkeypatch) -> None:
+@pytest.mark.parametrize("mode", ["doris", "native", "query"])
+def test_read_doris_rejects_removed_read_mode(monkeypatch, mode) -> None:
     datasource = Mock(side_effect=AssertionError("Doris reader constructed"))
     native_import = Mock(side_effect=AssertionError("native reader imported"))
     monkeypatch.setattr("ray_doris._api.DorisDatasource", datasource)
     monkeypatch.setattr("ray_doris._api.import_module", native_import)
-    with pytest.raises(DorisConfigurationError, match="read_mode must be 'doris' or 'native'"):
-        read_doris(table="db.table", host="unused", read_mode="query")
+    with pytest.raises(TypeError, match="read_mode"):
+        read_doris(table="db.table", host="unused", read_mode=mode)
     datasource.assert_not_called()
     native_import.assert_not_called()
 

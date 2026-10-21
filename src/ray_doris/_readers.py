@@ -42,7 +42,9 @@ def _flight_import_error() -> ImportError:
 
 
 def _query(config: DorisReadConfig, split: DorisInputSplit) -> str:
-    return build_select_sql(config.table, config.columns, config.filter, split.tablet_ids)
+    return build_select_sql(
+        config.table, config.columns, config.filter, split.tablet_ids, config.catalog
+    )
 
 
 def _split_context(config: DorisReadConfig, split: DorisInputSplit) -> str:
@@ -155,6 +157,7 @@ def read_mysql(
     connection: Any = None
     cursor: Any = None
     reached_eof = False
+    emitted = False
     context = _split_context(config, split)
     try:
         try:
@@ -171,7 +174,10 @@ def read_mysql(
                     break
                 table = _rows_to_table(rows, names, schema)
                 del rows
+                emitted = True
                 yield table
+            if config.catalog is not None and not emitted:
+                yield pa.Table.from_batches([], schema=schema)
         finally:
             _cleanup_mysql_reader(
                 connection,
@@ -306,9 +312,13 @@ def read_flight(
                         ) from None
                     raise
                 try:
+                    emitted = False
                     for batch in reader:
                         table = _cast_flight_batch(batch, schema)
+                        emitted = emitted or table.num_rows > 0
                         yield from _slice_flight_table(table, config.batch_size)
+                    if config.catalog is not None and not emitted:
+                        yield pa.Table.from_batches([], schema=schema)
                 finally:
                     reader.close()
             finally:

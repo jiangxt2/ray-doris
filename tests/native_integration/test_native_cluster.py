@@ -21,7 +21,6 @@ import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from ray_doris import (
-    DorisConfigurationError,
     DorisPermissionError,
     DorisPlanningError,
     NativeReadOptions,
@@ -84,7 +83,9 @@ def hms_fixture_call(client, method, *args):
         ) from None
 
 
-def register_table(client, name, location, keys=(), params=None, table_type="EXTERNAL_TABLE"):
+def register_table(
+    client, name, location, keys=(), params=None, table_type="EXTERNAL_TABLE", file_format="parquet"
+):
     types = importlib.import_module("pymetastore.hive_metastore.ttypes")
     table = types.Table(
         tableName=name,
@@ -103,6 +104,10 @@ def register_table(client, name, location, keys=(), params=None, table_type="EXT
             ),
         ),
     )
+    if file_format == "orc":
+        table.sd.inputFormat = "org.apache.hadoop.hive.ql.io.orc.OrcInputFormat"
+        table.sd.outputFormat = "org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat"
+        table.sd.serdeInfo.serializationLib = "org.apache.hadoop.hive.ql.io.orc.OrcSerde"
     hms_fixture_call(client, "create_table", table)
     return table
 
@@ -121,6 +126,8 @@ def cluster():
                 raise
             time.sleep(2)
     types = importlib.import_module("pymetastore.hive_metastore.ttypes")
+    sql("SET GLOBAL time_zone = 'UTC'")
+    sql("SET GLOBAL hive_parquet_use_column_names = true")
     hdfs = fs.HadoopFileSystem("hms", 9000, user="root")
     leading_ids = set()
     store = s3()
@@ -149,6 +156,7 @@ def cluster():
         )
         for medium, root in [("hdfs", BASE), ("s3", "s3a://native-bucket/native")]:
             register_table(client, medium + "_plain", root + "/plain")
+            register_table(client, medium + "_orc", root + "/orc", file_format="orc")
             register_table(client, medium + "_int96", root + "/int96")
             table = register_table(
                 client,
@@ -191,6 +199,15 @@ def cluster():
             for info in hdfs.get_file_info(fs.FileSelector("/native/plain"))
             if info.type == fs.FileType.File and info.path.endswith(".parquet")
         )
+        register_table(client, "extensionless", BASE + "/extensionless")
+        hdfs.copy_file(source_files[0], "/native/extensionless/part")
+        path_table = register_table(client, "reserved_path", BASE + "/reserved_path")
+        path_table.sd.cols.append(types.FieldSchema(name="path", type="string"))
+        hms_fixture_call(client, "alter_table", "native_it", "reserved_path", path_table)
+        data = pq.read_table(source_files[0], filesystem=hdfs)
+        data = data.append_column("path", pa.array(["stored-value"] * data.num_rows))
+        with hdfs.open_output_stream("/native/reserved_path/data.parquet") as output:
+            pq.write_table(data, output)
         for value, source_file in zip(["01", "1"], source_files[:2]):
             descriptor = deepcopy(leading.sd)
             descriptor.location += "/q=" + value
@@ -280,15 +297,17 @@ def cluster():
     ray.shutdown()
 
 
-def reader(table, medium, *, catalog="native_hive", **extra):
+def reader(table, medium, *, catalog="native_hive", auto_native_read=True, **extra):
     return read_doris(
         host="fe",
         table="native_it." + table,
         catalog=catalog,
-        read_mode="native",
+        auto_native_read=auto_native_read,
         native_options=NativeReadOptions(
             filesystem=s3() if medium == "s3" else fs.HadoopFileSystem("hms", 9000, user="root")
-        ),
+        )
+        if auto_native_read
+        else None,
         **extra,
     )
 
@@ -306,7 +325,10 @@ def test_native_matches_real_doris_and_spark(medium, kind):
 
     with (
         patch.object(_external_metadata, "_rows", record),
-        patch("ray_doris._api.DorisDatasource", side_effect=AssertionError("Doris data path used")),
+        patch(
+            "ray_doris.datasource.DorisDatasource.get_read_tasks",
+            side_effect=AssertionError("Doris data path used"),
+        ),
     ):
         ds = reader(name, medium, override_num_blocks=8, concurrency=2)
         native = sorted(ds.take_all(), key=lambda row: row["id"])
@@ -382,24 +404,20 @@ def test_typed_partition_collisions_preserve_original_hms_locations(cluster):
     assert {row["q"] for row in rows} == {1}
 
 
-def test_limits_unsupported_format_and_no_query_fallback():
-    with pytest.raises(DorisPlanningError):
-        read_doris(
+def test_partition_limit_retains_full_doris_read():
+    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        dataset = read_doris(
             host="fe",
             table="native_it.hdfs_partitioned",
             catalog="native_hive",
-            read_mode="native",
+            auto_native_read=True,
             native_options=NativeReadOptions(max_partitions=1),
         )
-    with pytest.raises(DorisPlanningError):
-        reader("acid", "hdfs")
-    with pytest.raises(DorisConfigurationError):
-        reader("hdfs_plain", "hdfs", filter="id>0")
+        assert dataset.count() == 240
+        native_reader.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "table", ["missing", "missing_partition", "nested", "custom_location", "null_partition"]
-)
+@pytest.mark.parametrize("table", ["missing", "missing_partition"])
 def test_unsupported_locations_and_partition_values_fail_before_read(table):
     with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
         with pytest.raises(DorisPlanningError):
@@ -407,15 +425,17 @@ def test_unsupported_locations_and_partition_values_fail_before_read(table):
         native_reader.assert_not_called()
 
 
-def test_file_limit_is_not_a_truncated_success():
-    with pytest.raises(DorisPlanningError, match="max_files"):
-        read_doris(
+def test_file_limit_retains_full_doris_read():
+    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        dataset = read_doris(
             host="fe",
             table="native_it.hdfs_plain",
             catalog="native_hive",
-            read_mode="native",
+            auto_native_read=True,
             native_options=NativeReadOptions(max_files=1),
         )
+        assert dataset.count() == 240
+        native_reader.assert_not_called()
 
 
 def test_storage_denial_does_not_fall_back_to_doris():
@@ -431,7 +451,7 @@ def test_storage_denial_does_not_fall_back_to_doris():
             host="fe",
             table="native_it.s3_plain",
             catalog="native_hive",
-            read_mode="native",
+            auto_native_read=True,
             native_options=NativeReadOptions(filesystem=denied),
         )
 
@@ -445,7 +465,7 @@ def test_permission_error_is_not_version_fallback():
             password=os.environ["NATIVE_S3_PASSWORD"],
             table="native_it.hdfs_plain",
             catalog="native_hive",
-            read_mode="native",
+            auto_native_read=True,
         )
 
 
@@ -491,7 +511,10 @@ def test_distributed_reads_use_two_workers(medium):
 
 
 def test_missing_file_after_planning_never_replays_through_sql():
-    with patch("ray_doris._api.DorisDatasource", side_effect=AssertionError("SQL replay")):
+    with patch(
+        "ray_doris.datasource.DorisDatasource.get_read_tasks",
+        side_effect=AssertionError("SQL replay"),
+    ):
         dataset = reader("runtime_failure", "hdfs")
         fs.HadoopFileSystem("hms", 9000, user="root").delete_file(
             "/native/runtime_failure/data.parquet"
@@ -499,3 +522,90 @@ def test_missing_file_after_planning_never_replays_through_sql():
         with pytest.raises((ray.exceptions.RayTaskError, OSError, ValueError)) as error:
             dataset.take_all()
         assert "/native/runtime_failure/data.parquet" in str(error.value)
+
+
+@pytest.mark.parametrize("medium", ["hdfs", "s3"])
+def test_disabled_switch_reads_through_doris_without_native_probe(medium):
+    with patch("ray_doris._native.discover_external", side_effect=AssertionError("native probe")):
+        data = reader(medium + "_plain", medium, auto_native_read=False).take_all()
+        empty = reader(medium + "_empty", medium, auto_native_read=False, columns=["id"])
+        assert len(data) == 240
+        assert empty.count() == 0
+        assert empty.schema().base_schema == pa.schema([("id", pa.int32())])
+
+
+@pytest.mark.parametrize("medium", ["hdfs", "s3"])
+def test_orc_falls_back_to_doris_and_preserves_values(medium):
+    name = medium + "_orc"
+    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        dataset = reader(name, medium)
+        rows = sorted(dataset.take_all(), key=lambda row: row["id"])
+        names = dataset.schema().names
+        expected = sql(
+            "SELECT "
+            + ",".join(f"`{name}`" for name in names)
+            + f" FROM native_hive.native_it.{name} ORDER BY id"
+        )
+        assert [tuple(row[name] for name in names) for row in rows] == list(expected)
+        assert len(rows) == 240
+        native_reader.assert_not_called()
+
+
+@pytest.mark.parametrize("medium", ["hdfs", "s3"])
+def test_predicate_and_custom_batch_keep_doris_execution(medium):
+    with patch("ray_doris._native.discover_external", side_effect=AssertionError("native probe")):
+        rows = reader(
+            medium + "_plain", medium, columns=["id"], filter="id >= 230", batch_size=3
+        ).take_all()
+        assert sorted(row["id"] for row in rows) == list(range(230, 240))
+
+
+@pytest.mark.parametrize("table", ["nested", "custom_location", "null_partition"])
+def test_unsupported_native_layouts_retain_doris_results(table):
+    with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+        dataset = reader(table, "hdfs", columns=["id"])
+        rows = dataset.take_all()
+        expected = sql(f"SELECT id FROM native_hive.native_it.{table}")
+        assert sorted(row["id"] for row in rows) == sorted(row[0] for row in expected)
+        assert dataset.schema().base_schema == pa.schema([("id", pa.int32())])
+        native_reader.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "setting,value,reset",
+    [
+        ("hive_parquet_use_column_names", "false", "true"),
+        ("time_zone", "'Asia/Shanghai'", "'UTC'"),
+    ],
+)
+def test_session_semantics_outside_native_profile_retain_doris(setting, value, reset):
+    sql(f"SET GLOBAL {setting} = {value}")
+    try:
+        with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+            dataset = reader("hdfs_plain", "hdfs", columns=["id", "ts"])
+            rows = sorted((row["id"], row["ts"]) for row in dataset.take_all())
+            assert rows == list(
+                sql("SELECT id,ts FROM native_hive.native_it.hdfs_plain ORDER BY id")
+            )
+            assert len(rows) == 240
+            native_reader.assert_not_called()
+    finally:
+        sql(f"SET GLOBAL {setting} = {reset}")
+
+
+@pytest.mark.parametrize("table", ["extensionless", "reserved_path"])
+def test_ray_v2_limitations_retain_doris_data(table):
+    context = ray.data.DataContext.get_current()
+    previous = context.use_datasource_v2
+    context.use_datasource_v2 = True
+    try:
+        columns = ["path"] if table == "reserved_path" else ["id"]
+        with patch("ray_doris._native.ray.data.read_parquet") as native_reader:
+            rows = reader(table, "hdfs", columns=columns).take_all()
+            expected = sql(f"SELECT `{columns[0]}` FROM native_hive.native_it.{table}")
+            assert rows and sorted(row[columns[0]] for row in rows) == sorted(
+                r[0] for r in expected
+            )
+            native_reader.assert_not_called()
+    finally:
+        context.use_datasource_v2 = previous

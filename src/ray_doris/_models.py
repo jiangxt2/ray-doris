@@ -131,6 +131,7 @@ class DorisReadConfig:
     query_plan_timeout: Optional[float] = None
     client_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
     flight_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
+    catalog: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate scalar settings without performing network I/O."""
@@ -138,6 +139,11 @@ class DorisReadConfig:
             raise DorisConfigurationError("host must not be empty")
         if not isinstance(self.user, str) or not self.user:
             raise DorisConfigurationError("user must not be empty")
+        if self.catalog is not None and (
+            not isinstance(self.catalog, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", self.catalog) is None
+        ):
+            raise DorisConfigurationError("invalid catalog name")
         if not isinstance(self.password, str):
             raise DorisConfigurationError("password must be a string")
         if self.password_env is not None and (
@@ -308,7 +314,8 @@ class DorisReadConfig:
         rendered_http_ca = "None" if self.http_ca_file is None else "<configured>"
         return (
             "DorisReadConfig("
-            f"host={self.host!r}, table={self.table!r}, user={self.user!r}, "
+            f"host={self.host!r}, table={self.table!r}, "
+            f"catalog={self.catalog!r}, user={self.user!r}, "
             f"password=<redacted>, password_env={rendered_password_env}, "
             f"mysql_port={self.mysql_port}, http_port={self.http_port}, "
             f"flight_port={self.flight_port}, http_scheme={self.http_scheme!r}, "

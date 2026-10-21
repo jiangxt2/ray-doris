@@ -16,32 +16,31 @@ from ray_doris import (
     NativeReadOptions,
     read_doris,
 )
+from ray_doris._errors import _NativeReadNotApplicableError
 from ray_doris._external_metadata import (
     discover_external,
     doris_build_version,
-    information_schema_type,
     partition_value,
+    validate_native_session,
     validate_storage,
     validate_table,
 )
 from ray_doris._hms import HiveMetadataClient, HivePartition, HiveStorage, HiveTable, open_hms
 from ray_doris._models import DorisReadConfig
 from ray_doris._native import NativeReadPlan, _canonicalize_batch, _validate_file_schemas
-from ray_doris._schema import doris_type_to_arrow
+from ray_doris._schema import doris_type_to_arrow, information_schema_type
 from ray_doris._sql import parse_table
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"read_mode": "bad"},
-        {"catalog": "hive"},
+        {"auto_native_read": "yes"},
+        {"auto_native_read": 1},
+        {"auto_native_read": None},
+        {"catalog": "invalid-name"},
         {"native_options": NativeReadOptions()},
-        {"read_mode": "native"},
-        {"read_mode": "native", "catalog": "hive", "filter": "id=1"},
-        {"read_mode": "native", "catalog": "hive", "transport": "flight"},
-        {"read_mode": "native", "catalog": "hive", "tablet_size": 2},
-        {"read_mode": "native", "catalog": "hive", "native_options": {}},
+        {"auto_native_read": True, "catalog": "hive", "native_options": {}},
     ],
 )
 def test_native_rejects_conflicting_options_before_network(kwargs):
@@ -66,16 +65,16 @@ def test_native_options_bounds(kwargs):
         NativeReadOptions(**kwargs)
 
 
-def test_native_routes_without_constructing_doris_datasource(monkeypatch):
+def test_native_routes_without_scheduling_doris_reads(monkeypatch):
     delegate = Mock(return_value="native dataset")
     monkeypatch.setattr("ray_doris._native.read_native", delegate)
     forbidden = Mock(side_effect=AssertionError("Doris read path used"))
-    monkeypatch.setattr("ray_doris._api.DorisDatasource", forbidden)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", forbidden)
     assert (
         read_doris(
             host="fe",
             table="db.tbl",
-            read_mode="native",
+            auto_native_read=True,
             catalog="hive",
             columns=["id"],
             concurrency=2,
@@ -85,6 +84,30 @@ def test_native_routes_without_constructing_doris_datasource(monkeypatch):
     assert delegate.call_args.args[0].columns == ("id",)
     assert delegate.call_args.kwargs["concurrency"] == 2
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("applicable", [False, True])
+def test_native_path_log_matches_final_selection(monkeypatch, caplog, applicable):
+    metadata = SimpleNamespace(
+        schema=pa.schema([("id", pa.int32())]), version=(4, 0, 6), partitions=()
+    )
+    plan = SimpleNamespace(files=("data.parquet",))
+    monkeypatch.setattr("ray_doris._native.ensure_native_ray_version", Mock())
+    monkeypatch.setattr("ray_doris._native.discover_external", Mock(return_value=metadata))
+    monkeypatch.setattr("ray_doris._native.plan_files", Mock(return_value=plan))
+    monkeypatch.setattr(
+        "ray_doris._native.read_native_plan",
+        Mock(
+            return_value="native",
+            side_effect=None if applicable else _NativeReadNotApplicableError("profile"),
+        ),
+    )
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", Mock(return_value="doris"))
+    with caplog.at_level("INFO", logger="ray_doris"):
+        result = read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
+    assert result == ("native" if applicable else "doris")
+    assert ("read path=native" in caplog.text) is applicable
+    assert ("read path=doris" in caplog.text) is not applicable
 
 
 @pytest.mark.parametrize(
@@ -241,13 +264,135 @@ def test_driver_metadata_never_sets_internal_default_database(monkeypatch, code)
 
 
 @pytest.mark.parametrize("version", ["2.49.2", "2.58.0"])
-def test_native_unsupported_ray_rejected_before_io(monkeypatch, version):
+def test_native_unsupported_ray_retains_doris_without_native_io(monkeypatch, version):
     monkeypatch.setattr("ray_doris._compat._RAY_VERSION", version)
     connect = Mock(side_effect=AssertionError("unexpected metadata I/O"))
     monkeypatch.setattr("ray_doris._external_metadata.pymysql.connect", connect)
-    with pytest.raises(DorisConfigurationError, match="Ray 2.59.0"):
-        read_doris(host="unused", table="db.t", catalog="hive", read_mode="native")
+    read = Mock(return_value="doris dataset")
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    assert read_doris(host="unused", table="db.t", catalog="hive", auto_native_read=True) == (
+        "doris dataset"
+    )
+    read.assert_called_once()
     connect.assert_not_called()
+
+
+def test_disabled_flag_does_not_import_or_probe_native(monkeypatch):
+    native_import = Mock(side_effect=AssertionError("native probe used"))
+    read = Mock(return_value="doris dataset")
+    monkeypatch.setattr("ray_doris._api.import_module", native_import)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    assert read_doris(host="fe", table="db.t", catalog="hive") == "doris dataset"
+    assert read.call_args.args[0].config.catalog == "hive"
+    native_import.assert_not_called()
+
+
+@pytest.mark.parametrize("catalog", [None, "internal"])
+def test_internal_source_does_not_probe_files(monkeypatch, catalog):
+    native_import = Mock(side_effect=AssertionError("native probe used"))
+    monkeypatch.setattr("ray_doris._api.import_module", native_import)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", Mock(return_value="doris"))
+    assert read_doris(host="fe", table="db.t", catalog=catalog, auto_native_read=True) == "doris"
+    native_import.assert_not_called()
+
+
+def test_not_applicable_retains_same_doris_source_and_logs_reason(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="ray_doris._api")
+    native = Mock(side_effect=_NativeReadNotApplicableError("unsupported layout"))
+    read = Mock(return_value="doris")
+    monkeypatch.setattr("ray_doris._native.read_native", native)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    assert (
+        read_doris(
+            host="fe",
+            table="db.t",
+            catalog="hive",
+            columns=["id"],
+            auto_native_read=True,
+            concurrency=2,
+            override_num_blocks=3,
+            ray_remote_args={"num_cpus": 0.25},
+        )
+        == "doris"
+    )
+    assert native.call_args.args[0] is read.call_args.args[0].config
+    assert read.call_args.kwargs == {
+        "concurrency": 2,
+        "override_num_blocks": 3,
+        "ray_remote_args": {"num_cpus": 0.25},
+    }
+    assert "path=doris reason=unsupported layout" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        DorisPlanningError("metadata broken"),
+        DorisSchemaError("contradictory schema"),
+        DorisPermissionError("denied"),
+        DorisAuthenticationError("bad credential"),
+        DorisConfigurationError("bad source options"),
+    ],
+)
+def test_real_native_errors_never_start_doris_fallback(monkeypatch, error):
+    monkeypatch.setattr("ray_doris._native.read_native", Mock(side_effect=error))
+    read = Mock(side_effect=AssertionError("Doris retry used"))
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    with pytest.raises(type(error)) as captured:
+        read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
+    assert captured.value is error
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"filter": "id > 1"},
+        {"transport": "flight"},
+        {"tablet_size": 2},
+        {"batch_size": 2},
+        {"query_plan_timeout": 5},
+        {"on_query_plan_error": "error"},
+        {"flight_options": {}},
+        {"http_port": 18030},
+        {"flight_port": 18070},
+        {"http_scheme": "https"},
+        {"flight_scheme": "grpc+tls"},
+        {"client_kwargs": {"init_command": "SET time_zone = '+00:00'"}},
+    ],
+)
+def test_explicit_doris_options_skip_native_discovery(monkeypatch, options):
+    monkeypatch.setattr("ray_doris.datasource._ensure_flight_available", Mock())
+    native_import = Mock(side_effect=AssertionError("native probe used"))
+    monkeypatch.setattr("ray_doris._api.import_module", native_import)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", Mock(return_value="doris"))
+    assert (
+        read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True, **options)
+        == "doris"
+    )
+    native_import.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "property_name", ["access_controller.class", "access_controller.properties.x"]
+)
+def test_catalog_policy_controller_retains_doris_before_hms(monkeypatch, property_name):
+    metadata_connection(
+        monkeypatch,
+        [
+            [{"build": "Doris version 4.0.6"}],
+            [{"CatalogType": "hms", "Property": property_name, "Value": "configured"}],
+        ],
+    )
+    hms = Mock(side_effect=AssertionError("HMS used"))
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", hms)
+    with pytest.raises(_NativeReadNotApplicableError, match="access controller"):
+        discover_external(
+            DorisReadConfig(host="fe", table=parse_table("db.t"), user="reader"),
+            "hive",
+            NativeReadOptions(),
+        )
+    hms.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -285,7 +430,67 @@ def metadata_connection(monkeypatch, responses):
         "ray_doris._external_metadata.pymysql.connect", Mock(return_value=connection)
     )
     monkeypatch.setattr("ray_doris._external_metadata._rows", Mock(side_effect=responses))
+    monkeypatch.setattr("ray_doris._external_metadata.validate_native_session", Mock())
     return connection
+
+
+def test_nested_native_schema_retains_doris_before_hms_access(monkeypatch):
+    metadata_connection(
+        monkeypatch,
+        [
+            [{"build": "Doris version 4.0.6"}],
+            [
+                {
+                    "CatalogType": "hms",
+                    "Property": "hive.metastore.uris",
+                    "Value": "thrift://hms:9083",
+                }
+            ],
+            [{"COLUMN_NAME": "items", "COLUMN_TYPE": "ARRAY<INT>", "IS_NULLABLE": "YES"}],
+        ],
+    )
+    hms = Mock(side_effect=AssertionError("unexpected HMS access"))
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", hms)
+    with pytest.raises(_NativeReadNotApplicableError, match="nested"):
+        discover_external(
+            DorisReadConfig(host="fe", table=parse_table("db.t"), user="u"),
+            "hive",
+            NativeReadOptions(),
+        )
+    hms.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "use_names,timezone,timestamp,expected",
+    [
+        ("true", "UTC", True, None),
+        (1, "+00:00", True, None),
+        (True, "Etc/UTC", True, None),
+        ("true", "Asia/Shanghai", False, None),
+        (False, "UTC", False, _NativeReadNotApplicableError),
+        ("0", "UTC", True, _NativeReadNotApplicableError),
+        ("true", "Asia/Shanghai", True, _NativeReadNotApplicableError),
+        ("unknown", "UTC", False, DorisPlanningError),
+    ],
+)
+def test_native_session_semantics(monkeypatch, use_names, timezone, timestamp, expected):
+    monkeypatch.setattr(
+        "ray_doris._external_metadata._rows",
+        Mock(
+            return_value=[
+                {
+                    "use_names": use_names,
+                    "timezone": timezone,
+                }
+            ]
+        ),
+    )
+    schema = pa.schema([("value", pa.timestamp("us") if timestamp else pa.int32())])
+    if expected is None:
+        validate_native_session(Mock(), schema)
+    else:
+        with pytest.raises(expected):
+            validate_native_session(Mock(), schema)
 
 
 @pytest.mark.parametrize(

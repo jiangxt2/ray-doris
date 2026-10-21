@@ -7,7 +7,65 @@ branches. A prior fingerprint is never represented as a run of a different code 
 
 ## Shared-storage native read development
 
-### Public read mode naming
+### Automatic native selection
+
+The user approved replacing the unreleased `read_mode` parameter with
+`auto_native_read=False`. The default reads through Doris without native
+discovery. Enabling the flag selects a compatible Hive Parquet source or retains
+Doris reading only for a specific not-applicable decision. Real metadata,
+permission, connection and data errors remain errors; no runtime source replay.
+External catalogs now use the existing typed, bounded Doris readers with one
+fully qualified table query and no internal tablet discovery.
+
+| Suite | Scope, source state and reason | Overlap / result |
+| --- | --- | --- |
+| Full unit and public Ray contracts | Boolean API, removed read_mode, native decision/error boundaries, shared structured-column parsing, external SQL/planning/empty schemas, existing reader contracts; base 838c198 plus automatic-selection changes | Final source: 498 passed, zero skipped, 36 upstream warnings, 13.90s; `unit-contract-final.log` |
+| Doris 4.0.6 automatic-selection IT | Spark/HMS/HDFS/S3, actual native and Doris paths, ORC and layout/limit fallback, UTC/name settings, worker reads and no replay | Final approved retry: 32 passed, zero skipped, 20 upstream warnings, 48.23s; `matrix-final/native-4.0.6.xml` |
+| Doris 3.0.6.2 version IT | Same automatic source decisions and metadata/reader contracts | Final approved retry: 32 passed, zero skipped, 20 upstream warnings, 49.63s; `matrix-final/native-3.0.6.2.xml` |
+| Existing Doris 4.0.6 read/write regression | Internal default path plus changed shared connection/error helpers | Final approved run: 30 passed, zero skipped, 5 upstream warnings, 58.09s; `matrix-final/query-regression.xml` |
+
+Evidence root: `/private/tmp/rd-native-auto-20261021/`. The immutable verified
+Hadoop 3.3.0 source context and cached base images may be reused; the runner
+records current fingerprints and image IDs, builds each runtime once, starts
+Compose with --no-build and verifies scoped cleanup. No benchmark, new CPU
+architecture or unrelated runtime matrix is added. Original 22-case results
+below remain historical evidence, not automatic-selection verification.
+
+The first attempt is recorded in `matrix-driver.log`, `matrix/results.json`,
+`matrix/native-4.0.6.xml` and `matrix/cleanup.json`. The fix shares
+`information_schema.columns` SQL and parsing between native discovery and the
+Doris external-table planner; internal DESCRIBE remains unchanged. Focused tests
+passed (162 cases), followed by the 498-case final unit/contract suite above.
+The earlier 488-case full run predates this fix and is not final-source evidence.
+The user explicitly approved the final 94-case rerun on 2026-10-21: two 32-case
+version suites and the existing 30-case regression. The retry uses the fixed
+source fingerprint `9615240b24b34ab1a6abd0623306ad3e4f0fd2b806a31b6860d201d798b4a3e3`.
+Logs are recorded at `matrix-final/` with driver output in `matrix-final-driver.log`.
+The first attempt cannot validate this changed parser; cached bases and Hadoop
+source are reused. This approval covers one complete retry, not further repeats.
+
+Final static and artifact checks passed: Ruff lint/format, strict mypy, all seven
+pre-commit hooks, the new untracked test's applicable hooks, the local static PR
+precheck without duplicate tests, documentation contracts, strict Sphinx,
+spelling, wheel/sdist builds and Twine. Wheel imports and the default/off API were
+verified with optional HMS dependencies blocked; all wheel Python modules match
+the current source. The generated API contains the boolean signature and a
+working native-guide anchor. The final real matrix completed successfully:
+94 passed, zero failures/errors/skips, verified from the three JUnit files.
+`matrix-final/cleanup.json` confirms no owned containers, networks, volumes or
+custom image tags remain. The runtime/test/infrastructure fingerprint matches the
+final unit/contract state and remains unchanged after the run. The two pre-existing
+dangling image IDs were preserved; no global cleanup was used.
+
+Final self-review corrected stale external-table scope statements in README,
+the read guide and FAQ. Those documentation-only edits do not invalidate the
+real suite; documentation contracts, strict Sphinx and spelling passed again.
+The native path and actual Doris fallback are verified on both target versions,
+including ORC, unsupported layouts, limits, column-name/time-zone settings,
+Ray V2 guards, empty schemas, permissions and no runtime replay. Wider providers,
+versions, authorization systems, architectures and performance are not certified.
+
+### Public read mode naming (historical)
 
 2026-10-21: the approved public modes are `doris` (default) and `native`.
 The `query` name is rejected before constructing either reader; no alias is kept.

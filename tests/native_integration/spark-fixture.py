@@ -26,6 +26,7 @@ data = spark.range(240).selectExpr(
     "cast(floor(id / 3) % 3 as bigint) q",
 )
 data.drop("p", "q").repartition(4).write.mode("error").parquet("/native/plain")
+data.drop("p", "q").repartition(4).write.mode("error").orc("/native/orc")
 data.repartition(4).write.mode("error").partitionBy("p", "q").parquet("/native/partitioned")
 spark.conf.set("spark.sql.parquet.outputTimestampType", "INT96")
 data.drop("p", "q").repartition(4).write.mode("error").parquet("/native/int96")

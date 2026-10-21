@@ -12,7 +12,7 @@ import ray
 from ray.data.block import BlockMetadata
 from ray.data.datasource import Datasink, ReadTask
 
-from ray_doris._errors import DorisConfigurationError
+from ray_doris._errors import DorisConfigurationError, _NativeReadNotApplicableError
 
 _MIN_RAY_VERSION = (2, 49, 2)
 _MAX_RAY_VERSION = (2, 60, 0)
@@ -36,7 +36,7 @@ def ensure_native_ray_version() -> None:
     """Keep the experimental native profile separate from legacy query support."""
     ensure_supported_ray_version()
     if _parse_final_release(_RAY_VERSION) != (2, 59, 0):
-        raise DorisConfigurationError("native reads currently require Ray 2.59.0")
+        raise _NativeReadNotApplicableError("native reads currently require Ray 2.59.0")
 
 
 def native_uses_datasource_v2() -> bool:

@@ -8,7 +8,12 @@ from importlib import import_module
 from typing import Any, Iterator, Tuple
 from urllib.parse import urlparse
 
-from ray_doris._errors import DorisConfigurationError, DorisError, DorisPlanningError
+from ray_doris._errors import (
+    DorisConfigurationError,
+    DorisError,
+    DorisPlanningError,
+    _NativeReadNotApplicableError,
+)
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ class HiveMetadataClient:
     def table(self, database: str, table: str) -> HiveTable:
         raw = self._call("get_table", database, table)
         if raw.viewOriginalText or raw.viewExpandedText:
-            raise DorisPlanningError("native reads do not support Hive views")
+            raise _NativeReadNotApplicableError("native reads do not support Hive views")
         return HiveTable(
             storage_descriptor(raw.sd),
             tuple((column.name, column.type) for column in raw.partitionKeys or ()),
@@ -78,7 +83,7 @@ class HiveMetadataClient:
     def partitions(self, database: str, table: str, maximum: int) -> Tuple[HivePartition, ...]:
         names = self._call("get_partition_names", database, table, maximum + 1)
         if len(names) > maximum:
-            raise DorisPlanningError("registered partitions exceed max_partitions")
+            raise _NativeReadNotApplicableError("registered partitions exceed max_partitions")
         if len(set(names)) != len(names):
             raise DorisPlanningError("HMS returned duplicate partition identifiers")
         result = []

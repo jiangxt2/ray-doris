@@ -52,13 +52,15 @@ Install optional Flight SQL support:
 pip install "ray-doris[flight]"
 ```
 
-Experimental shared-storage reads use `ray-doris[native]`, an explicit
-`read_mode="native"`, and independently configured HMS/storage access. See the
+Experimental automatic shared-storage reads use `ray-doris[native]`, an explicit
+`auto_native_read=True`, and independently configured HMS/storage access. See the
 [native Hive Parquet guide](doc/source/user-guide/native-read.md) for supported
-layouts, Doris version targets and Ray reader limits. The default
-`read_mode="doris"` reads internal tables through Doris. Both modes accept a table
-identifier; complete SQL statements are unsupported. Native reads do not guarantee
-a performance improvement.
+layouts, Doris version targets and Ray reader limits. By default, tables are read
+through Doris without probing native storage. When enabled, eligible tables use
+Ray's native Parquet reader; known unsupported cases retain Doris reading.
+Authentication, source-access and inconsistent-metadata errors remain errors.
+The API accepts a table identifier; complete SQL statements are unsupported.
+Native reads do not guarantee a performance improvement.
 
 Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
 Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains a legacy
@@ -90,10 +92,13 @@ print(dataset.schema())
 print(dataset.take(5))
 ```
 
-`table` must be an exact `database.table` reference in Doris's internal catalog. External
-catalog tables, joins, and multi-table query planning are not supported. `filter` is a trusted
-SQL scalar expression: do not pass untrusted user input. Doris uses the `WHERE` expression for
-tablet pruning, so the number of splits can change with the filter. A complex expression such as
+`table` must be an exact `database.table` reference and defaults to Doris's internal catalog.
+Experimental external-table reads use the separate `catalog` parameter; see the
+[shared-storage guide](doc/source/user-guide/native-read.md) for the optional automatic native path
+and its support boundaries. Joins and multi-table query planning are not supported.
+`filter` is a trusted SQL scalar expression: do not pass untrusted user input. For internal
+tables, Doris uses the `WHERE` expression for tablet pruning, so the number of splits can change
+with the filter. A complex expression such as
 a subquery can be executed through the configured single-task fallback, but it cannot use tablet
 parallelism.
 
@@ -285,9 +290,12 @@ protected query-plan endpoint. The enterprise-candidate profile also uses
 The defaults are unencrypted and must only be used on a trusted private network. Flight TLS remains
 deployment-specific and experimental.
 
-The Doris reader account needs access to the FE MySQL and HTTP ports and `SELECT` on the target
-internal-catalog table. Flight reads additionally need the FE Flight SQL port. The `_query_plan`
-endpoint itself performs the table authorization check.
+The internal-table Doris reader account needs access to the FE MySQL and HTTP ports and `SELECT`
+on the target table. Flight reads additionally need the FE Flight SQL port. The `_query_plan`
+endpoint itself performs the table authorization check. External-table Doris reads require
+visible catalog/column metadata and table read permission, without HTTP tablet planning.
+Native reads additionally require independent HMS and complete source-data authorization as
+described in the [shared-storage guide](doc/source/user-guide/native-read.md).
 
 Tablet planning and task execution do not provide snapshot isolation. Concurrent Doris writes can
 therefore produce a result that reflects different moments across splits. If a Ray task fails after

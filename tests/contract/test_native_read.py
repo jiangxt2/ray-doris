@@ -11,7 +11,8 @@ import pyarrow.parquet as pq
 import pytest
 import ray
 
-from ray_doris import DorisConfigurationError, DorisSchemaError
+from ray_doris import DorisSchemaError
+from ray_doris._errors import _NativeReadNotApplicableError
 from ray_doris._native import NativeReadPlan, read_native_plan
 
 pytestmark = [
@@ -115,7 +116,7 @@ def test_extensionless_v2_rejected_and_public_v1_works(tmp_path):
     previous = context.use_datasource_v2
     try:
         context.use_datasource_v2 = True
-        with pytest.raises(DorisConfigurationError, match="extensionless"):
+        with pytest.raises(_NativeReadNotApplicableError, match="extensionless"):
             read_native_plan(
                 plan, None, concurrency=None, override_num_blocks=None, ray_remote_args=None
             )
@@ -136,7 +137,7 @@ def test_data_column_path_is_rejected_on_v2_and_preserved_on_v1(
     pq.write_table(table, file)
     plan = NativeReadPlan(table.schema, (str(file),), fs.LocalFileSystem(), str(tmp_path), ())
     if reader_version:
-        with pytest.raises(DorisConfigurationError, match="data column 'path'"):
+        with pytest.raises(_NativeReadNotApplicableError, match="data column 'path'"):
             read_native_plan(
                 plan, projection, concurrency=1, override_num_blocks=1, ray_remote_args=None
             )

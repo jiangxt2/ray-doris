@@ -19,7 +19,12 @@ SQL writes, or provide exactly-once or whole-dataset atomicity.
 
 ## Can it read an external catalog table?
 
-No. `table` accepts one exact internal-catalog `database.table` reference. A three-part catalog name fails local validation before any Doris connection.
+Experimental external-table reads use `catalog="hive_catalog"` with an exact
+`table="database.table"` reference. They read through Doris by default; enabling
+`auto_native_read=True` permits native Hive Parquet reading when the supported
+profile applies. See [shared-storage reads](user-guide/native-read.md) for version,
+metadata and authorization requirements. A three-part value in `table` still fails
+local validation; joins and arbitrary SQL remain unsupported.
 
 ## Can it execute arbitrary SQL?
 
@@ -33,7 +38,10 @@ No. `filter` is a trusted SQL expression. The connector rejects separators, comm
 
 ## Why does Flight still require the MySQL port?
 
-Schema discovery always uses MySQL `DESCRIBE`. Flight SQL moves split data after the driver has built the canonical Arrow schema. The HTTP endpoint remains necessary for tablet planning.
+Schema discovery uses MySQL: `DESCRIBE` for internal tables and structured
+`information_schema.columns` for external tables. Flight SQL moves data after the
+driver has built the canonical Arrow schema. The HTTP endpoint remains necessary
+for internal-table tablet planning; external-table reads do not use it.
 
 ## Why did auto use MySQL?
 

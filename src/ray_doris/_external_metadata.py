@@ -10,12 +10,17 @@ from typing import Any, Dict, List, Mapping, Tuple
 import pyarrow as pa
 import pymysql
 
-from ray_doris._errors import DorisError, DorisPermissionError, DorisPlanningError, DorisSchemaError
+from ray_doris._errors import (
+    DorisError,
+    DorisPlanningError,
+    DorisSchemaError,
+    _NativeReadNotApplicableError,
+)
 from ray_doris._hms import HivePartition, HiveStorage, HiveTable, open_hms
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._planner import _mysql_access_error, _mysql_connection_kwargs, _mysql_error_code
-from ray_doris._schema import DorisColumn, build_arrow_schema, doris_type_to_arrow
-from ray_doris._sql import quote_identifier
+from ray_doris._schema import build_arrow_schema, doris_type_to_arrow, parse_information_schema_rows
+from ray_doris._sql import build_external_columns_sql, quote_identifier
 
 _PARQUET_INPUT = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
 _PARQUET_SERDE = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
@@ -35,10 +40,10 @@ def doris_build_version(comment: str) -> Tuple[int, ...]:
         r"\bdoris\s+version\s+(?:doris-)?(\d+\.\d+\.\d+(?:\.\d+)?)(?![\d.])", comment, re.I
     )
     if match is None:
-        raise DorisPlanningError("cannot identify the Doris build from version_comment")
+        raise _NativeReadNotApplicableError("cannot identify a verified native Doris build")
     version = tuple(int(part) for part in match.group(1).split("."))
     if version not in ((3, 0, 6, 2), (4, 0, 6)):
-        raise DorisPlanningError("native reads currently target Doris 3.0.6.2 and 4.0.6")
+        raise _NativeReadNotApplicableError("native reads currently target Doris 3.0.6.2 and 4.0.6")
     return version
 
 
@@ -51,23 +56,14 @@ def _hive_type(value: str, name: str) -> pa.DataType:
         )
         is None
     ):
-        raise DorisSchemaError("unsupported native Hive scalar type")
+        raise _NativeReadNotApplicableError("unsupported native Hive scalar type")
     aliases = {"timestamp": "DATETIME(6)", "binary": "UNSUPPORTED_BINARY"}
     return doris_type_to_arrow(aliases.get(value.lower(), value), column_name=name)
 
 
-def information_schema_type(value: str) -> str:
-    """Normalize the two verified Doris branches' MySQL display representation.
-
-    Their columns scanner renders BOOLEAN as tinyint(1), and real TINYINT as
-    tinyint(4). Keep the default DESCRIBE mapper unchanged.
-    """
-    return "BOOLEAN" if value.strip().upper() == "TINYINT(1)" else value
-
-
 def validate_storage(storage: HiveStorage, parameters: Mapping[str, str]) -> None:
     if storage.input_format != _PARQUET_INPUT or storage.serde != _PARQUET_SERDE:
-        raise DorisPlanningError("native reads require ordinary Hive Parquet storage")
+        raise _NativeReadNotApplicableError("native reads require ordinary Hive Parquet storage")
     props = {key.lower(): value for key, value in parameters.items()}
     if (
         props.get("transactional", "false").lower() != "false"
@@ -77,14 +73,16 @@ def validate_storage(storage: HiveStorage, parameters: Mapping[str, str]) -> Non
         or "meta_table_storage" in props
         or any(key.startswith(("hoodie.", "delta.")) for key in props)
     ):
-        raise DorisPlanningError(
+        raise _NativeReadNotApplicableError(
             "native reads do not support transactional or table-format storage"
         )
 
 
 def validate_table(table: HiveTable, schema: pa.Schema) -> None:
     if table.table_type not in ("MANAGED_TABLE", "EXTERNAL_TABLE"):
-        raise DorisPlanningError("native reads require an ordinary managed or external Hive table")
+        raise _NativeReadNotApplicableError(
+            "native reads require an ordinary managed or external Hive table"
+        )
     validate_storage(table.storage, dict(table.parameters))
     expected = table.storage.columns + table.partition_keys
     if len(expected) != len(schema) or [name for name, _ in expected] != schema.names:
@@ -98,12 +96,14 @@ def validate_table(table: HiveTable, schema: pa.Schema) -> None:
             )
     for _name, value in table.partition_keys:
         if value.lower() not in ("string", "bigint"):
-            raise DorisSchemaError("native partition keys currently require STRING or BIGINT")
+            raise _NativeReadNotApplicableError(
+                "native partition keys currently require STRING or BIGINT"
+            )
 
 
 def partition_value(value: str, type_name: str) -> Any:
     if value is None or value == "__HIVE_DEFAULT_PARTITION__":
-        raise DorisPlanningError("native reads do not support NULL/default partitions")
+        raise _NativeReadNotApplicableError("native reads do not support NULL/default partitions")
     if type_name.lower() == "string":
         return value
     try:
@@ -118,6 +118,32 @@ def partition_value(value: str, type_name: str) -> Any:
 def _rows(cursor: Any, sql: str, parameters: Any = None) -> List[Dict[str, Any]]:
     cursor.execute(sql, parameters)
     return list(cursor.fetchall())
+
+
+def validate_native_session(cursor: Any, schema: pa.Schema) -> None:
+    """Keep the file reader within the verified Doris name/UTC semantics."""
+    rows = _rows(
+        cursor,
+        "SELECT @@hive_parquet_use_column_names AS use_names, @@time_zone AS timezone",
+    )
+    if len(rows) != 1 or not isinstance(rows[0].get("timezone"), str) or not rows[0]["timezone"]:
+        raise DorisPlanningError("Doris returned incomplete native session settings")
+    by_name = str(rows[0].get("use_names")).lower()
+    if by_name in ("false", "0"):
+        raise _NativeReadNotApplicableError("positional Parquet mapping requires Doris execution")
+    if by_name not in ("true", "1"):
+        raise DorisPlanningError("Doris returned invalid Parquet name mapping")
+    if any(pa.types.is_timestamp(column.type) for column in schema) and rows[0]["timezone"] not in (
+        "UTC",
+        "GMT",
+        "Etc/UTC",
+        "Etc/GMT",
+        "+00:00",
+        "-00:00",
+        "GMT+00:00",
+        "GMT-00:00",
+    ):
+        raise _NativeReadNotApplicableError("native timestamps require a UTC Doris session")
 
 
 def discover_external(
@@ -151,45 +177,49 @@ def discover_external(
                 _rows(cursor, f"SHOW CATALOG {quote_identifier(catalog)}")
                 raise DorisPlanningError("the requested Hive catalog is not visible")
             if any(str(row["CatalogType"]).lower() != "hms" for row in rows):
-                raise DorisPlanningError("native reads require a visible Hive catalog")
+                raise _NativeReadNotApplicableError("native reads require a visible Hive catalog")
             props = {str(row["Property"]): str(row["Value"]) for row in rows}
+            if props.get("access_controller.class", "") or any(
+                key.startswith("access_controller.properties.") for key in props
+            ):
+                raise _NativeReadNotApplicableError(
+                    "catalog access controller requires Doris execution"
+                )
             if (
                 props.get("hive.metastore.type", "hms").lower() != "hms"
                 or props.get("hive.metastore.sasl.enabled", "false").lower() != "false"
                 or props.get("lower_case_meta_names", "false").lower() != "false"
                 or props.get("meta_names_mapping", "")
             ):
-                raise DorisPlanningError("unsupported HMS authentication or remote-name mapping")
+                raise _NativeReadNotApplicableError(
+                    "unsupported HMS authentication or remote-name mapping"
+                )
             uris = tuple(
                 uri.strip()
                 for uri in props.get("hive.metastore.uris", "").split(",")
                 if uri.strip()
             )
             uri = options.hms_uri or (uris[0] if uris else "")
-            if not uri or uri not in uris:
+            if not uris:
+                raise _NativeReadNotApplicableError("the catalog does not advertise an HMS URI")
+            if uri not in uris:
                 raise DorisPlanningError("HMS URI must match the Doris catalog")
             stage = "columns"
             rows = _rows(
                 cursor,
-                f"SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM "
-                f"{quote_identifier(catalog)}.information_schema.columns "
-                "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
+                build_external_columns_sql(catalog),
                 (config.table.database, config.table.table),
-            )
-            if any(row["IS_NULLABLE"] not in ("YES", "NO") for row in rows):
-                raise DorisPlanningError("Doris returned invalid column nullability")
-            schema = build_arrow_schema(
-                tuple(
-                    DorisColumn(
-                        row["COLUMN_NAME"],
-                        information_schema_type(row["COLUMN_TYPE"]),
-                        row["IS_NULLABLE"] == "YES",
-                    )
-                    for row in rows
-                )
             )
             if not rows:
                 raise DorisPlanningError("Doris column metadata is empty or inaccessible")
+            columns = parse_information_schema_rows(rows)
+            if any(
+                column.doris_type.strip().upper().startswith(("ARRAY<", "MAP<", "STRUCT<"))
+                for column in columns
+            ):
+                raise _NativeReadNotApplicableError("nested types require Doris execution")
+            schema = build_arrow_schema(columns)
+            validate_native_session(cursor, schema)
             with open_hms(uri, options.metadata_timeout) as hms:
                 table = hms.table(config.table.database, config.table.table)
                 validate_table(table, schema)
@@ -233,20 +263,6 @@ def discover_external(
         access_error = _mysql_access_error(
             exc, operation="metadata discovery", context="external table"
         )
-        # Both target Doris branches define catalog-denial codes in addition
-        # to the standard table/database MySQL permission codes.
-        wrapped_catalog_denial = (
-            stage == "catalog"
-            and _mysql_error_code(exc) == 1105
-            and any(
-                isinstance(arg, str) and "Access denied for user" in arg and "to catalog" in arg
-                for arg in exc.args
-            )
-        )
-        if access_error is None and (
-            _mysql_error_code(exc) in (1221, 5087) or wrapped_catalog_denial
-        ):
-            access_error = DorisPermissionError("Doris denied external catalog metadata access")
         if access_error is not None:
             raise access_error from None
         raise DorisPlanningError(

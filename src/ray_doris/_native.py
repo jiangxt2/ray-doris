@@ -17,7 +17,12 @@ from ray.data import Dataset
 from ray.data.datasource.partitioning import Partitioning, PartitionStyle, PathPartitionParser
 
 from ray_doris._compat import ensure_native_ray_version, native_uses_datasource_v2
-from ray_doris._errors import DorisConfigurationError, DorisPlanningError, DorisSchemaError
+from ray_doris._errors import (
+    DorisConfigurationError,
+    DorisPlanningError,
+    DorisSchemaError,
+    _NativeReadNotApplicableError,
+)
 from ray_doris._external_metadata import ExternalMetadata, discover_external, partition_value
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._sql import validate_identifier
@@ -37,14 +42,9 @@ class NativeReadPlan:
 def _location(value: str) -> Tuple[str, str, str]:
     parsed = urlparse(value)
     scheme = "s3" if parsed.scheme == "s3a" else parsed.scheme
-    if (
-        scheme not in ("s3", "hdfs")
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
+    if scheme not in ("s3", "hdfs"):
+        raise _NativeReadNotApplicableError("native reads require HDFS or S3 storage")
+    if not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise DorisPlanningError("native reads require qualified HDFS or S3 locations")
     return scheme, parsed.netloc, parsed.path
 
@@ -70,15 +70,17 @@ def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> Native
         for uri, values in sources:
             part_scheme, part_authority, path = _location(uri)
             if (part_scheme, part_authority) != (scheme, authority):
-                raise DorisPlanningError("mixed storage authorities are unsupported")
+                raise _NativeReadNotApplicableError("mixed storage authorities are unsupported")
             location = filesystem.normalize_path(authority + path if scheme == "s3" else path)
             location = location.rstrip("/")
             if metadata.partition_keys:
                 if not location.startswith(base + "/"):
-                    raise DorisPlanningError("custom partition LOCATION is unsupported")
+                    raise _NativeReadNotApplicableError("custom partition LOCATION is unsupported")
                 relative = location[len(base) + 1 :].split("/")
                 if len(relative) != len(metadata.partition_keys):
-                    raise DorisPlanningError("partition LOCATION must use standard Hive levels")
+                    raise _NativeReadNotApplicableError(
+                        "partition LOCATION must use standard Hive levels"
+                    )
                 # Use Ray's documented parser for the same mapping used by its reader.
                 parser = PathPartitionParser(
                     Partitioning(
@@ -100,18 +102,18 @@ def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> Native
                 if parsed != expected:
                     raise DorisPlanningError("partition path and registered values differ")
             if location in paths:
-                raise DorisPlanningError("duplicate partition locations are unsupported")
+                raise _NativeReadNotApplicableError("duplicate partition locations are unsupported")
             paths.add(location)
             for info in filesystem.get_file_info(pafs.FileSelector(location, recursive=False)):
                 if posixpath.basename(info.path).startswith((".", "_")):
                     continue
                 if info.type != pafs.FileType.File:
-                    raise DorisPlanningError(
+                    raise _NativeReadNotApplicableError(
                         "native reads do not support visible data subdirectories"
                     )
                 files.append(info.path)
                 if len(files) > options.max_files:
-                    raise DorisPlanningError("file enumeration exceeds max_files")
+                    raise _NativeReadNotApplicableError("file enumeration exceeds max_files")
         return NativeReadPlan(
             metadata.schema, tuple(sorted(files)), filesystem, base, metadata.partition_keys
         )
@@ -175,12 +177,12 @@ def read_native_plan(
     use_v2 = native_uses_datasource_v2()
     partition_names = {name for name, _ in plan.partition_keys}
     if use_v2 and "path" in plan.schema.names and "path" not in partition_names:
-        raise DorisConfigurationError(
+        raise _NativeReadNotApplicableError(
             "Ray 2.59 V2 cannot preserve the data column 'path'; explicitly configure "
             "DataContext.use_datasource_v2=False to read this table"
         )
     if use_v2 and any(not path.endswith(".parquet") for path in plan.files):
-        raise DorisConfigurationError(
+        raise _NativeReadNotApplicableError(
             "Ray 2.59 V2 filters extensionless Parquet; explicitly configure "
             "DataContext.use_datasource_v2=False to read this layout"
         )
@@ -234,16 +236,17 @@ def read_native(
     if config.columns is not None and any(c not in metadata.schema.names for c in config.columns):
         raise DorisConfigurationError("native projection includes an unknown column")
     plan = plan_files(metadata, options)
-    logger.info(
-        "Doris read mode=native reader=read_parquet doris_version=%s partitions=%d files=%d",
-        ".".join(str(part) for part in metadata.version),
-        len(metadata.partitions),
-        len(plan.files),
-    )
-    return read_native_plan(
+    dataset = read_native_plan(
         plan,
         config.columns,
         concurrency=concurrency,
         override_num_blocks=override_num_blocks,
         ray_remote_args=ray_remote_args,
     )
+    logger.info(
+        "Doris read path=native reader=read_parquet doris_version=%s partitions=%d files=%d",
+        ".".join(str(part) for part in metadata.version),
+        len(metadata.partitions),
+        len(plan.files),
+    )
+    return dataset

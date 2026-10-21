@@ -29,15 +29,18 @@ It records the cumulative source/config fingerprint and complete base image IDs,
 retains command output and XML, and removes only its Compose resources and new
 custom tags on exit. It never prunes bases, unrelated resources or build cache.
 
-Spark writes stable Parquet files into HDFS. The source fixture copies those exact
+Spark writes stable Parquet and ORC files into HDFS. The source fixture copies those exact
 Spark-produced bytes to MinIO and registers independent HDFS and S3 Hive tables.
 This verifies both storage readers; it does not certify Spark's S3A writer setup.
 Real Doris external-table SQL is the independent data reference. A decoy unregistered
 partition verifies that root-directory discovery cannot add table contents.
 
 The matrix tests structured metadata, typed registered partitions, scalar schema,
-projection, empty tables, enumeration limits, permissions, no SQL data-path fallback,
-and execution across two Ray workers. The 4.0.6 stage also executes the existing
+projection, empty tables, enumeration limits, permissions and execution across two
+Ray workers. Automatic selection tests compare actual Doris fallback results for
+ORC, unsupported native layouts, enumeration budgets, session settings and Ray V2
+limitations; the disabled switch must avoid native discovery. Real source errors
+and native runtime failures must not replay through Doris. The 4.0.6 stage also executes the existing
 query/write integration suite from the host runtime. The head reserves no CPUs.
 Native reads are hard-pinned to each worker in turn for both HDFS and S3; the
 test checks that the real public reader receives that constraint and records

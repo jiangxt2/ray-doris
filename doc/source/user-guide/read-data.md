@@ -8,7 +8,7 @@ myst:
 
 # Read data
 
-Use {ref}`read_doris <ray-doris-api-read-doris>` for normal application code. It validates connector options, creates a {ref}`DorisDatasource <ray-doris-api-datasource>`, and passes the datasource to Ray's public `ray.data.read_datasource()` API.
+Use {ref}`read_doris <ray-doris-api-read-doris>` for normal application code. By default, it validates connector options, creates a {ref}`DorisDatasource <ray-doris-api-datasource>`, and passes the datasource to Ray's public `ray.data.read_datasource()` API.
 
 ## Select a table
 
@@ -30,7 +30,13 @@ dataset = read_doris(
 
 Database, table, and column identifiers must start with a letter or underscore and then contain only letters, numbers, underscores, or dollar signs. `ray-doris` quotes validated identifiers in generated SQL.
 
-Three-part names such as `internal.analytics.events` fail before network access. External catalogs, joins, subqueries in the table argument, and arbitrary `SELECT` statements aren't supported.
+Three-part names such as `internal.analytics.events` fail before network access.
+For experimental external-table reads, supply `catalog` separately and retain the
+two-part `table` name. The optional `auto_native_read=True` switch selects native
+Hive Parquet reading only when its profile applies; see
+[shared-storage reads](native-read.md) for the source-selection and authorization
+boundaries. Joins, subqueries in the table argument and arbitrary `SELECT`
+statements aren't supported.
 
 ## Project columns
 
@@ -46,7 +52,7 @@ dataset = read_doris(
 )
 ```
 
-The list must be non-empty and can't contain duplicates. Schema discovery rejects a projected name that `DESCRIBE` doesn't return.
+The list must be non-empty and can't contain duplicates. Schema discovery rejects a projected name that Doris metadata doesn't return.
 
 ## Apply a trusted filter
 
@@ -64,7 +70,7 @@ dataset = read_doris(
 
 `ray-doris` rejects statement separators, SQL comment tokens outside quoted literals, and unterminated quotes. It doesn't parse or parameterize the expression. Never build `filter` from untrusted request values.
 
-Doris uses the filter during `_query_plan`, so predicate pruning can reduce the returned tablet set. The worker uses the same expression in each split query.
+For internal tables, Doris uses the filter during `_query_plan`, so predicate pruning can reduce the returned tablet set. The worker uses the same expression in each split query. An external-table filter retains Doris execution through one fully qualified query without tablet planning.
 
 ## Choose planning failure behavior
 

@@ -41,7 +41,7 @@ def validate_identifier(value: str, *, kind: str = "identifier") -> str:
 
 
 def parse_table(value: str) -> QualifiedTable:
-    """Parse an exact ``database.table`` reference for the internal catalog."""
+    """Parse an exact ``database.table`` reference."""
     if not isinstance(value, str):
         raise DorisConfigurationError("table must be a string in database.table form")
     parts = value.split(".")
@@ -83,9 +83,12 @@ def quote_identifier(value: str) -> str:
     return f"`{validate_identifier(value)}`"
 
 
-def render_table(table: QualifiedTable) -> str:
+def render_table(table: QualifiedTable, catalog: Optional[str] = None) -> str:
     """Render a qualified table name."""
-    return f"{quote_identifier(table.database)}.{quote_identifier(table.table)}"
+    parts = (
+        (table.database, table.table) if catalog is None else (catalog, table.database, table.table)
+    )
+    return ".".join(quote_identifier(part) for part in parts)
 
 
 def build_select_sql(
@@ -93,11 +96,14 @@ def build_select_sql(
     columns: Optional[Sequence[str]],
     predicate: Optional[str],
     tablet_ids: Optional[Sequence[int]],
+    catalog: Optional[str] = None,
 ) -> str:
     """Build a Doris SELECT with TABLET placed before WHERE."""
     projection = "*" if columns is None else ", ".join(quote_identifier(c) for c in columns)
-    sql = f"SELECT {projection} FROM {render_table(table)}"
+    sql = f"SELECT {projection} FROM {render_table(table, catalog)}"
     if tablet_ids is not None:
+        if catalog is not None:
+            raise DorisConfigurationError("external catalog reads do not support tablet hints")
         if not tablet_ids:
             raise DorisConfigurationError("tablet_ids must be None or non-empty")
         validated = []
@@ -111,6 +117,15 @@ def build_select_sql(
     return sql
 
 
-def build_describe_sql(table: QualifiedTable) -> str:
+def build_describe_sql(table: QualifiedTable, catalog: Optional[str] = None) -> str:
     """Build the schema discovery statement."""
-    return f"DESCRIBE {render_table(table)}"
+    return f"DESCRIBE {render_table(table, catalog)}"
+
+
+def build_external_columns_sql(catalog: str) -> str:
+    """Build the shared structured external-schema metadata request."""
+    return (
+        "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM "
+        f"{quote_identifier(catalog)}.information_schema.columns "
+        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION"
+    )
