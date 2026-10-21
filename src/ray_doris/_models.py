@@ -107,6 +107,23 @@ class DorisPlanningSnapshot:
 
 
 @dataclass(frozen=True)
+class DorisPredicate:
+    """Validated SQL forms of a predicate; values are intentionally hidden."""
+
+    mysql_sql: str = field(repr=False)
+    parameters: Tuple[object, ...] = field(repr=False)
+    literal_sql: str = field(repr=False)
+
+    def and_with(self, other: "DorisPredicate") -> "DorisPredicate":
+        """Combine two accepted predicates without changing either input."""
+        return DorisPredicate(
+            f"({self.mysql_sql}) AND ({other.mysql_sql})",
+            self.parameters + other.parameters,
+            f"({self.literal_sql}) AND ({other.literal_sql})",
+        )
+
+
+@dataclass(frozen=True)
 class DorisReadConfig:
     """Serializable configuration shared by planning and worker reads."""
 
@@ -123,6 +140,7 @@ class DorisReadConfig:
     flight_scheme: FlightScheme = "grpc"
     columns: Optional[Tuple[str, ...]] = None
     filter: Optional[str] = None
+    predicate: Optional[DorisPredicate] = field(default=None, repr=False)
     transport: Transport = "mysql"
     tablet_size: int = 1
     batch_size: int = 10_000

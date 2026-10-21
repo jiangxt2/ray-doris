@@ -92,6 +92,13 @@ print(dataset.schema())
 print(dataset.take(5))
 ```
 
+On Ray 2.58.0 and 2.59.0, a later `dataset.select_columns(...)` can automatically
+prune the columns queried from Doris. Explicit `columns` remains the initial
+visible-column boundary. Other accepted Ray releases keep the existing behavior
+and require explicit `columns` to reduce the scan. See the
+[projection guide](doc/source/user-guide/read-data.md#project-columns) for filter,
+clone, and empty-projection behavior.
+
 `table` must be an exact `database.table` reference and defaults to Doris's internal catalog.
 Experimental external-table reads use the separate `catalog` parameter; see the
 [shared-storage guide](doc/source/user-guide/native-read.md) for the optional automatic native path
@@ -101,6 +108,13 @@ tables, Doris uses the `WHERE` expression for tablet pruning, so the number of s
 with the filter. A complex expression such as
 a subquery can be executed through the configured single-task fallback, but it cannot use tablet
 parallelism.
+
+On Ray 2.57, 2.58, and 2.59, native `Dataset.filter(expr=...)` predicates can also reach
+Doris through the V1 datasource hooks. The first supported subset contains in-range signed
+integer comparisons, boolean equality, null checks on these types, and complete `AND`/`OR`/`NOT`
+combinations. Other expressions remain Ray filters. MySQL binds native values; HTTP planning
+and experimental Flight use validated integer and boolean literals. See the
+[reading guide](doc/source/user-guide/read-data.md#use-native-dataset-predicates) for limits.
 
 `tablet_size=1` provides the finest split granularity. Tables with thousands of tablets should
 start with a larger value such as `tablet_size=32` and use `override_num_blocks` to tune Ray's

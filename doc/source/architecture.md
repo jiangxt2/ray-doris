@@ -26,6 +26,7 @@ src/ray_doris/
 ├── datasource.py  Ray Datasource and ReadTask construction
 ├── _models.py     immutable configuration, plans, and splits
 ├── _planner.py    MySQL schema discovery and HTTP tablet planning
+├── _predicate.py  restricted native expression compilation
 ├── _readers.py    streaming MySQL and Flight SQL worker readers
 ├── _schema.py     Doris-to-Arrow schema mapping and conversion
 ├── _sql.py        identifier validation and SQL rendering
@@ -52,6 +53,13 @@ modules can change without a public compatibility promise.
 
 {ref}`DorisDatasource <ray-doris-api-datasource>` subclasses Ray's documented `Datasource` extension class. It returns DeveloperAPI `ReadTask` objects that yield PyArrow tables. `_compat.py` inspects the `ReadTask` constructor so it can reject unsupported Ray signatures without catching an unrelated `TypeError` from the read function.
 
+On the verified Ray 2.57/2.58/2.59 minors, the V1 predicate hooks accept a type-checked subset of
+public expression nodes. The compiler produces immutable MySQL templates and bound values plus
+typed literal SQL for HTTP planning and Flight scans. Unsupported complete predicates return the
+same datasource instance, preserving Ray's residual Filter. Accepted predicates clone the source,
+combine with previous predicates, and invalidate its entire planning snapshot; other branches keep
+their own state. Compilation validates the visible schema before Ray can remove the Filter.
+
 `DorisDatasink` subclasses Ray's public `Datasink`. `write_doris()` calls only
 `Dataset.write_datasink()` and obtains its return value from `on_write_complete(WriteResult)`; it
 does not inspect Ray's private write operator. `_compat.py` records the two supported callback
@@ -66,6 +74,20 @@ The driver performs two metadata operations. MySQL `DESCRIBE` produces column na
 The query-plan client disables redirects and validates both HTTP failures and Doris's body envelope. Doris can report application errors inside an HTTP 200 response, so HTTP status alone isn't enough.
 
 Schema and tablet IDs form one immutable planning snapshot. `get_read_tasks()` reuses it when Ray requests tasks more than once, then groups the same tablet IDs using the new parallelism hint.
+
+On verified Ray releases, public V1 projection hooks create a shallow datasource
+clone with a new immutable, ordered column configuration. A changed projection
+invalidates only the clone's planning snapshot. Existing SQL, schema mapping,
+and transport readers consume the projected configuration. The connector does
+not depend on Ray's private projection state. Projection retains any accepted
+native predicate, whose SQL may reference columns omitted from the output.
+
+For an empty optimizer projection, the clone retains its physical configuration
+and uses the documented `BlockAccessor` interface to project each bounded
+output batch. Ray supplies its native row-preserving representation. ReadTask
+schema matches the produced blocks, and closing the wrapper closes the active
+transport generator. This conservative case avoids introducing constant-query
+SQL or changing the public non-empty `columns` requirement.
 
 ## Execute on workers
 

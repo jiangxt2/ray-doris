@@ -31,6 +31,12 @@ that distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
 experimental regression path.
 
+Native V1 predicate filtering is enabled on Ray 2.57, 2.58, and 2.59. Earlier releases in the
+dependency window keep their existing read behavior. Public Dataset contract tests cover accepted
+predicates, rejected residuals, source branches, projections, and limits. The expression classes
+are DeveloperAPI alpha despite their public import path. The
+[reading guide](user-guide/read-data.md#use-native-dataset-predicates) lists the supported subset.
+
 ## Understand the Doris target
 
 The experimental `auto_native_read=True` optimization is a separate opt-in profile targeting
@@ -80,6 +86,14 @@ The Flight extra is conditional on Python 3.10 or newer because the supported Ar
 ## Review the Ray API boundary
 
 `ray-doris` uses Ray's documented Datasource extension interfaces and doesn't import `ray.data._internal` modules. Ray documents `ReadTask` as DeveloperAPI, not a minor-version-stable public API.
+
+Automatic V1 column pruning is enabled only on verified final Ray 2.58.0
+and 2.59.0 releases, including accepted local build suffixes, with matching
+public hook signatures. Other versions in the dependency window retain their
+existing behavior; use explicit `columns` to prune their scans. This feature
+does not narrow the installation range. Native empty projections use the
+documented `BlockAccessor` DeveloperAPI, whose compatibility is tested alongside
+the datasource hooks. No private Ray module is imported.
 
 Writes use the documented `Datasink` and `Dataset.write_datasink()` interfaces. The compatibility
 layer explicitly models the Datasink generation split:

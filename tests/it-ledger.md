@@ -1,5 +1,26 @@
 # Integration test ledger
 
+## Shared-storage and master merge validation
+
+The user approved minimal conflict resolution for PR #13, merging master
+`d9e4aae91c41e0b65a54499443f5f8e248814872` into native-read head
+`3e193296810ffad2282eeb2265a98fa8ac3eb99f` without committing or pushing.
+The merge retains projection/predicate hooks, external structured metadata and
+single-query planning. Shared `build_read_sql` now preserves the catalog in both
+bound MySQL and literal Flight forms. Both parents' evidence below is preserved
+as history, not asserted to be a new run on this merged state.
+
+| Suite | Scope and reason | Result |
+| --- | --- | --- |
+| Focused unit diagnostics | External qualified SQL, predicate binding, trusted percent literals, projection/source identity, metadata and reader cleanup | 102 passed, 2.19s; `focused-unit.log` |
+| Final unit and public contracts | Both parents' full unit/contract suites plus external predicate/projection regression | 556 passed, zero skipped, 37 upstream warnings, 31.07s; `unit-contract-final.log` |
+| Static and documentation | Ruff format/lint, strict mypy, docs contracts, strict Sphinx and spelling | Passed; `docs-contract.log`, `docs-strict.log`, `docs-spelling.log` |
+| Real Doris infrastructure | Changed shared SQL rendering and reader/planner combination | Not run in this minimal conflict-resolution step; prior native 94-case and upstream protocol results are historical and do not certify the merged combination |
+
+Evidence root: `/private/tmp/rd-native-master-merge-20261021/`. No Compose,
+memory-budget or CI configuration is changed by this resolution. No infrastructure
+suite, extra runtime baseline, commit or push has been started for this step.
+
 This ledger records the infrastructure and exact code state used for RFC-candidate evidence.
 Reuse requires unchanged covered behavior, configuration, dependencies and infrastructure;
 any source change must have an explicit impact assessment and separate evidence for changed
@@ -325,6 +346,45 @@ cumulative source changes, format eligibility, typed metadata/partition associat
 credential boundaries, close/error paths and reader delegation; no unresolved first-profile defect
 remains. UTC-only timestamp fixture coverage and the deployment limits remain explicitly documented.
 
+## Native V1 predicates: local validation
+
+Protocol evidence was collected in worktree `predicate-pushdown` on base
+`36efb8ff46c89efc5c16875bba3ab869c6534a70`, before commit/push. The protocol-evidence production SHA-256 is
+`839cb37ea9337ce1ae08cfb115b0e73a013406278d1aada17ad4fc5a7d713086`.
+The implementation plan records the exact runtime/test fingerprints and applicability checks.
+
+| Suite | Environment / scope | Result |
+| --- | --- | --- |
+| Full unit and public contracts | Python 3.12.12, Ray 2.59.0, Arrow 26.0.0 | 340 passed, 3 upstream deprecation warnings, 13.14s; `/tmp/ray-doris-predicate-final-unit-contract.log` |
+| Minimal compatibility contracts | Separate Python 3.12.12 environments for Ray 2.57.0, 2.58.0, 2.49.2 | Each 50 passed; native contracts on 2.57/2.58, disabled native hooks and legacy reads on 2.49.2; `/tmp/ray-doris-predicate-ray-<version>.log` |
+| Complete required Doris IT | Python 3.12.12, Ray 2.59.0, Arrow 26.0.0, Doris 4.0.6; dedicated `ray-doris-predicate-it` project | 32 passed, 3 failed, 210.80s. The three SQL-recording cases failed before scans because workers could not import the test probe module. Functional MySQL/Flight native branch, trusted-filter, residual and limit cases passed. Probe now serializes by value and passed isolated deserialization; real SQL evidence remains pending an approved retry. Logs/XML: `/tmp/ray-doris-predicate-required-it/` |
+| Distributed full | Fixed Ray 2.59.0 base, Doris 4.0.6, full profile including new predicate cases; temporary runner copy changes only absolute source directory and Compose/image namespace | Infrastructure startup failed with `Pool overlaps with other one on this address space` before pytest started. No distributed scenarios executed. Logs: `/tmp/ray-doris-predicate-slow-it/` and `/tmp/ray-doris-predicate-slow-launch.log` |
+| Static and documentation | Ruff format/lint, strict mypy, documentation checker, Sphinx strict and spelling | Passed; documentation logs `/tmp/ray-doris-predicate-doc-{strict,spelling}-final.log` |
+| Approved protocol retry | Same three cases only, Python 3.12.12 / Ray 2.59.0 / Doris 4.0.6; temporary CIDR `10.254.127.0/24` and BE mapped Flight port 28050 | 3 failed, 43.18s. Probe serialization is fixed; MySQL integer/null cases reached scans and FE audit shows bound boolean SQL. The BE reached its 2 GiB container / 1.8 GiB process limit (`MEM_ALLOC_FAILED` and Flight `MEM_LIMIT_EXCEEDED`); no result-assertion mismatch identified. Logs/XML: `/tmp/ray-doris-predicate-required-isolated/`. An initial bootstrap collision, before pytest, is retained in `/tmp/ray-doris-predicate-required-retry/`. |
+| Approved distributed full retry | Python 3.12.14 / Ray 2.59.0 / Doris 4.0.6; 1 FE, 3 BE, 3 Ray workers, 3 GiB per BE, 10,000 rows and 5s stress; temporary CIDR `10.254.253.0/24` with matching priority networks/TLS SANs | 11 passed, 12 warnings, 120.36s. Both new MySQL/Flight native predicate cases and all existing fault/read/write scenarios passed. Runtime and Python tests are byte-identical to the worktree; only temporary network/port configuration differs. Logs and passed full manifest: `/tmp/ray-doris-predicate-slow-retry-it/`. |
+| Final approved 3 GiB protocol retry | Same three MySQL/Flight/auto cases; Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0 / Doris 4.0.6; required BE `mem_limit: 3g`; runtime/test/config SHA-256 `2ff70fd843dfb8265450767984a140719e8d25727974ac49b53b764507d9335a` | 3 passed, 3 upstream deprecation warnings, 336.79s. Real planning SQL, MySQL bound values, Flight/auto literal SQL and row equivalence assertions passed. Docker inspect verified 3221225472 bytes for BE memory. Logs/XML: `/tmp/ray-doris-predicate-required-3g-final/`. A corrected temporary script-path bootstrap, before pytest, is retained in `/tmp/ray-doris-predicate-required-3g/`. |
+| Pre-commit import-policy checks | Deferred public-module loading and conditional test imports only; no SQL, protocol, predicate, or assertion changes. Production SHA-256 `b9dd6c5a979d794cdd33796846b26c1e1c8a92f8188d32760f41ad9e206e11b6`; runtime/test/config SHA-256 `5c5bfd8e9973a2e8969b93f842bcef62c3b4282d246100c47cb3e3aa7f157530` | Full unit/public contracts: 340 passed in 13.40s. Minimal compiler/compatibility/read contracts: 36 passed on each Ray 2.57.0, 2.58.0 and 2.49.2 baseline. Logs `/tmp/ray-doris-predicate-precommit-unit-contract.log` and `/tmp/ray-doris-predicate-precommit-ray-<version>.log`. Ruff, mypy, docs checker and Python-safety layer passed. |
+
+Both infrastructure attempts cleaned only their own project resources and custom images. Other
+chats were concurrently using Docker. The additional untagged image observed after slow cleanup
+has an existing registry digest, no project label, and an August creation date; it was preserved.
+The network-overlap source was absent on subsequent inspection; no existing network was removed.
+The user subsequently requested rollback of the required-IT memory increase: `be.mem_limit` is
+restored to `2g`, and the Compose file matches HEAD. Production source, Python tests and CI/workflow
+memory remain unchanged. The three 3 GiB protocol passes above are historical local evidence;
+they do not prove the restored 2 GiB required/CI configuration passes. Its latest protocol run
+failed on BE memory limits. The primary, compatibility, earlier 32 required and independently
+configured full slow results retain their recorded applicability. No tests were rerun for the
+rollback. All prior exact-project cleanup evidence is preserved.
+
+The pre-commit import cleanup preserves lazy optional loading and legacy-version guards. After
+normalizing only import loading, imported-symbol qualification and import placement, the functional
+ASTs of all five affected files are unchanged; `/tmp/ray-doris-predicate-import-equivalence.json`
+records that comparison. New unit/contract and compatibility checks cover the import changes; the
+recorded database/slow evidence remains applicable to the unchanged SQL/protocol behavior.
+The restored 2 GiB budget still has no passing protocol-recording result; no additional container
+suite was run or claimed. Commit/push authorization does not change that validation limitation.
+
 | Code state | Suite/profile | Environment and coverage | Result |
 | --- | --- | --- | --- |
 | Merged `master` commit `a3d2ef2e90f9100f97ea646b7b59fe26fbdf1448` (the `release-evidence-alignment` worktree has been cleaned) | `tests/slow_integration/run.sh` (`core`) | Ray 2.58.0, Python 3.12, Doris 4.0.6; runner preflight, one Ray head, three Ray workers, one FE, three BEs, isolated Compose build/start/cleanup, and tablet task/worker distribution | `Code complete`; repository runner count is 0, so no `core` or `full` execution evidence exists. Run only for the final `1.1` candidate after a runner with both `ray-doris-slow-it` and `ray-doris-slow-it-node24` labels is available |
@@ -492,3 +552,67 @@ Doris evidence remains valid under the no-runtime-change test reuse rule.
 User-approved development identity `1.3.dev0` on 2026-10-13; source-state SHA-256 excluding this ledger: `0eb9014d10761750af78cd3018ee0893e5f56952c6c1632f85051803b931a37c`. Primary runtime: Python 3.12.12 / Ray 2.59.0. Full unit suite: 320 passed, zero skipped; Ruff format/lint, mypy, workflow/version policies and strict documentation/spelling passed. Wheel/sdist build, Twine checks and isolated non-editable installs passed, with exact development metadata, public imports, dependency checks and production source-byte comparisons. Logs, artifact hashes and XML: `/tmp/ray-259-development-versions-20261013/`.
 
 This follow-up changes version metadata, release/CI validation and direct regressions, with no additional data-path or test-infrastructure change. Retain the recorded functional contracts and real database/cluster IT; no such IT was rerun. It does not certify an exact published release SHA or a remote Actions run. No commit, push or publication performed.
+
+## V1 projection pushdown validation
+
+Evidence recorded on 2026-10-21 for the uncommitted `projection-pushdown` worktree on
+base `36efb8ff46c89efc5c16875bba3ab869c6534a70`. Production changes are limited to
+`datasource.py` and `_compat.py`; the source fingerprints and complete logs are retained
+under `/tmp/ray-doris-projection-validation/`. The approved implementation preserves the
+installation window and enables automatic column pruning only on verified Ray 2.58.0/2.59.0.
+
+| Suite | Runtime and scope | Result |
+| --- | --- | --- |
+| Primary unit and public contracts | Python 3.12.12 / Ray 2.59.0; complete suite | 352 passed, zero skipped. After the test recorder correction, the final 9-case projection contract passed again; repeated runs are not counted as additional coverage. |
+| Compatibility | Ray 2.58.0 enabled; Ray 2.57.0 and 2.49.2 retain native behavior | 47 affected unit cases and 9 projection contracts passed on each target; the corrected recorder was exercised by all four Ray contract baselines. |
+| Initial required IT | Doris 4.0.6 / Ray 2.59.0; checked-in 2 GiB BE limit | 27 passed, 15 failed in 137.96s. One new assertion used an iterable as an iterator; BE logs also showed 1.87 GiB RSS above a 1.80 GiB process limit, rejecting reads and existing writes. Retained in `doris/`; this is failed evidence. |
+| Approved required IT recovery | Python 3.12.12 / Ray 2.59.0 / PyArrow 26.0.0 / PyMySQL 1.2.3 / ADBC 1.12.0 / Doris 4.0.6; corrected tests and temporary 3 GiB BE override | 42 passed, zero skipped, 214.14s. Includes actual MySQL/Flight execute-boundary SQL, cached branches, column order/nullability, filter dependencies, native empty projections, planning fallback and existing write regressions. Logs and source fingerprints: `doris-recovery/`. |
+| Initial distributed core | Ray 2.59.0 / Doris 4.0.6; three workers and three 3 GiB BEs | 1 passed, 2 failed in 22.14s. Projected SQL, row counts and sums passed; node checks failed because the test recorder reported its actor node instead of the caller. Retained in `core/`. |
+| Approved corrected core | Python 3.12.14 / fixed Ray 2.59.0 base / Doris 4.0.6; one head, three workers, one FE and three 3 GiB BEs | 3 passed, zero skipped, 21.59s. Actual projected MySQL and Flight SQL, expected row counts/sums and participation by all three workers passed. Logs and source fingerprints: `core-recovery/`. |
+
+Both recovery suites ran once after explicit user approval and exited successfully. Compose
+startup used `--no-build`; proxy variables were cleared for Docker operations. Per-run images
+and the exact test project containers, networks and volumes were reclaimed. Shared base images
+were retained. The core profile does not generate full slow-suite or release evidence.
+
+Ruff lint/format, strict mypy, documentation contracts, Sphinx strict/spelling, shell syntax,
+whitespace checks and cumulative static self-review passed. No remaining production-code
+defect was identified. The checked-in required-IT BE default remains 2 GiB: successful local
+evidence applies to the approved temporary 3 GiB profile, and the recorded 2 GiB memory
+rejection remains a CI resource risk. No commit, push, PR, tag or release was performed.
+
+Pre-push test-only import cleanup passed the same 56 affected unit/contract cases on each of
+Ray 2.49.2, 2.57.0, 2.58.0 and 2.59.0. Production source, query execution, schema/row checks
+and caller-node recording are unchanged. The lazy optional Flight import now reports missing
+ADBC explicitly; the successful installed-ADBC path uses the same Cursor. The required IT and
+core results above remain applicable without repeating those long suites.
+
+## Predicate and projection merge validation
+
+User-approved conflict resolution on 2026-10-21 merges projection base
+`d795631536e1e2e5d7119ae48e9fff02b9db9ca0` into predicate head
+`cd1d56e2eda8870cdcd684566148a72cb74aeda8`, without a commit or push. Both
+datasource capabilities and both distributed test functions are retained. Synthetic
+projection fixtures keep filtering in Ray; SQL-backed native contracts independently
+exercise combined filtering, projection order, omitted dependency columns and empty
+projections. Production SHA-256 is
+`6774d754fbfaf7c898f0818c288549011ec974666dc1d7c7a422a2f85bef1cfd`.
+
+| Suite | Coverage, code state and overlap | Result |
+| --- | --- | --- |
+| Focused diagnostics | Merged datasource, predicate units and both public read contracts; initial fixture corrections before final evidence | Final focused run: 27 passed in 18.39s. Initial diagnostics identified a native empty-projection representation assertion and a worker-side fixture patch; both were corrected without production logic changes. Sandbox Ray startup failure is retained separately. |
+| Final unit and contracts | Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0; merged production and final tests | 375 passed, zero skipped, four upstream warnings, 25.32s. One complete primary run after focused corrections. |
+| Required Doris IT | Exactly one complete suite on Doris 4.0.6 / Ray 2.59.0; required BE remains 2 GiB, confirmed as 2147483648 bytes | 29 passed, 20 failed, zero skipped, 391.20s. MySQL and Flight native SQL-recording cases passed; auto and later read/write cases failed with Doris runtime exceptions. BE logs show repeated `MEM_ALLOC_FAILED` and process memory above its 1.80 GiB limit. Combined real-protocol cases did not pass; no automatic retry or memory increase. |
+| Distributed targeted | Exactly the two conflicting test functions, each on MySQL and Flight; three Ray workers, three BEs, Python 3.12.14 / Ray 2.59.0 / Doris 4.0.6; runtime-only BE override of 2 GiB for this request | Four failed in 11.25s with Doris read exceptions. Cluster logs confirm `MEM_ALLOC_FAILED` at the 1.80 GiB process limit; all three containers were inspected at 2147483648 bytes. No slow full run, release result or additional retry. |
+| Static and documentation | Ruff lint/format, strict mypy, documentation checker, Sphinx strict/spelling, whitespace and cumulative self-review | Passed. Sphinx inventory downloads required host/proxy access; no documentation error remained. Six core datasource methods retain the corresponding predicate/projection parent ASTs. |
+| Reused evidence | Unchanged SQL compiler/rendering/reader behavior and version gates; unaffected full slow scenarios and separate-feature compatibility checks | Retain earlier evidence with its recorded runtime and memory settings. Earlier 3 GiB results do not prove that the merged 2 GiB runs pass. |
+
+Complete logs, JUnit XML, failure classification, source manifest, runtime versions,
+AST comparison and actual diffs are under
+`/tmp/ray-doris-predicate-merge-validation/`. Temporary configurations isolate network
+addresses and service ports; Python source and tests match the worktree. Required
+Compose and CI workflows are unchanged. The slow suite's checked-in 3 GiB default is
+also unchanged; only this targeted invocation used `RAY_DORIS_BE_MEMORY_LIMIT=2g`.
+Both precise Compose projects, their volumes/networks and custom images were cleaned;
+the two pre-existing dangling images were retained. No tests were skipped, assertions
+relaxed, infrastructure memory increased, commit created or remote branch pushed.
