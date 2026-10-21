@@ -1,0 +1,80 @@
+# Combine with tests/integration/docker-compose.yml; keep one isolated project.
+networks:
+  doris:
+    name: ray-doris-it-native-doris
+services:
+  fe:
+    image: ${NATIVE_FE_IMAGE:?}
+    build: !reset null
+  be:
+    image: ${NATIVE_BE_IMAGE:?}
+    build: !reset null
+    mem_limit: 3g
+  hms:
+    image: apache/gravitino-ci:hive-0.1.20
+    entrypoint: ["bash", "/fixture/hms-entrypoint.sh"]
+    volumes:
+      - ${NATIVE_FIXTURE_DIR:?}/hms-entrypoint.sh:/fixture/hms-entrypoint.sh:ro
+    hostname: hms
+    environment:
+      HIVE_RUNTIME_VERSION: hive3
+      S3_ACCESS_KEY: ${NATIVE_S3_USER:?}
+      S3_SECRET_KEY: ${NATIVE_S3_PASSWORD:?}
+      S3_ENDPOINT: http://minio:9000
+    networks:
+      doris:
+        ipv4_address: 172.16.127.4
+    mem_limit: 4g
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${NATIVE_S3_USER:?}
+      MINIO_ROOT_PASSWORD: ${NATIVE_S3_PASSWORD:?}
+    networks:
+      doris:
+        ipv4_address: 172.16.127.5
+    mem_limit: 512m
+  ray-head:
+    image: ${NATIVE_RAY_IMAGE:?}
+    command: ["ray", "start", "--head", "--port=6379", "--num-cpus=0", "--object-store-memory=134217728", "--include-dashboard=false", "--block"]
+    environment: &runtime-env
+      PYTHONPATH: /workspace/src
+      NATIVE_S3_USER: ${NATIVE_S3_USER:?}
+      NATIVE_S3_PASSWORD: ${NATIVE_S3_PASSWORD:?}
+    networks:
+      doris:
+        ipv4_address: 172.16.127.6
+    volumes: &code-mounts
+      - ${NATIVE_LOG_DIR:?}:/evidence
+      - ${NATIVE_SOURCE_DIR:?}/src:/workspace/src:ro
+      - ${NATIVE_SOURCE_DIR:?}/tests:/workspace/tests:ro
+    mem_limit: 3g
+    shm_size: 256m
+  ray-worker-a:
+    image: ${NATIVE_RAY_IMAGE:?}
+    command: ["ray", "start", "--address=ray-head:6379", "--num-cpus=1", "--object-store-memory=134217728", "--block"]
+    environment: *runtime-env
+    volumes: *code-mounts
+    networks: [doris]
+    mem_limit: 3g
+    shm_size: 256m
+  ray-worker-b:
+    image: ${NATIVE_RAY_IMAGE:?}
+    command: ["ray", "start", "--address=ray-head:6379", "--num-cpus=1", "--object-store-memory=134217728", "--block"]
+    environment: *runtime-env
+    volumes: *code-mounts
+    networks: [doris]
+    mem_limit: 3g
+    shm_size: 256m
+  spark-producer:
+    image: apache/spark:3.5.8
+    user: root
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command: ["--master", "local[2]", "/fixture/spark-fixture.py"]
+    volumes:
+      - ${NATIVE_FIXTURE_DIR:?}/spark-fixture.py:/fixture/spark-fixture.py:ro
+    networks: [doris]
+    environment:
+      HADOOP_USER_NAME: root
+    mem_limit: 2g

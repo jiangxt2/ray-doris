@@ -78,7 +78,7 @@ def _validate_config_serialization(config: DorisReadConfig) -> None:
 
 
 class DorisDatasource(Datasource):
-    """A Ray V1 datasource that reads one internal-catalog Doris table.
+    """A Ray V1 datasource that reads one table through Doris.
 
     This extension uses Ray's documented ``Datasource`` API and the
     ``ReadTask`` DeveloperAPI. It never imports Ray Data private modules.
@@ -93,6 +93,7 @@ class DorisDatasource(Datasource):
         *,
         table: str,
         host: str,
+        catalog: Optional[str] = None,
         mysql_port: int = 9030,
         http_port: int = 8030,
         flight_port: int = 8070,
@@ -119,6 +120,7 @@ class DorisDatasource(Datasource):
         initialize_datasource()
         self._config = DorisReadConfig.from_options(
             table=parse_table(table),
+            catalog=None if catalog == "internal" else catalog,
             host=host,
             mysql_port=mysql_port,
             http_port=http_port,

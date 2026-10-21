@@ -11,8 +11,9 @@ import pyarrow as pa
 import ray
 from ray.data.block import BlockAccessor, BlockMetadata
 from ray.data.datasource import Datasink, Datasource, ReadTask
+from ray.data.datasource.partitioning import Partitioning, PartitionStyle
 
-from ray_doris._errors import DorisConfigurationError
+from ray_doris._errors import DorisConfigurationError, _NativeReadNotApplicableError
 
 _MIN_RAY_VERSION = (2, 49, 2)
 _MAX_RAY_VERSION = (2, 60, 0)
@@ -52,6 +53,76 @@ def ensure_supported_ray_version() -> None:
             "PEP 440 local build suffixes are allowed, but prerelease and post-release builds "
             f"are unsupported; found Ray {_RAY_VERSION!r}"
         )
+
+
+def ensure_native_ray_version() -> None:
+    """Check public reader capabilities within the package compatibility window."""
+    ensure_supported_ray_version()
+    required = {
+        "paths",
+        "filesystem",
+        "columns",
+        "partitioning",
+        "file_extensions",
+        "concurrency",
+        "override_num_blocks",
+        "ray_remote_args",
+    }
+    if not required <= inspect.signature(ray.data.read_parquet).parameters.keys():
+        raise _NativeReadNotApplicableError("Ray lacks required public Parquet reader parameters")
+    if (
+        not {"batch_format", "batch_size", "concurrency"}
+        <= inspect.signature(ray.data.Dataset.map_batches).parameters.keys()
+    ):
+        raise _NativeReadNotApplicableError("Ray lacks required public batch mapping parameters")
+
+
+def native_uses_datasource_v2() -> bool:
+    """Identify the configured reader or the supported legacy public signature."""
+    ensure_native_ray_version()
+    context = ray.data.DataContext.get_current()
+    if hasattr(context, "use_datasource_v2"):
+        value = context.use_datasource_v2
+        if not isinstance(value, bool):
+            raise _NativeReadNotApplicableError(
+                "Ray reader selection is not a known boolean setting"
+            )
+        return value
+    if "ignore_missing_paths" not in inspect.signature(ray.data.read_parquet).parameters:
+        return False
+    raise _NativeReadNotApplicableError("Ray reader generation cannot be established")
+
+
+def native_parquet_options(
+    *, base_dir: str, filesystem: Any, partitioning: Optional[Partitioning]
+) -> dict[str, Any]:
+    """Adapt public parameters without leaking new kwargs to legacy Arrow."""
+    ensure_native_ray_version()
+    options: dict[str, Any] = {}
+    if "ignore_missing_paths" in inspect.signature(ray.data.read_parquet).parameters:
+        options["ignore_missing_paths"] = False
+    elif partitioning is None:
+        # Legacy readers cannot combine projected columns with partitioning=None.
+        # An explicit empty scheme retains projection without discovering parent keys.
+        ensure_native_partitioning()
+        partitioning = Partitioning(
+            PartitionStyle.HIVE,
+            base_dir=base_dir,
+            field_names=[],
+            field_types={},
+            filesystem=filesystem,
+        )
+    options["partitioning"] = partitioning
+    return options
+
+
+def ensure_native_partitioning() -> None:
+    """Require typed partition metadata only for partitioned sources."""
+    if (
+        not {"base_dir", "field_names", "field_types", "filesystem"}
+        <= inspect.signature(Partitioning).parameters.keys()
+    ):
+        raise _NativeReadNotApplicableError("Ray lacks required typed Hive partitioning parameters")
 
 
 def make_read_task(

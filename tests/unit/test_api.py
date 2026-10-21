@@ -1,4 +1,5 @@
 from importlib.metadata import requires, version
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -6,7 +7,8 @@ import pytest
 from ray_doris import __version__, read_doris
 
 
-def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
+@pytest.mark.parametrize("read_options", [{}, {"auto_native_read": False}], ids=["default", "off"])
+def test_read_doris_uses_public_ray_entrypoint(monkeypatch, read_options) -> None:
     read_datasource = Mock(return_value="dataset")
     monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read_datasource)
     result = read_doris(
@@ -21,6 +23,7 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
         concurrency=2,
         override_num_blocks=4,
         ray_remote_args={"num_cpus": 0.25},
+        **read_options,
     )
     assert result == "dataset"
     datasource = read_datasource.call_args.args[0]
@@ -37,17 +40,28 @@ def test_read_doris_uses_public_ray_entrypoint(monkeypatch) -> None:
     }
 
 
+@pytest.mark.parametrize("mode", ["doris", "native", "query"])
+def test_read_doris_rejects_removed_read_mode(monkeypatch, mode) -> None:
+    datasource = Mock(side_effect=AssertionError("Doris reader constructed"))
+    native_import = Mock(side_effect=AssertionError("native reader imported"))
+    monkeypatch.setattr("ray_doris._api.DorisDatasource", datasource)
+    monkeypatch.setattr("ray_doris._api.import_module", native_import)
+    with pytest.raises(TypeError, match="read_mode"):
+        read_doris(table="db.table", host="unused", read_mode=mode)
+    datasource.assert_not_called()
+    native_import.assert_not_called()
+
+
 def test_read_doris_unknown_parameter_fails_fast() -> None:
     with pytest.raises(TypeError):
         read_doris(table="db.table", host="fe", overrid_num_blocks=4)
 
 
 def test_package_does_not_import_ray_internal_modules() -> None:
-    from pathlib import Path
-
     source = Path(__file__).parents[2] / "src" / "ray_doris"
+    private_module = ".".join(("ray", "data", "_internal"))
     for path in source.glob("*.py"):
-        assert "ray.data._internal" not in path.read_text()
+        assert private_module not in path.read_text()
 
 
 def test_package_version_matches_distribution_metadata() -> None:

@@ -2,19 +2,45 @@
 
 from __future__ import annotations
 
+import logging
+from importlib import import_module
 from typing import Any, Mapping, Optional, Sequence, cast
 
 import ray.data
 from ray.data import Dataset
 
-from ray_doris._models import FlightScheme, HttpScheme, QueryPlanPolicy, Transport
+from ray_doris._errors import DorisConfigurationError, _NativeReadNotApplicableError
+from ray_doris._models import (
+    FlightScheme,
+    HttpScheme,
+    NativeReadOptions,
+    QueryPlanPolicy,
+    Transport,
+)
 from ray_doris.datasource import DorisDatasource
+
+logger = logging.getLogger(__name__)
+_NATIVE_MYSQL_OPTIONS = {
+    "read_timeout",
+    "write_timeout",
+    "ssl",
+    "ssl_ca",
+    "ssl_cert",
+    "ssl_key",
+    "ssl_verify_cert",
+    "ssl_verify_identity",
+    "ssl_key_password",
+    "ssl_disabled",
+}
 
 
 def read_doris(
     *,
     table: str,
     host: str,
+    auto_native_read: bool = False,
+    catalog: Optional[str] = None,
+    native_options: Optional[NativeReadOptions] = None,
     mysql_port: int = 9030,
     http_port: int = 8030,
     flight_port: int = 8070,
@@ -38,10 +64,29 @@ def read_doris(
     override_num_blocks: Optional[int] = None,
     ray_remote_args: Optional[Mapping[str, Any]] = None,
 ) -> Dataset:
-    """Create a Ray Dataset by reading a Doris table in streaming tablet splits."""
+    """Read a table through Doris, optionally selecting native Hive Parquet reads.
+
+    ``auto_native_read`` is disabled by default. When enabled, a compatible Hive
+    table can use Ray's public Parquet reader with independent HMS/storage access
+    and immutable published files. Known unsupported cases retain Doris reading;
+    authentication, storage and inconsistent-metadata errors remain visible.
+    This API accepts a table identifier, not a complete SQL statement. A selected
+    native read never replays through Doris after execution begins.
+
+    See {doc}`the native Hive Parquet guide </user-guide/native-read>` for
+    per-file footer overhead, version limits and independent source authorization.
+    Native reads do not execute Doris row filters or column masking.
+    """
+    if not isinstance(auto_native_read, bool):
+        raise DorisConfigurationError("auto_native_read must be a boolean")
+    if native_options is not None and not isinstance(native_options, NativeReadOptions):
+        raise DorisConfigurationError("native_options must be NativeReadOptions")
+    if not auto_native_read and native_options is not None:
+        raise DorisConfigurationError("native_options require auto_native_read=True")
     datasource = DorisDatasource(
         table=table,
         host=host,
+        catalog=catalog,
         mysql_port=mysql_port,
         http_port=http_port,
         flight_port=flight_port,
@@ -62,6 +107,42 @@ def read_doris(
         client_kwargs=client_kwargs,
         flight_options=flight_options,
     )
+    if auto_native_read:
+        try:
+            if catalog is None or catalog == "internal":
+                raise _NativeReadNotApplicableError("native reads require an external Hive catalog")
+            if (
+                datasource.config.filter is not None
+                or transport != "mysql"
+                or tablet_size != 1
+                or batch_size != 10_000
+                or flight_options is not None
+                or query_plan_timeout is not None
+                or on_query_plan_error != "single_task"
+                or http_port != 8030
+                or flight_port != 8070
+                or http_scheme != "http"
+                or flight_scheme != "grpc"
+                or http_ca_file is not None
+                or set(datasource.config.mysql_options()).difference(_NATIVE_MYSQL_OPTIONS)
+            ):
+                raise _NativeReadNotApplicableError("explicit read options require Doris execution")
+            native = import_module("ray_doris._native")
+            return cast(
+                Dataset,
+                native.read_native(
+                    datasource.config,
+                    catalog,
+                    native_options or NativeReadOptions(),
+                    concurrency=concurrency,
+                    override_num_blocks=override_num_blocks,
+                    ray_remote_args=ray_remote_args,
+                ),
+            )
+        except _NativeReadNotApplicableError as exc:
+            logger.info("Doris read path=doris reason=%s", exc)
+    else:
+        logger.info("Doris read path=doris reason=automatic native reads disabled")
     return cast(
         Dataset,
         ray.data.read_datasource(

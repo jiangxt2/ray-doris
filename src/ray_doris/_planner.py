@@ -22,23 +22,25 @@ from ray_doris._errors import (
     DorisPlanningError,
     DorisSchemaError,
 )
+from ray_doris._metadata import ExternalMetadataReader
 from ray_doris._models import (
     DorisInputSplit,
     DorisPlan,
     DorisPlanningSnapshot,
     DorisReadConfig,
 )
-from ray_doris._schema import build_arrow_schema, parse_describe_rows
+from ray_doris._schema import DorisColumn, build_arrow_schema, parse_describe_rows
 from ray_doris._sql import build_describe_sql, build_read_sql
 
 _MYSQL_AUTHENTICATION_ERROR_CODES = {1045}
-_MYSQL_PERMISSION_ERROR_CODES = {1044, 1142, 1143, 1227}
+_MYSQL_PERMISSION_ERROR_CODES = {1044, 1142, 1143, 1221, 1227, 5087}
 
 logger = logging.getLogger(__name__)
 
 
 def _table_context(config: DorisReadConfig) -> str:
-    return f"{config.table.database}.{config.table.table}"
+    prefix = "" if config.catalog is None else config.catalog + "."
+    return f"{prefix}{config.table.database}.{config.table.table}"
 
 
 def _mysql_error_code(exc: pymysql.MySQLError) -> Any:
@@ -53,7 +55,11 @@ def _mysql_access_error(
         return DorisAuthenticationError(
             f"Doris rejected {operation} credentials for {context} (MySQL error {code})"
         )
-    if code in _MYSQL_PERMISSION_ERROR_CODES:
+    catalog_denial = code == 1105 and any(
+        isinstance(arg, str) and "Access denied for user" in arg and "to catalog" in arg
+        for arg in exc.args
+    )
+    if code in _MYSQL_PERMISSION_ERROR_CODES or catalog_denial:
         return DorisPermissionError(f"Doris denied {operation} for {context} (MySQL error {code})")
     return None
 
@@ -145,10 +151,11 @@ def _mysql_connection_kwargs(config: DorisReadConfig, *, streaming: bool) -> Dic
         "port": config.mysql_port,
         "user": config.user,
         "password": config.resolve_password(),
-        "database": config.table.database,
         "charset": "utf8mb4",
         "connect_timeout": config.connect_timeout,
     }
+    if config.catalog is None:
+        kwargs["database"] = config.table.database
     if streaming:
         kwargs["cursorclass"] = pymysql.cursors.SSCursor
     kwargs.update(options)
@@ -310,6 +317,9 @@ class DorisPlanner:
     def discover(self) -> DorisPlanningSnapshot:
         """Discover schema and tablets once for one Ray datasource instance."""
         schema = self.describe_schema()
+        if self._config.catalog is not None:
+            # Doris external tables have no internal tablet query-plan contract.
+            return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
         base_sql, _ = build_read_sql(self._config, tablet_ids=None)
         try:
             tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
@@ -354,23 +364,36 @@ class DorisPlanner:
 
     def _describe_schema(self) -> pa.Schema:
         try:
-            connection = pymysql.connect(**_mysql_connection_kwargs(self._config, streaming=False))
+            kwargs = _mysql_connection_kwargs(self._config, streaming=False)
+            if self._config.catalog is not None:
+                kwargs["cursorclass"] = pymysql.cursors.DictCursor
+            connection = pymysql.connect(**kwargs)
             try:
                 cursor = connection.cursor()
                 try:
-                    cursor.execute(build_describe_sql(self._config.table))
-                    rows: List[Sequence[Any]] = []
-                    while True:
-                        batch = cursor.fetchmany(256)
-                        if not batch:
-                            break
-                        rows.extend(batch)
+                    if self._config.catalog is None:
+                        cursor.execute(build_describe_sql(self._config.table))
+                        rows: List[Sequence[Any]] = []
+                        while True:
+                            batch = cursor.fetchmany(256)
+                            if not batch:
+                                break
+                            rows.extend(batch)
+                        columns: Sequence[DorisColumn] = parse_describe_rows(rows)
+                    else:
+                        columns = ExternalMetadataReader(cursor).columns(
+                            self._config.table, self._config.catalog
+                        )
                 finally:
                     cursor.close()
             finally:
                 connection.close()
         except DorisConfigurationError:
             raise
+        except DorisSchemaError as exc:
+            raise DorisSchemaError(
+                f"failed to build Arrow schema for {_table_context(self._config)}: {exc}"
+            ) from exc
         except OSError:
             context = _table_context(self._config)
             if _mysql_tls_is_configured(self._config):
@@ -392,7 +415,6 @@ class DorisPlanner:
                 f"failed to discover Doris schema for {context} (MySQL error {code!r})"
             ) from None
         try:
-            columns = parse_describe_rows(rows)
             return build_arrow_schema(columns, self._config.columns)
         except DorisSchemaError as exc:
             raise DorisSchemaError(

@@ -72,6 +72,7 @@ _EXPECTED_API_TARGETS = frozenset(
         "ray_doris.DorisWriteError",
         "ray_doris.DorisWriteOptions",
         "ray_doris.DorisWriteResult",
+        "ray_doris.NativeReadOptions",
         "ray_doris.read_doris",
         "ray_doris.write_doris",
     }

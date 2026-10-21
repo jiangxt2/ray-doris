@@ -67,6 +67,7 @@ Map public exceptions to configuration, planning, permission, schema, and worker
 :maxdepth: 2
 
 read-data
+native-read
 write-data
 configure-transports
 tune-parallelism

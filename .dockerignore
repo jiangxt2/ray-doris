@@ -8,3 +8,7 @@
 !tests/
 !tests/slow_integration/
 !tests/slow_integration/**
+!tests/integration/
+!tests/integration/**
+!tests/native_integration/
+!tests/native_integration/**

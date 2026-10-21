@@ -10,5 +10,11 @@ repos:
     hooks:
       - id: check-toml
       - id: check-yaml
+        exclude: ^tests/native_integration/docker-compose\.yml$
+      - id: check-yaml
+        name: check compose yaml
+        # Compose uses !reset to remove inherited build definitions.
+        files: ^tests/native_integration/docker-compose\.yml$
+        args: [--unsafe]
       - id: end-of-file-fixer
       - id: trailing-whitespace

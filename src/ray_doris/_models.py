@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Tuple
 
 import pyarrow as pa
+from pyarrow.fs import FileSystem
 
 from ray_doris._errors import DorisConfigurationError
 
@@ -41,6 +42,37 @@ _RESERVED_FLIGHT_OPTIONS = {
     "uri",
     "username",
 }
+
+
+@dataclass(frozen=True)
+class NativeReadOptions:
+    """Options for experimental, ordinary Hive Parquet reads.
+
+    HMS currently uses plain Thrift in a trusted network. Storage authorization
+    belongs to the supplied Arrow filesystem or its standard credential chain.
+    Files must remain unchanged throughout Dataset consumption.
+    """
+
+    hms_uri: Optional[str] = field(default=None, repr=False)
+    filesystem: Optional[FileSystem] = field(default=None, repr=False)
+    metadata_timeout: float = 10.0
+    max_partitions: int = 10_000
+    max_files: int = 100_000
+
+    def __post_init__(self) -> None:
+        DorisReadConfig._validate_timeout("metadata_timeout", self.metadata_timeout)
+        for name, value, maximum in (
+            ("max_partitions", self.max_partitions, 32_766),
+            ("max_files", self.max_files, 1_000_000),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise DorisConfigurationError(f"{name} must be between 1 and {maximum}")
+        if self.hms_uri is not None and (
+            not isinstance(self.hms_uri, str) or not self.hms_uri.strip()
+        ):
+            raise DorisConfigurationError("hms_uri must be a Thrift URI")
+        if self.filesystem is not None and not isinstance(self.filesystem, FileSystem):
+            raise DorisConfigurationError("filesystem must be an Arrow FileSystem")
 
 
 @dataclass(frozen=True)
@@ -117,6 +149,7 @@ class DorisReadConfig:
     query_plan_timeout: Optional[float] = None
     client_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
     flight_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
+    catalog: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate scalar settings without performing network I/O."""
@@ -124,6 +157,11 @@ class DorisReadConfig:
             raise DorisConfigurationError("host must not be empty")
         if not isinstance(self.user, str) or not self.user:
             raise DorisConfigurationError("user must not be empty")
+        if self.catalog is not None and (
+            not isinstance(self.catalog, str)
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", self.catalog) is None
+        ):
+            raise DorisConfigurationError("invalid catalog name")
         if not isinstance(self.password, str):
             raise DorisConfigurationError("password must be a string")
         if self.password_env is not None and (
@@ -294,7 +332,8 @@ class DorisReadConfig:
         rendered_http_ca = "None" if self.http_ca_file is None else "<configured>"
         return (
             "DorisReadConfig("
-            f"host={self.host!r}, table={self.table!r}, user={self.user!r}, "
+            f"host={self.host!r}, table={self.table!r}, "
+            f"catalog={self.catalog!r}, user={self.user!r}, "
             f"password=<redacted>, password_env={rendered_password_env}, "
             f"mysql_port={self.mysql_port}, http_port={self.http_port}, "
             f"flight_port={self.flight_port}, http_scheme={self.http_scheme!r}, "

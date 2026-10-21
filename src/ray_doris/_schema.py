@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 import pyarrow as pa
 
@@ -31,6 +31,34 @@ class DorisColumn:
     name: str
     doris_type: str
     nullable: bool
+
+
+def information_schema_type(value: str) -> str:
+    """Normalize BOOLEAN's display type on the two verified Doris branches."""
+    return "BOOLEAN" if value.strip().upper() == "TINYINT(1)" else value
+
+
+def parse_information_schema_rows(rows: Iterable[Mapping[str, Any]]) -> Tuple[DorisColumn, ...]:
+    """Reuse Doris's structured external columns without DESCRIBE display aliases."""
+    columns = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise DorisSchemaError("invalid external column metadata")
+        name, data_type, nullable = (
+            row.get("COLUMN_NAME"),
+            row.get("COLUMN_TYPE"),
+            row.get("IS_NULLABLE"),
+        )
+        if (
+            not isinstance(name, str)
+            or not isinstance(data_type, str)
+            or nullable not in ("YES", "NO")
+        ):
+            raise DorisSchemaError("invalid external column metadata")
+        columns.append(DorisColumn(name, information_schema_type(data_type), nullable == "YES"))
+    if not columns:
+        raise DorisSchemaError("external column metadata is empty")
+    return tuple(columns)
 
 
 def parse_describe_rows(rows: Iterable[Sequence[Any]]) -> Tuple[DorisColumn, ...]:

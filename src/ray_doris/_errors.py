@@ -17,6 +17,10 @@ class DorisPlanningError(DorisError):
     """Raised when tablet planning fails."""
 
 
+class _NativeReadNotApplicableError(DorisPlanningError):
+    """A valid table or request outside the automatic file-read profile."""
+
+
 class DorisAuthenticationError(DorisPlanningError):
     """Raised when Doris rejects credentials."""
 
