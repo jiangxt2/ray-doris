@@ -33,6 +33,13 @@ experimental regression path.
 
 ## Understand the Doris target
 
+The experimental `read_mode="native"` is a separate opt-in profile targeting
+Doris 4.0.6 and 3.0.6.2 with Ray 2.59.0. It uses structured Doris metadata,
+independent plain-Thrift HMS access and native Ray Parquet reads from HDFS/S3.
+See [native reads](user-guide/native-read.md) for exact restrictions and
+`tests/it-ledger.md` for recorded validation evidence. The query-mode matrix
+does not certify this additional path.
+
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
 
 - Internal-catalog table reads through MySQL and explicit Flight SQL.

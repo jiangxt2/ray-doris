@@ -15,6 +15,7 @@ from ray_doris._errors import (
     DorisTableCompatibilityError,
     DorisWriteError,
 )
+from ray_doris._models import NativeReadOptions
 from ray_doris.datasource import DorisDatasource
 from ray_doris.write import (
     DorisConnection,
@@ -26,6 +27,7 @@ from ray_doris.write import (
 )
 
 __all__ = [
+    "NativeReadOptions",
     "DorisAuthenticationError",
     "DorisAmbiguousWriteError",
     "DorisConfigurationError",

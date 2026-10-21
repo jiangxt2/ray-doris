@@ -28,6 +28,13 @@ ReadTask payload.
 ```{autofunction} ray_doris.read_doris
 ```
 
+```{autoclass} ray_doris.NativeReadOptions
+:members:
+```
+
+See [shared-storage reads](../user-guide/native-read.md) for the experimental
+`read_mode="native"` scope and independent HMS/filesystem authorization.
+
 ## Construct a datasource
 
 (ray-doris-api-datasource)=

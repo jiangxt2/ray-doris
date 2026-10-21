@@ -1,8 +1,247 @@
 # Integration test ledger
 
-This ledger records the infrastructure and code state used for RFC-candidate evidence. A passing
-result is reusable only while the production source, tests, Compose configuration, dependency
-environment, and target image are unchanged.
+This ledger records the infrastructure and exact code state used for RFC-candidate evidence.
+Reuse requires unchanged covered behavior, configuration, dependencies and infrastructure;
+any source change must have an explicit impact assessment and separate evidence for changed
+branches. A prior fingerprint is never represented as a run of a different code state.
+
+## Shared-storage native read development
+
+### Confirmed review fixes and verification matrix
+
+2026-10-21: the user requested fixes after approving a minimal runtime reproduction.
+Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0 reproduced NULL filling for case-only
+physical fields, V1 NULL partitions and reordered projections, and V2 loss of a
+physical `path` column. Evidence: `/private/tmp/rd-repro-8jempz71/results.json` and
+`reproduction.log`. The UTC timestamp control was correct; general timezone parity
+is not added to this feature. The earlier statement that no defect remained is
+superseded by these results and the corrective verification below.
+
+| Suite | Code/config state and reason | Overlap and execution state |
+| --- | --- | --- |
+| Targeted native contracts and runner lifecycle units | Footer checks, native schema restoration, V2 guards, actual SIGTERM handling and cleanup verification | Initial reader contracts: 38 passed; runner lifecycle: 12 passed. Final full unit/contract suite: 446 passed, zero skipped, 13.28s |
+| Doris 4.0.6 native final IT | Changed reader/schema bridge and fixtures invalidate M's native result; add exact read-node placement, source-schema configuration, raw partition collision and missing/empty registered partitions | 22 passed, 20 upstream warnings, 34.53s; one complete run |
+| Doris 3.0.6.2 native version IT | The same changed native contracts require the approved second-version check | 22 passed, 20 upstream warnings, 30.91s; one complete run in the same matrix |
+| Existing 4.0.6 query/write regression | The default API, planner, query readers, write code and legacy compatibility functions are unchanged by these fixes | Reuse M's 30-pass result; invoke the runner with `--skip-query-regression` to avoid duplicate long tests |
+
+The final matrix must retain source/config fingerprint, per-version XML,
+`read-nodes-hdfs.json`, `read-nodes-s3.json` and `cleanup.json`. Failed or interrupted
+states must be diagnosed and recorded before any necessary retry. No benchmark,
+additional Doris version or complete concurrent-DDL/cache-refresh matrix is added.
+
+Corrective matrix: `/private/tmp/rd-native-fixes-20261021/matrix-final/`, fingerprint
+`9a5156440053da5164495434931b6d6b50ce3bfc29e762bc0cc3f099e79d7821`.
+Both native suites passed and runner exit was zero. `cleanup.json` confirms no owned
+containers, networks, volumes or custom image tags remain. Node JSON records refer to
+the shared Ray cluster; each version's XML separately records its successful read-node tests.
+
+Final self-review found that the new normalization map lost schema for zero-row Parquet
+files. The V1/V2 reproduction is in `empty-file-check.log`. The existing footer read now
+also reads `num_rows` from the same public Arrow `ParquetFile` object and constructs a
+typed empty Dataset when every file has zero rows. This uses the same constructor and
+`schema_arrow` property as Arrow 26's `read_schema`; physical schema checks and the
+nonempty reader path are unchanged. Eight new empty-file contracts and the final full
+446-test suite verify that branch. The successful native profiles have nonempty files or
+no files, so their existing evidence is reused rather than rerunning either long suite.
+
+Final reviewed fingerprint: `bd2ba898ffa6bddfab31ad5b9976ce3ba3f8f2226e77bb3737c8dcd4af024ac4`.
+Evidence and the impact assessment are in `/private/tmp/rd-native-fixes-20261021/`:
+`reviewed-state.json`, `unit-contract-empty-fix-final.log`, final strict/spelling logs,
+wheel/sdist build and Twine logs, and a wheel default-import check with optional HMS
+imports blocked. Ruff lint/format, strict mypy, documentation contracts and `git diff --check`
+passed. The first documentation attempt failed only sandbox DNS/inventory access;
+the unchanged check passed through the configured proxy. No benchmark ran.
+
+### Submission import cleanup
+
+The required pre-push checker identified function-local imports in five files.
+Move ordinary imports to module scope and retain the API's native-only lazy import
+through the existing `import_module` pattern. An AST comparison confirms that the
+other four modules change only import placement; API dispatch arguments, validation
+and the query path remain equivalent. This is not a reader, metadata or fixture change,
+so the two 22-case native results and 30-case query/write result remain applicable.
+
+Runtime/config fingerprint: `ecd06fb89364fb3c4eef5a517a6a8f4a33b3c25e2fb4fe401764ac4caebd23a0`.
+The full unit/contract suite passed again: 446 passed, zero skipped, 36 upstream
+warnings, 15.27s (`unit-contract-precommit-final-host.log`). The sandbox attempt had
+391 passed and 55 setup errors because Ray's process enumeration was denied before
+initialization; no assertion failure occurred. The successful host run verifies all cases.
+All pre-push static layers pass (`pre-push-static-final.log`); its duplicate pytest
+layer is omitted in favor of the full suite. Wheel/sdist build without isolation and
+Twine passed, and the final wheel passes default import/configuration with HMS SDK
+imports blocked and the native module still unloaded. An isolated build attempt was
+blocked while downloading Hatchling by sandbox DNS; the installed backend satisfies
+the declared requirements. Logs are retained in the same evidence directory.
+
+The user approved the minimal hook configuration fix after `check-yaml` rejected
+Compose's valid `!reset` tags. Only the native Compose overlay uses the hook's
+syntax-only `--unsafe` mode; every other YAML file retains safe loading. All seven
+pre-commit hooks pass (`pre-commit-all-final.log`). Compose 5.6.0 configuration
+validation confirms eight image-only services and removal of inherited FE/BE build
+definitions (`compose-config-validation.json`), without starting containers.
+This configuration-only change leaves runtime code, fixtures and all functional
+test evidence unchanged; no unit or infrastructure suite is repeated.
+
+The following 2026-10-20 entries retain the original development history. The corrected
+results and explicit reuse assessment above are the current evidence.
+
+Approved on 2026-10-20: implement Issue #12 and verify multiple cached Doris images. Base
+`36efb8ff46c89efc5c16875bba3ab869c6534a70`; feature branch `shared-storage-native-read`.
+All rows below are planned until an actual result and cumulative source/config fingerprint is recorded.
+
+| Suite | Coverage | Environment | Reason and overlap | Result |
+| --- | --- | --- | --- | --- |
+| Native unit/public reader contracts | Routing, metadata limits, rejection/cleanup, real extensionless Parquet, schema/projection/empty data | Python 3.12 / Ray 2.59.0 | Small local checks during implementation; final full suite once stable | Pending |
+| Native 4.0.6 final IT | Spark fixtures, real HMS/HDFS/S3, registered partitions, metadata-only FE access, multiple Ray workers, negative cases | Cached FE `ad353c79bf58`, BE `a851eab4facf`, Ray `b60863feb40c`; full IDs checked by runner | New path has no reusable prior IT evidence; no preceding complete sub-suite | Pending |
+| Native 3.0.6.2 version IT | Same fixture, Doris structured schema/partition APIs and native-vs-SQL data equivalence | Cached FE `d6de824d7dbe`, BE `fe68ff98e015`; reuse native runtime and source fixture | Explicitly approved additional Doris baseline; exclude unrelated slow stress profiles | Pending |
+| Existing 4.0.6 integration regression | Default query and existing MySQL/Flight/write/permissions behavior | Existing isolated integration services, stable feature code | Entry-point changes invalidate reuse of old API regression results | Pending |
+
+Each long run records code/config fingerprint, exact images, command, logs and result. An identical
+successful state is never rerun. Failed/incomplete runs are retained and repaired before retry;
+the reason must explain why the previous evidence cannot be reused. No benchmark is authorized.
+Preparation commands use exact `ray-doris-it` labels and names; shared base images are preserved.
+
+Development evidence: 355 unit tests passed; eight real local Ray/Parquet contracts passed after
+repairing the V2 extension-filter boundary. Initial local contract execution was blocked by the
+macOS sandbox; the approved unsandboxed retry exposed six real extensionless-reader failures,
+which were fixed by explicit V2 rejection and public V1 opt-in coverage. Logs:
+`/private/tmp/rd-native/unit-final.log`, `local-contract-retry.log`, and
+`local-contract-reader-fix.log` in the same directory.
+
+Matrix preparation attempt A built the custom images and started FE/BE/HMS/HDFS/MinIO/Ray head.
+No functional case ran: the readiness helper omitted port 9030 and tried the MySQL default 3306.
+The exact readiness process was terminated (exit 143); runner cleanup completed. The helper now
+uses 9030. Logs: `/private/tmp/rd-native/matrix-20261020-a/` and `matrix-driver-a.log`.
+A retry is necessary because this attempt provides no functional evidence; added native negative
+fixtures also change the test fingerprint. The next run will record the corrected state.
+
+Attempt B reached Spark publication and pytest, but all 16 cases errored in the shared fixture
+before connector assertions: the cached ARM64 Hive image bundles an x86-64 `libhdfs.so`.
+Binary inspection confirmed the mismatch. Logs: `/private/tmp/rd-native/matrix-20261020-b/`.
+The repair compiles upstream Hadoop 3.3.0 JNI sources for ARM64, verifies library loading in the
+runtime image, and records each verified source blob in the evidence. HDFS/S3 remain real services.
+Additional scalar/INT96 fixtures and explicit HMS S3A configuration are part of the corrected
+state; the previous setup-only errors cannot establish functional compatibility.
+
+Attempt C successfully compiled and loaded the ARM64 JNI library, then all 18 cases stopped in
+fixture setup because `docker compose exec` bypasses the image entrypoint and did not inherit its
+computed CLASSPATH. The runner now invokes the same entrypoint wrapper explicitly for driver
+commands; readiness includes a real HDFS metadata call. No data assertion passed in attempt C.
+Logs: `/private/tmp/rd-native/matrix-20261020-c/`. The retry reuses the verified JNI source/cache,
+preserves the Ray cluster across Doris version changes, and uses a valid managed insert-only
+transactional Hive fixture for the rejection case.
+
+Attempt D passed real HDFS readiness and copied Spark files into S3, but stopped during HMS
+fixture registration before connector assertions. The old HMS context manager masked the raw
+fixture error. Error sanitization now wraps only SDK requests and connection setup, preserving
+non-HMS exceptions (including Doris permission errors); fixture registration records a sanitized
+operation-specific failure. Logs: `/private/tmp/rd-native/matrix-20261020-d/`. Runtime dependency
+installation is now cached separately from source copies; source changes do not redownload the
+same Arrow/SDK dependencies. The failed fixture provides no reusable functional evidence.
+
+Attempt E identified the exact setup failure: HMS `create_table(s3_plain)` timed out. The cached
+Hive S3A template sets credentials/endpoint but omits path-style access, causing requests to use
+unresolvable bucket-prefixed service names. The scoped HMS entrypoint now enables path-style
+access and HTTP for the isolated MinIO endpoint, with bounded connection timeouts. Logs:
+`/private/tmp/rd-native/matrix-20261020-e/`. HDFS table registration completed; connector data
+assertions still did not run. Retry F is required after this configuration correction.
+
+Attempt F did not reach HMS readiness: the cached image invokes `start.sh` through Bash because
+that file is not executable. The new wrapper now mirrors that invocation instead of executing
+the file directly. The runner checks for services that have already exited before entering long
+readiness polling. Logs: `/private/tmp/rd-native/matrix-20261020-f/`. No functional case ran;
+the exact waiting process is terminated to trigger scoped cleanup before retry.
+
+Attempt G completed HMS/S3 registration and entered the first actual reader call. The driver
+terminated with SIGSEGV (exit 139) when constructing PyArrow HDFS after `ray.init()`, matching
+Ray issue #36415 and the official JVM signal-chaining guidance. The runtime now preloads the
+same JDK's `libjsig.so` before Python starts on all Ray nodes and the driver, preserving Ray's
+failure handler. Logs: `/private/tmp/rd-native/matrix-20261020-g/`. No data equivalence assertion
+completed; this failed result cannot replace the corrected functional run.
+
+Attempt H fixed the JVM conflict and reached connector metadata discovery. FE logs showed Hive's
+URI canonicalization turning `hms` into a Docker FQDN containing the default network underscore,
+which Java rejects. The native Compose network now has a valid explicit DNS name with hyphens.
+Logs: `/private/tmp/rd-native/matrix-20261020-h/`. The read failed before row/schema assertions;
+retry is required after correcting this fixture network configuration.
+
+Attempt I reached schema validation and correctly rejected a Doris/HMS type mismatch. Static
+inspection of both target branches confirmed that `information_schema.columns.COLUMN_TYPE`
+uses the MySQL display form `tinyint(1)` for BOOLEAN and `tinyint(4)` for real TINYINT. Native
+metadata now normalizes only that verified representation before reusing the existing Doris
+mapper; the legacy DESCRIBE path is unchanged. A dedicated regression test distinguishes both.
+Logs: `/private/tmp/rd-native/matrix-20261020-i/`. Latest full unit/public contract state before
+this display-normalization fix passed 372 cases, zero skipped, in 14.34s; current targeted tests
+and the corrected integration run are required for the new state.
+
+Attempt J: 9 native 4.0.6 cases passed, including HDFS/S3 plain, registered escaped partitions,
+INT96, full scalar schema/content comparison, projection and empty results. The next negative
+case failed because HMS had created the supposedly missing location during registration; the
+fixture now explicitly removes that isolated directory after registration. This changes test
+setup, not reader behavior. Logs: `/private/tmp/rd-native/matrix-20261020-j/`. A corrected final
+run is necessary for the negative boundary and subsequent cases; the partial pass is retained.
+
+Attempt K passed 15 native 4.0.6 cases. The denied-catalog case failed only its public error-class
+assertion: Nereids wraps the catalog denial as MySQL 1105 instead of exposing 5087/1221. Native
+metadata now recognizes that exact denied-catalog wording only during catalog discovery; other
+1105 errors remain planning failures. Unit tests distinguish denial from unknown-catalog errors.
+The read already failed without fallback; this repair improves its error classification. Logs:
+`/private/tmp/rd-native/matrix-20261020-k/`. The remaining distributed/missing-file cases and
+3.0.6.2 baseline still require a corrected complete run.
+
+Attempt L passed 17 native 4.0.6 cases, including catalog denial, storage denial and two-worker
+execution. The final fault test received the correct FileNotFoundError for the deleted file,
+but its English substring assertion did not match a path-only message. The assertion now checks
+the exact missing test path while retaining the public exception-type requirement and SQL-replay
+guard. Static review also aligned BIGINT partition-type case handling with metadata validation;
+real local contracts now cover both spellings. Logs: `/private/tmp/rd-native/matrix-20261020-l/`.
+
+## Shared-storage native final functional matrix
+
+Run M completed both approved versions and the existing regression suite. Cumulative source/config
+fingerprint: `e93a5f4c5e88aaebf8efe0c74e48ce8d49d0223ca21173da4280977ab64d3ae5`.
+Evidence: `/private/tmp/rd-native/matrix-20261020-m/` (`base-images.json`, `hadoop-source.json`,
+`source-fingerprint.txt`, `results.json`, per-version XML, `query-regression.xml`, command logs).
+
+| Suite | Result | Covered state |
+| --- | --- | --- |
+| Doris 4.0.6 native | 18 passed, 6 warnings, 32.12s | Real HDFS/S3, Spark Parquet including INT96, full scalar schema, escaped registered partitions, projection/empty tables, limits, unsupported/missing locations, source/catalog denial, two workers, missing-file failure without SQL replay |
+| Existing 4.0.6 query/write regression | 30 passed, 5 warnings, 54.76s | Default API path, MySQL/Flight types, permissions, tablet planning and Stream Load |
+| Doris 3.0.6.2 native | 18 passed, 6 warnings, 34.00s | The same native semantics and independent Doris SQL comparison on the second cached version |
+
+The runner exited zero and removed its exact services, network, newly built image tags and recorded
+owned volumes. Base images and unrelated images/volumes were preserved. Warnings are upstream
+Ray context/projection and pytz deprecations. This is functional evidence, not a benchmark or release.
+
+Post-matrix static review adds pure rejection guards for non-Hive/non-Parquet Spark providers and
+HMS port zero, plus partition-only projection contracts. The tested standard Hive profiles (no
+provider override, explicit port 9083), data reader, metadata queries and infrastructure behavior are
+unchanged. These added branches use targeted unit/public-reader contracts; the successful long
+matrix and unchanged query-path result are reused instead of repeating their service coverage.
+The source-fetch helper now uses standard proxy environment variables; the already verified JNI
+source manifest and binary are unchanged. Latest static/unit/document/package results follow below.
+
+Final reviewed source/config fingerprint:
+`07008c13940c034044f0c4806fb35e9e6cf0b9efa5f1e1d8a9849fd7c11fffcc`.
+Full Python 3.12 / Ray 2.59.0 unit and public contract suite: **394 passed, zero skipped**, 24
+upstream warnings, 12.17s. This includes stale Doris/HMS partition-scope rejection, unsupported
+catalog settings, and the post-review provider/port/projection guards. Log:
+`/private/tmp/rd-native/unit-contract-complete-final.log`.
+
+Ruff lint, full format check (63 files), strict mypy (21 source files), `tools/check_docs.py`,
+`git diff --check`, Sphinx strict build, spelling, isolated-environment source wheel/sdist build
+using the cached declared Hatchling backend, and Twine checks passed. Build uses `--no-isolation`
+in the dedicated feature virtualenv; it is not a separate hermetic release certification. Logs:
+`docs-final-strict.log`, `docs-final-spelling.log`, `package-final.log`, `package-final-check.log`
+under `/private/tmp/rd-native/`. External linkcheck was not rerun; the feature remains local,
+uncommitted and unpublished. No benchmark or additional Python/CPU architecture matrix ran.
+
+The built wheel was also imported directly with optional `pymetastore`/`thrift` imports blocked;
+default datasource construction and the public NativeReadOptions export passed. Log:
+`/private/tmp/rd-native/wheel-base-import.log`. Final static self-review covered the complete
+cumulative source changes, format eligibility, typed metadata/partition association, permissions,
+credential boundaries, close/error paths and reader delegation; no unresolved first-profile defect
+remains. UTC-only timestamp fixture coverage and the deployment limits remain explicitly documented.
 
 | Code state | Suite/profile | Environment and coverage | Result |
 | --- | --- | --- | --- |

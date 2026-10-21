@@ -52,6 +52,12 @@ Install optional Flight SQL support:
 pip install "ray-doris[flight]"
 ```
 
+Experimental shared-storage reads use `ray-doris[native]`, an explicit
+`read_mode="native"`, and independently configured HMS/storage access. See the
+[native Hive Parquet guide](doc/source/user-guide/native-read.md) for supported
+layouts, Doris version targets and Ray reader limits. This feature does not
+change the default query path or guarantee a performance improvement.
+
 Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
 Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains a legacy
 compatibility target for the default MySQL transport, not a stable or production profile.

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Tuple
 
 import pyarrow as pa
+from pyarrow.fs import FileSystem
 
 from ray_doris._errors import DorisConfigurationError
 
@@ -41,6 +42,37 @@ _RESERVED_FLIGHT_OPTIONS = {
     "uri",
     "username",
 }
+
+
+@dataclass(frozen=True)
+class NativeReadOptions:
+    """Options for experimental, ordinary Hive Parquet reads.
+
+    HMS currently uses plain Thrift in a trusted network. Storage authorization
+    belongs to the supplied Arrow filesystem or its standard credential chain.
+    Files must remain unchanged throughout Dataset consumption.
+    """
+
+    hms_uri: Optional[str] = field(default=None, repr=False)
+    filesystem: Optional[FileSystem] = field(default=None, repr=False)
+    metadata_timeout: float = 10.0
+    max_partitions: int = 10_000
+    max_files: int = 100_000
+
+    def __post_init__(self) -> None:
+        DorisReadConfig._validate_timeout("metadata_timeout", self.metadata_timeout)
+        for name, value, maximum in (
+            ("max_partitions", self.max_partitions, 32_766),
+            ("max_files", self.max_files, 1_000_000),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise DorisConfigurationError(f"{name} must be between 1 and {maximum}")
+        if self.hms_uri is not None and (
+            not isinstance(self.hms_uri, str) or not self.hms_uri.strip()
+        ):
+            raise DorisConfigurationError("hms_uri must be a Thrift URI")
+        if self.filesystem is not None and not isinstance(self.filesystem, FileSystem):
+            raise DorisConfigurationError("filesystem must be an Arrow FileSystem")
 
 
 @dataclass(frozen=True)

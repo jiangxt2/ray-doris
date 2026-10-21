@@ -32,6 +32,19 @@ def ensure_supported_ray_version() -> None:
         )
 
 
+def ensure_native_ray_version() -> None:
+    """Keep the experimental native profile separate from legacy query support."""
+    ensure_supported_ray_version()
+    if _parse_final_release(_RAY_VERSION) != (2, 59, 0):
+        raise DorisConfigurationError("native reads currently require Ray 2.59.0")
+
+
+def native_uses_datasource_v2() -> bool:
+    """Inspect the public reader setting only within the verified native baseline."""
+    ensure_native_ray_version()
+    return bool(ray.data.DataContext.get_current().use_datasource_v2)
+
+
 def make_read_task(
     read_fn: Callable[[], Iterable[pa.Table]],
     metadata: BlockMetadata,

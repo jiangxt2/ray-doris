@@ -68,3 +68,11 @@ ctx
 upsert
 userinfo
 WriteResult
+NativeReadOptions
+filesystem
+FileSystem
+fs
+Hudi
+libhdfs
+HotSpot
+libjsig
