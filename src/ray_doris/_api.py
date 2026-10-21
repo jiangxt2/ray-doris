@@ -56,6 +56,10 @@ def read_doris(
     ``native`` delegates to Ray's public Parquet reader and requires a catalog,
     independent HMS/storage access and immutable published files. SQL filters
     and tablet/Flight settings are query-only. It never falls back to SQL.
+
+    See {doc}`the native Hive Parquet guide </user-guide/native-read>` for
+    per-file footer overhead, version limits and independent source authorization.
+    Native reads do not execute Doris row filters or column masking.
     """
     if read_mode not in ("query", "native"):
         raise DorisConfigurationError("read_mode must be 'query' or 'native'")

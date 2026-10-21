@@ -62,6 +62,11 @@ not certify every deployment or authentication provider.
   An Arrow directory listing may still allocate its complete result before the
   file-count check; these limits are not a hard driver memory bound.
 
+Native mode maps Parquet data columns by name. For comparisons with Doris SQL,
+use `SET hive_parquet_use_column_names = true;` in that SQL session. This variable
+controls Doris's reader; native mode neither reads nor changes it. The positional
+mapping selected by `false` remains outside this profile.
+
 The initial timestamp contract uses UTC: adjusted timestamps are returned as
 timezone-free UTC values, including the validated UTC INT96 fixture. Native mode
 does not apply a Doris SQL session's display timezone. Comparing timestamp values
