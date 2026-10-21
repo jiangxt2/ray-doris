@@ -24,7 +24,7 @@ from ray_doris._planner import (
     _mysql_tls_is_configured,
 )
 from ray_doris._schema import coerce_decimal
-from ray_doris._sql import build_select_sql
+from ray_doris._sql import build_read_sql
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _flight_import_error() -> ImportError:
 
 
 def _query(config: DorisReadConfig, split: DorisInputSplit) -> str:
-    return build_select_sql(config.table, config.columns, config.filter, split.tablet_ids)
+    return build_read_sql(config, split.tablet_ids)[0]
 
 
 def _split_context(config: DorisReadConfig, split: DorisInputSplit) -> str:
@@ -160,7 +160,11 @@ def read_mysql(
         try:
             connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
             cursor = connection.cursor()
-            cursor.execute(_query(config, split))
+            sql, parameters = build_read_sql(config, split.tablet_ids, bind=True)
+            if parameters:
+                cursor.execute(sql, parameters)
+            else:
+                cursor.execute(sql)
             if cursor.description is None:
                 raise DorisReadError("Doris SELECT returned no column metadata")
             names = tuple(description[0] for description in cursor.description)

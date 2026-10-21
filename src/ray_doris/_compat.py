@@ -73,6 +73,12 @@ def _parse_final_release(version: str) -> tuple[int, int, int]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def supports_native_predicates() -> bool:
+    """Enable only Ray minors with verified V1 expression and rejection contracts."""
+    ensure_supported_ray_version()
+    return (2, 57, 0) <= _parse_final_release(_RAY_VERSION) < (2, 60, 0)
+
+
 def datasink_compatibility(version: Optional[str] = None) -> DatasinkCompatibility:
     """Return the explicit Datasink callback contract for a supported Ray release."""
     ensure_supported_ray_version()

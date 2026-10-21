@@ -6,7 +6,7 @@ import re
 from typing import Iterable, Optional, Sequence, Tuple
 
 from ray_doris._errors import DorisConfigurationError
-from ray_doris._models import QualifiedTable
+from ray_doris._models import DorisReadConfig, QualifiedTable
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _DISALLOWED_FILTER_TOKENS = (";", "--", "#", "/*", "*/")
@@ -114,3 +114,25 @@ def build_select_sql(
 def build_describe_sql(table: QualifiedTable) -> str:
     """Build the schema discovery statement."""
     return f"DESCRIBE {render_table(table)}"
+
+
+def build_read_sql(
+    config: DorisReadConfig,
+    tablet_ids: Optional[Sequence[int]],
+    *,
+    bind: bool = False,
+) -> Tuple[str, Tuple[object, ...]]:
+    """Render one read, binding native values only for MySQL worker execution."""
+    predicate = config.predicate
+    if predicate is None:
+        return build_select_sql(config.table, config.columns, config.filter, tablet_ids), ()
+    sql = build_select_sql(config.table, config.columns, None, tablet_ids)
+    native = predicate.mysql_sql if bind else predicate.literal_sql
+    if config.filter is not None:
+        trusted = normalize_filter(config.filter)
+        assert trusted is not None
+        # PyMySQL interpolates the whole template, including trusted SQL text.
+        if bind and predicate.parameters:
+            trusted = trusted.replace("%", "%%")
+        native = f"({trusted}) AND ({native})"
+    return f"{sql} WHERE {native}", predicate.parameters if bind else ()

@@ -89,6 +89,13 @@ tablet pruning, so the number of splits can change with the filter. A complex ex
 a subquery can be executed through the configured single-task fallback, but it cannot use tablet
 parallelism.
 
+On Ray 2.57, 2.58, and 2.59, native `Dataset.filter(expr=...)` predicates can also reach
+Doris through the V1 datasource hooks. The first supported subset contains in-range signed
+integer comparisons, boolean equality, null checks on these types, and complete `AND`/`OR`/`NOT`
+combinations. Other expressions remain Ray filters. MySQL binds native values; HTTP planning
+and experimental Flight use validated integer and boolean literals. See the
+[reading guide](doc/source/user-guide/read-data.md#use-native-dataset-predicates) for limits.
+
 `tablet_size=1` provides the finest split granularity. Tables with thousands of tablets should
 start with a larger value such as `tablet_size=32` and use `override_num_blocks` to tune Ray's
 output blocks without creating one scheduling task per tablet.

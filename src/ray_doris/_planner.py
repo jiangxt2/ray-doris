@@ -29,7 +29,7 @@ from ray_doris._models import (
     DorisReadConfig,
 )
 from ray_doris._schema import build_arrow_schema, parse_describe_rows
-from ray_doris._sql import build_describe_sql, build_select_sql
+from ray_doris._sql import build_describe_sql, build_read_sql
 
 _MYSQL_AUTHENTICATION_ERROR_CODES = {1045}
 _MYSQL_PERMISSION_ERROR_CODES = {1044, 1142, 1143, 1227}
@@ -309,13 +309,8 @@ class DorisPlanner:
 
     def discover(self) -> DorisPlanningSnapshot:
         """Discover schema and tablets once for one Ray datasource instance."""
-        schema = self._describe_schema()
-        base_sql = build_select_sql(
-            self._config.table,
-            self._config.columns,
-            self._config.filter,
-            tablet_ids=None,
-        )
+        schema = self.describe_schema()
+        base_sql, _ = build_read_sql(self._config, tablet_ids=None)
         try:
             tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
         except (DorisAuthenticationError, DorisPermissionError):
@@ -352,6 +347,10 @@ class DorisPlanner:
         """Plan a read without counting or sampling table data."""
         _validate_parallelism(parallelism)
         return self.plan_from_snapshot(self.discover(), parallelism)
+
+    def describe_schema(self) -> pa.Schema:
+        """Discover the visible schema before accepting a native predicate."""
+        return self._describe_schema()
 
     def _describe_schema(self) -> pa.Schema:
         try:

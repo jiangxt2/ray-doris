@@ -13,6 +13,21 @@ def metadata() -> BlockMetadata:
     return BlockMetadata(num_rows=None, size_bytes=None, exec_stats=None, input_files=None)
 
 
+@pytest.mark.parametrize(
+    "version, supported",
+    [
+        ("2.49.2", False),
+        ("2.56.1", False),
+        ("2.57.0", True),
+        ("2.58.0", True),
+        ("2.59.0+vendor.1", True),
+    ],
+)
+def test_native_predicate_capability_gate(monkeypatch, version, supported) -> None:
+    monkeypatch.setattr(_compat, "_RAY_VERSION", version)
+    assert _compat.supports_native_predicates() is supported
+
+
 def read_fn() -> Iterable[pa.Table]:
     return [pa.table({"id": [1]})]
 

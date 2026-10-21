@@ -31,6 +31,12 @@ that distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
 experimental regression path.
 
+Native V1 predicate filtering is enabled on Ray 2.57, 2.58, and 2.59. Earlier releases in the
+dependency window keep their existing read behavior. Public Dataset contract tests cover accepted
+predicates, rejected residuals, source branches, projections, and limits. The expression classes
+are DeveloperAPI alpha despite their public import path. The
+[reading guide](user-guide/read-data.md#use-native-dataset-predicates) lists the supported subset.
+
 ## Understand the Doris target
 
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
