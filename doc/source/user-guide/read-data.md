@@ -137,8 +137,30 @@ Accepted predicates are combined with the existing trusted SQL filter using pare
 MySQL scan values use parameter binding. HTTP query planning and Flight use validated integer and
 boolean literals. New predicates create independent datasource clones and invalidate tablet
 planning; they do not change other Dataset branches or provide a database snapshot. A clone may
-repeat schema discovery. SQL LIMIT is not generated: Ray retains residual filtering and limit
-ordering. Native predicates do not promise output ordering or a particular reduction in tablet count.
+repeat schema discovery. Ray retains residual filtering and limit ordering. Native predicates do not
+promise output ordering or a particular reduction in tablet count.
+
+## Use native Dataset row budgets
+
+When Ray supplies a non-null `per_task_row_limit`, each worker SELECT applies that budget as a SQL
+LIMIT after its complete WHERE clause. Ray still enforces the ReadTask budget and the exact global
+Dataset limit. Each tablet group receives the full per-task budget; it is not divided by the number
+of groups. Budgets belong to individual tasks and never change shared discovery caches. A zero
+budget returns a schema-carrying empty task without a worker scan. Calls without a budget keep their
+existing SQL. Budgets above Doris's signed 64-bit LIMIT range remain enforced only by Ray.
+
+On Ray 2.59, a row-wise `dataset.map(row_fn).limit(n)` or a column rename followed by `limit(n)` can
+receive a source budget. A fully pushed predicate followed by a row-wise map can also receive one.
+Direct `dataset.limit(n)` and pure `select_columns(...).limit(n)` do not currently receive a V1
+source budget. A residual filter, sort, or flat-map prevents the limit from reaching this source.
+Earlier supported Ray releases retain their native optimizer behavior; a constructor parameter alone
+does not prove that a particular Dataset operation supplies a budget.
+
+The SQL budget can reduce unnecessary returned rows and Arrow conversion. Existing business
+operations should determine the Dataset chain; inserting an identity map only to trigger this
+optimization is not recommended. Unordered reads do not guarantee a particular selected subset or
+a measured speedup. Experimental Hive Parquet reads use Ray's native file reader and its own limit
+behavior.
 
 ## Choose planning failure behavior
 

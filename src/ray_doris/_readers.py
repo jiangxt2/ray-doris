@@ -42,7 +42,7 @@ def _flight_import_error() -> ImportError:
 
 
 def _query(config: DorisReadConfig, split: DorisInputSplit) -> str:
-    return build_read_sql(config, split.tablet_ids)[0]
+    return build_read_sql(config, split.tablet_ids, row_limit=split.row_limit)[0]
 
 
 def _split_context(config: DorisReadConfig, split: DorisInputSplit) -> str:
@@ -161,7 +161,9 @@ def read_mysql(
         try:
             connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
             cursor = connection.cursor()
-            sql, parameters = build_read_sql(config, split.tablet_ids, bind=True)
+            sql, parameters = build_read_sql(
+                config, split.tablet_ids, bind=True, row_limit=split.row_limit
+            )
             if parameters:
                 cursor.execute(sql, parameters)
             else:

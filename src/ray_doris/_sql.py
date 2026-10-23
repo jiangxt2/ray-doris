@@ -6,10 +6,12 @@ import re
 from typing import Iterable, Optional, Sequence, Tuple
 
 from ray_doris._errors import DorisConfigurationError
-from ray_doris._models import DorisReadConfig, QualifiedTable
+from ray_doris._models import DorisReadConfig, QualifiedTable, _validate_row_limit
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _DISALLOWED_FILTER_TOKENS = (";", "--", "#", "/*", "*/")
+# Doris represents LIMIT as a signed Java long. Larger budgets remain Ray-only.
+_MAX_DORIS_ROW_LIMIT = (1 << 63) - 1
 
 
 def _has_disallowed_filter_token(predicate: str) -> bool:
@@ -136,23 +138,28 @@ def build_read_sql(
     tablet_ids: Optional[Sequence[int]],
     *,
     bind: bool = False,
+    row_limit: Optional[int] = None,
 ) -> Tuple[str, Tuple[object, ...]]:
     """Render one read, binding native values only for MySQL worker execution."""
+    _validate_row_limit(row_limit)
     predicate = config.predicate
+    parameters: Tuple[object, ...] = ()
     if predicate is None:
-        return (
-            build_select_sql(
-                config.table, config.columns, config.filter, tablet_ids, config.catalog
-            ),
-            (),
+        sql = build_select_sql(
+            config.table, config.columns, config.filter, tablet_ids, config.catalog
         )
-    sql = build_select_sql(config.table, config.columns, None, tablet_ids, config.catalog)
-    native = predicate.mysql_sql if bind else predicate.literal_sql
-    if config.filter is not None:
-        trusted = normalize_filter(config.filter)
-        assert trusted is not None
-        # PyMySQL interpolates the whole template, including trusted SQL text.
-        if bind and predicate.parameters:
-            trusted = trusted.replace("%", "%%")
-        native = f"({trusted}) AND ({native})"
-    return f"{sql} WHERE {native}", predicate.parameters if bind else ()
+    else:
+        sql = build_select_sql(config.table, config.columns, None, tablet_ids, config.catalog)
+        native = predicate.mysql_sql if bind else predicate.literal_sql
+        if config.filter is not None:
+            trusted = normalize_filter(config.filter)
+            assert trusted is not None
+            # PyMySQL interpolates the whole template, including trusted SQL text.
+            if bind and predicate.parameters:
+                trusted = trusted.replace("%", "%%")
+            native = f"({trusted}) AND ({native})"
+        sql += f" WHERE {native}"
+        parameters = predicate.parameters if bind else ()
+    if row_limit is not None and row_limit <= _MAX_DORIS_ROW_LIMIT:
+        sql += f" LIMIT {int(row_limit)}"
+    return sql, parameters

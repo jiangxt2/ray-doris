@@ -163,7 +163,7 @@ services:
         hard: 200000
 
   flight-proxy:
-    image: "${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.2.21-alpine}"
+    image: "${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.4.7-alpine}"
     hostname: flight-proxy
     depends_on:
       tls-init:

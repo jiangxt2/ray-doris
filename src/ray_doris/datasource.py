@@ -41,6 +41,7 @@ from ray_doris._models import (
     HttpScheme,
     QueryPlanPolicy,
     Transport,
+    _validate_row_limit,
 )
 from ray_doris._planner import DorisPlanner, _validate_parallelism
 from ray_doris._predicate import compile_predicate
@@ -228,6 +229,7 @@ class DorisDatasource(Datasource):
         """Plan tablet splits on the driver and create serializable worker reads."""
         del data_context
         _validate_parallelism(parallelism)
+        _validate_row_limit(per_task_row_limit)
         planner = DorisPlanner(self._config)
         if self._planning_snapshot is None:
             self._planning_snapshot = planner.discover()
@@ -238,7 +240,7 @@ class DorisDatasource(Datasource):
             if zero_columns
             else plan.schema
         )
-        if not plan.splits:
+        if not plan.splits or per_task_row_limit == 0:
             metadata = BlockMetadata(
                 num_rows=0,
                 size_bytes=0,
@@ -255,6 +257,7 @@ class DorisDatasource(Datasource):
             ]
         tasks = []
         for split in plan.splits:
+            split = replace(split, row_limit=per_task_row_limit)
             reader = _read_zero_columns if zero_columns else read_split
             read_fn = partial(reader, self._config, split, plan.schema)
             metadata = BlockMetadata(

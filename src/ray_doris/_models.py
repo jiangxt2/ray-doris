@@ -88,6 +88,16 @@ class DorisInputSplit:
     """A group of tablets, or an unpartitioned fallback query."""
 
     tablet_ids: Optional[Tuple[int, ...]]
+    row_limit: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        _validate_row_limit(self.row_limit)
+
+
+def _validate_row_limit(value: Optional[int]) -> None:
+    """Validate a task-local row budget before planning or SQL rendering."""
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+        raise DorisConfigurationError("per_task_row_limit must be None or a non-negative integer")
 
 
 @dataclass(frozen=True)
