@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from unittest.mock import Mock
 
 import pyarrow as pa
@@ -125,6 +126,68 @@ def test_get_read_tasks_rejects_parallelism_before_discovery(monkeypatch) -> Non
     with pytest.raises(ValueError, match="parallelism"):
         datasource.get_read_tasks(0)
     discover.assert_not_called()
+
+
+@pytest.mark.parametrize("budget", [-1, True, 1.5, "2"])
+def test_row_budget_is_rejected_before_discovery(monkeypatch, budget) -> None:
+    discover = Mock()
+    monkeypatch.setattr("ray_doris.datasource.DorisPlanner.discover", discover)
+    with pytest.raises(ValueError, match="per_task_row_limit"):
+        DorisDatasource(table="db.records", host="fe").get_read_tasks(2, budget)
+    discover.assert_not_called()
+
+
+def test_row_budgets_are_task_local_serializable_and_preserve_discovery(monkeypatch) -> None:
+    schema = pa.schema([("id", pa.int64())])
+    snapshot = DorisPlanningSnapshot(schema=schema, tablet_ids=(1, 2, 3))
+    discover = Mock(return_value=snapshot)
+    monkeypatch.setattr("ray_doris.datasource.DorisPlanner.discover", discover)
+    monkeypatch.setattr("ray_doris.datasource.make_read_task", lambda *args: args)
+    source = DorisDatasource(table="db.records", host="fe")
+    retained = []
+    for parallelism, budget in ((3, 2), (1, None), (2, 5), (3, None)):
+        tasks = source.get_read_tasks(parallelism, budget)
+        for task in tasks:
+            read_fn, _, _, task_budget = task
+            split = read_fn.args[1]
+            assert split.row_limit == task_budget == budget
+            assert read_fn.args[0] is source.config
+            restored = cloudpickle.loads(cloudpickle.dumps(split))
+            assert restored == split
+            with pytest.raises(FrozenInstanceError):
+                split.row_limit = 100
+            retained.append((split, budget))
+    assert all(split.row_limit == budget for split, budget in retained)
+    assert source._planning_snapshot is snapshot
+    discover.assert_called_once()
+
+
+@pytest.mark.parametrize("zero_columns", [False, True])
+def test_zero_budget_returns_schema_without_worker_scan(monkeypatch, zero_columns) -> None:
+    schema = pa.schema([("id", pa.int64())])
+    monkeypatch.setattr(
+        "ray_doris.datasource.DorisPlanner.discover",
+        Mock(return_value=DorisPlanningSnapshot(schema, (7,))),
+    )
+    monkeypatch.setattr("ray_doris.datasource.make_read_task", lambda *args: args)
+    scan = Mock(side_effect=AssertionError("zero budget must not scan"))
+    monkeypatch.setattr("ray_doris.datasource.read_split", scan)
+    source = DorisDatasource(table="db.records", host="fe")
+    if zero_columns:
+        source = source.apply_projection({})
+    tasks = source.get_read_tasks(4, 0)
+    assert len(tasks) == 1
+    read_fn, metadata, output_schema, budget = tasks[0]
+    blocks = read_fn()
+    assert budget == 0 and metadata.num_rows == 0
+    assert len(blocks) == 1 and blocks[0].num_rows == 0
+    assert blocks[0].schema == output_schema
+    expected = schema
+    if zero_columns:
+        native = BlockAccessor.for_block(pa.Table.from_batches([], schema=schema)).select([])
+        expected = BlockAccessor.for_block(native).to_arrow().schema
+    assert output_schema == expected
+    scan.assert_not_called()
 
 
 def test_projection_is_ordered_immutable_and_preserves_subclass_state() -> None:

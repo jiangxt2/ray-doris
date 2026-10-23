@@ -699,3 +699,37 @@ also unchanged; only this targeted invocation used `RAY_DORIS_BE_MEMORY_LIMIT=2g
 Both precise Compose projects, their volumes/networks and custom images were cleaned;
 the two pre-existing dangling images were retained. No tests were skipped, assertions
 relaxed, infrastructure memory increased, commit created or remote branch pushed.
+
+## Native row-limit validation
+
+The user approved Issue #8 implementation and validation on 2026-10-23, with local cached images
+only and no commit, push, or PR. Base is `c6badd9896324176448f22e601f03ec5407fa085`; runtime and
+test fingerprint is `4fe51bd1fc32717d2a8fd71dc832516cde47ab28c163ae19c0f7e32bd7b9d0c6`.
+Logs are retained under `/tmp/ray-doris-native-row-limit-validation/`.
+
+| Suite | Coverage, state, and reason | Result |
+| --- | --- | --- |
+| Focused diagnostics | Row budget validation, task cache isolation, SQL binding, both readers, and native Dataset budget delivery | Corrected fixture-only configuration, native empty-projection schema, and captured reader issues; 78 unit and 10 native contract cases passed before the final signed-long boundary guard |
+| Final unit and contracts | Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0; first complete run after static self-review | 651 passed, zero skipped, 41 upstream warnings, 42.82s; `unit-contract-final.xml` |
+| Static and documentation | Ruff format/lint, strict mypy, docs checker, Sphinx strict and spelling | Passed; 23 production source files pass mypy |
+| Compatibility contracts | Python 3.12.12; minimal row-limit contracts on earlier supported Ray baselines; no duplicate database IT | Ray 2.57 and 2.58: 11 passed each. Ray 2.49.2: 10 passed initially; the incorrect zero-limit instrumentation expectation was corrected to preserve legacy reads without a budget, and only that failed case was rechecked: 1 passed in 4.87s |
+| Required Doris IT | One complete suite, local Doris 4.0.6, runtime-only 3 GiB BE override because the preceding ledger documents 2 GiB allocator failures | 59 passed, 5 failed, zero skipped, 993.49s. All failures were empty auto-mode SQL recorder assertions. The recorder was extended to auto without production changes; the five affected cases passed the separately approved focused recheck below. The 59 unaffected results remain applicable; the complete suite was not repeated |
+| Full distributed suite | First final full profile, three Ray workers and three 3 GiB Doris BEs, cached HAProxy 3.4.7 and digest-pinned Ray base; no preceding core run | 15 passed, 20 warnings, 138.79s, runner exit 0. Includes both new row-budget cases on every worker. Fingerprint after test-observer corrections: `e91579904195188c50b5523916fbcd833ee8465037ec4a145543e528bb275503`; production unchanged. Logs and local manifest under `slow-it/`; not exact-commit release evidence |
+| Approved auto recheck | The user explicitly requested the remaining recheck. Only the five previously failed auto selectors; same production and test fingerprint, cached base-image IDs, and temporary 3 GiB BE. No repeat of the 59 passed cases or full slow profile | 5 passed, zero skipped, 4 upstream warnings, 192.12s; runner exit 0. Fingerprint before and after remains `e91579904195188c50b5523916fbcd833ee8465037ec4a145543e528bb275503`. Logs, XML, cache and cleanup evidence under `auto-recheck/`; all remaining assertions verified |
+
+All Docker invocations clear proxy variables. Base-image preflight must succeed locally; real pull
+commands are prohibited for this validation. Compose starts with `--no-build --pull never` and only
+the exact resources and custom image tags created by the current run may be cleaned up.
+
+All three container validations retained base-image IDs, executed no real image pull, and cleaned their exact containers,
+networks, volumes and custom image tags. Existing unrelated dangling images were retained. See
+`cleanup-and-cache-report.json`, `required-it/`, `slow-it/` and `auto-recheck/verification-report.json`.
+Cumulative static review found no remaining P0/P1/P2 code defect. The focused auto recheck closes
+the last validation gap; the 59 passed required cases and the passed full slow profile were not
+repeated. These records are not represented as a single repeated complete-suite pass. No commit,
+push, PR or external Issue update was performed.
+
+Publication preparation moves two unit-test dataclasses imports to module scope without changing
+test or production behavior. The local pre-push checks pass Ruff lint/format, strict mypy, public
+Ray API and Python safety rules, message/hygiene checks, and the three affected unit-test files.
+The database and distributed evidence above remains applicable; no additional Docker IT was run.

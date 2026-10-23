@@ -470,6 +470,43 @@ def test_projected_read_executes_on_all_ray_workers(slow_config, transport):
         ray.kill(recorder)
 
 
+@pytest.mark.parametrize("transport", ["mysql", "flight"])
+def test_native_row_budget_serializes_to_every_worker(slow_config, transport):
+    recorder = SQLRecorder.remote()
+    try:
+        source = RecordingDorisDatasource(
+            recorder=recorder,
+            **slow_config.reader_kwargs(
+                table=slow_config.distributed_table,
+                transport=transport,
+                columns=["id"],
+                tablet_size=1,
+                batch_size=1,
+            ),
+        )
+        expected_nodes = {node["NodeID"] for node in _ray_worker_nodes(slow_config)}
+        for node_id in sorted(expected_nodes):
+            dataset = ray.data.read_datasource(
+                source,
+                concurrency=1,
+                override_num_blocks=BUCKET_COUNT,
+                ray_remote_args={
+                    "num_cpus": 1,
+                    "scheduling_strategy": NodeAffinitySchedulingStrategy(node_id, soft=False),
+                },
+            )
+            rows = dataset.map(lambda row: {"id": row["id"] + 1}).limit(4).take_all()
+            assert len(rows) == 4
+            assert all(1 <= row["id"] <= slow_config.row_count for row in rows)
+        records = ray.get(recorder.read.remote())
+        scans = [(sql, node) for stage, sql, node in records if stage == "worker"]
+        assert scans and all(sql.endswith(" LIMIT 4") for sql, _ in scans)
+        assert {node for _, node in scans} == expected_nodes
+        assert all(" LIMIT " not in sql for stage, sql, _ in records if stage == "planner")
+    finally:
+        ray.kill(recorder)
+
+
 def test_stream_load_write_executes_on_all_ray_workers(
     slow_config: SlowITConfig,
 ) -> None:

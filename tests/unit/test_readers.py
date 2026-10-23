@@ -116,6 +116,20 @@ def test_mysql_reader_streams_fetchmany_batches_and_closes_resources(monkeypatch
     assert cursor.close_calls == connection.close_calls == 1
 
 
+@pytest.mark.parametrize("transport", ["mysql", "auto"])
+def test_mysql_and_auto_fallback_keep_the_split_budget(monkeypatch, transport) -> None:
+    cursor = FakeCursor()
+    connection = FakeConnection(cursor)
+    monkeypatch.setattr(_readers.pymysql, "connect", Mock(return_value=connection))
+    monkeypatch.setattr(_readers, "_flight_is_installed", Mock(return_value=False))
+    schema = pa.schema(
+        [("id", pa.int64()), ("amount", pa.decimal128(10, 2)), ("created_at", pa.timestamp("us"))]
+    )
+    list(_readers.read_split(make_config(transport=transport), DorisInputSplit((7,), 1), schema))
+    assert cursor.query.endswith(" TABLET(7) LIMIT 1")
+    assert cursor.closed and connection.closed
+
+
 def test_mysql_reader_resolves_environment_password_for_each_attempt(monkeypatch) -> None:
     schema = pa.schema(
         [("id", pa.int64()), ("amount", pa.decimal128(10, 2)), ("created_at", pa.timestamp("us"))]
@@ -446,6 +460,22 @@ def test_flight_reader_streams_record_batches_and_closes_resources(monkeypatch) 
         {"id": 5},
     ]
     assert "TABLET(5)" in cursor.query
+    assert reader.closed and cursor.closed and connection.closed
+
+
+@pytest.mark.parametrize("transport", ["flight", "auto"])
+def test_flight_budget_is_in_query_and_early_close_releases_resources(monkeypatch, transport):
+    schema = pa.schema([("id", pa.int64())])
+    reader = FakeBatchReader([pa.record_batch([[1, 2, 3]], schema=schema)])
+    cursor = FakeFlightCursor(reader)
+    connection = FakeFlightConnection(cursor)
+    monkeypatch.setattr(_readers, "_flight_connection", Mock(return_value=connection))
+    monkeypatch.setattr(_readers, "_ensure_flight_available", lambda: None)
+    monkeypatch.setattr(_readers, "_flight_is_installed", lambda: True)
+    blocks = _readers.read_split(make_config(transport=transport), DorisInputSplit((7,), 2), schema)
+    assert next(blocks).num_rows == 2
+    blocks.close()
+    assert cursor.query.endswith(" TABLET(7) LIMIT 2")
     assert reader.closed and cursor.closed and connection.closed
 
 

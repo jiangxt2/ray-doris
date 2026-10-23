@@ -47,7 +47,7 @@ def _record_reader(read_fn, recorder, transport):
                 record_execute(pymysql.cursors.Cursor.execute),
             )
         )
-        if transport == "flight":
+        if transport in ("flight", "auto"):
             try:
                 from adbc_driver_manager.dbapi import Cursor
             except ImportError as exc:

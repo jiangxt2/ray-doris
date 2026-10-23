@@ -31,7 +31,7 @@ be_image="ray-doris-it-be:${RAY_DORIS_SLOW_IMAGE_TAG}"
 export RAY_DORIS_RAY_IMAGE=${ray_image}
 export RAY_DORIS_FE_IMAGE=${fe_image}
 export RAY_DORIS_BE_IMAGE=${be_image}
-flight_proxy_image=${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.2.21-alpine}
+flight_proxy_image=${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.4.7-alpine}
 export RAY_DORIS_FLIGHT_PROXY_IMAGE=${flight_proxy_image}
 
 compose=(
@@ -205,7 +205,9 @@ wait_for_marker() {
   docker_cmd system df
 } >> "${compose_log}" 2>&1
 
-"${compose[@]}" pull flight-proxy >> "${compose_log}" 2>&1
+if ! docker_cmd image inspect "${flight_proxy_image}" >/dev/null 2>&1; then
+  "${compose[@]}" pull flight-proxy >> "${compose_log}" 2>&1
+fi
 "${compose[@]}" build ray-head fe be-1 2>&1 | tee -a "${compose_log}"
 
 RAY_DORIS_SLOW_RAY_IMAGE_ID=$(docker_cmd image inspect --format '{{.Id}}' "${ray_image}")
