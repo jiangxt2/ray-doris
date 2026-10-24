@@ -29,6 +29,7 @@ from ray_doris._errors import (
     _NativeReadNotApplicableError,
 )
 from ray_doris._external_metadata import ExternalMetadata, discover_external, partition_value
+from ray_doris._logging import emit, stage
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._sql import validate_identifier
 
@@ -242,7 +243,8 @@ def read_native(
 ) -> Dataset:
     ensure_native_ray_version()
     validate_identifier(catalog, kind="catalog name")
-    metadata = discover_external(config, catalog, options)
+    with stage(logger, "doris.discovery", "native_metadata"):
+        metadata = discover_external(config, catalog, options)
     if config.columns is not None and any(c not in metadata.schema.names for c in config.columns):
         raise DorisConfigurationError("native projection includes an unknown column")
     plan = plan_files(metadata, options)
@@ -253,10 +255,20 @@ def read_native(
         override_num_blocks=override_num_blocks,
         ray_remote_args=ray_remote_args,
     )
-    logger.info(
-        "Doris read path=native reader=read_parquet doris_version=%s partitions=%d files=%d",
-        ".".join(str(part) for part in metadata.version) or "unknown",
-        len(metadata.partitions),
-        len(plan.files),
+    emit(
+        logger,
+        logging.INFO,
+        "doris.read.path_selected",
+        phase="selection",
+        status="selected",
+        path="native",
+        experimental=True,
+        reason_code="hive_parquet_eligible",
+        partition_count=len(metadata.partitions),
+        file_count=len(plan.files),
+        concurrency=concurrency if type(concurrency) is int and concurrency > 0 else None,
+        override_num_blocks=override_num_blocks
+        if type(override_num_blocks) is int and override_num_blocks > 0
+        else None,
     )
     return dataset

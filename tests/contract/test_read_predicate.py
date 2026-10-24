@@ -26,7 +26,7 @@ SCHEMA = pa.schema(
 ROWS = [(1, 1, True, "a%"), (2, None, False, "b"), (3, 3, None, "c"), (4, 4, True, "d")]
 
 
-def _read_fixture(config, split, schema):
+def _read_fixture(config, split, schema, diagnostics=None):
     del split
     connection = sqlite3.connect(":memory:")
     try:

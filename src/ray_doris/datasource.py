@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from contextlib import closing
 from copy import copy
 from dataclasses import replace
@@ -33,6 +35,15 @@ from ray_doris._compat import (
     supports_projection_pushdown,
 )
 from ray_doris._errors import DorisConfigurationError
+from ray_doris._logging import (
+    DiagnosticSnapshot,
+    EventContext,
+    bind,
+    current_context,
+    emit,
+    error_type,
+    new_id,
+)
 from ray_doris._models import (
     DorisInputSplit,
     DorisPlanningSnapshot,
@@ -48,6 +59,8 @@ from ray_doris._predicate import compile_predicate
 from ray_doris._readers import _ensure_flight_available, read_split
 from ray_doris._sql import normalize_columns, normalize_filter, parse_table
 
+logger = logging.getLogger(__name__)
+
 
 def _read_empty(schema: pa.Schema) -> List[pa.Table]:
     """Return one schema-carrying Arrow block without querying Doris."""
@@ -55,13 +68,16 @@ def _read_empty(schema: pa.Schema) -> List[pa.Table]:
 
 
 def _read_zero_columns(
-    config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
+    config: DorisReadConfig,
+    split: DorisInputSplit,
+    schema: pa.Schema,
+    diagnostics: Optional[DiagnosticSnapshot] = None,
 ) -> Iterator[pa.Table]:
     """Read with the existing physical schema and apply Ray's native empty projection."""
     # All transports return generators. Closing the wrapper must also close an
     # active reader when a consumer stops before EOF or projection fails.
     with closing(
-        cast(Generator[pa.Table, None, None], read_split(config, split, schema))
+        cast(Generator[pa.Table, None, None], read_split(config, split, schema, diagnostics))
     ) as blocks:
         for block in blocks:
             yield project_empty_block(block)
@@ -119,6 +135,7 @@ class DorisDatasource(Datasource):
         # Ray exposes an untyped Datasource.__init__ across supported releases.
         initialize_datasource = cast(Callable[[], None], super().__init__)
         initialize_datasource()
+        self._diagnostics = DiagnosticSnapshot.from_environment()
         self._config = DorisReadConfig.from_options(
             table=parse_table(table),
             catalog=None if catalog == "internal" else catalog,
@@ -172,12 +189,13 @@ class DorisDatasource(Datasource):
         schema = (
             self._planning_snapshot.schema
             if self._planning_snapshot is not None
-            else DorisPlanner(self._config).describe_schema()
+            else DorisPlanner(self._config, self._diagnostics).describe_schema()
         )
         compiled = compile_predicate(predicate_expr, schema)
         if compiled is None:
             return self
         clone = copy(self)
+        clone._diagnostics = replace(self._diagnostics, operation_id=new_id())
         previous = self._config.predicate
         clone._config = replace(
             self._config, predicate=compiled if previous is None else previous.and_with(compiled)
@@ -212,6 +230,7 @@ class DorisDatasource(Datasource):
                 raise DorisConfigurationError("projection cannot restore columns outside this read")
         clone = copy(self)
         if columns != self._projection_columns:
+            clone._diagnostics = replace(self._diagnostics, operation_id=new_id())
             clone._projection_columns = columns
             # A zero-column projection retains the previous physical read. Its
             # blocks are projected with Ray's public API after bounded reading.
@@ -226,11 +245,59 @@ class DorisDatasource(Datasource):
         per_task_row_limit: Optional[int] = None,
         data_context: Optional[Any] = None,
     ) -> List[ReadTask]:
+        """Report planning independently of worker execution and discovery."""
+        diagnostics = replace(self._diagnostics, plan_id=new_id())
+        context = EventContext(diagnostics)
+        cache_hit = self._planning_snapshot is not None
+        with bind(context):
+            try:
+                _validate_parallelism(parallelism)
+                _validate_row_limit(per_task_row_limit)
+                if self._planning_snapshot is None:
+                    self._planning_snapshot = DorisPlanner(self._config, diagnostics).discover()
+                started = time.monotonic()
+                tasks = self._get_read_tasks(parallelism, per_task_row_limit, data_context)
+            except BaseException as error:
+                emit(
+                    logger,
+                    logging.ERROR,
+                    "doris.plan.finished",
+                    phase="planning",
+                    status="failed",
+                    cache_hit=cache_hit,
+                    error_type=error_type(error),
+                )
+                raise
+            emit(
+                logger,
+                logging.INFO,
+                "doris.plan.finished",
+                phase="planning",
+                status="empty"
+                if self._planning_snapshot.tablet_ids == () or per_task_row_limit == 0
+                else "planned",
+                cache_hit=cache_hit,
+                task_count=len(tasks),
+                parallelism=parallelism,
+                tablet_size=self._config.tablet_size,
+                tablet_count=None
+                if self._planning_snapshot.tablet_ids is None
+                else len(self._planning_snapshot.tablet_ids),
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+            return tasks
+
+    def _get_read_tasks(
+        self,
+        parallelism: int,
+        per_task_row_limit: Optional[int] = None,
+        data_context: Optional[Any] = None,
+    ) -> List[ReadTask]:
         """Plan tablet splits on the driver and create serializable worker reads."""
         del data_context
         _validate_parallelism(parallelism)
         _validate_row_limit(per_task_row_limit)
-        planner = DorisPlanner(self._config)
+        planner = DorisPlanner(self._config, self._diagnostics)
         if self._planning_snapshot is None:
             self._planning_snapshot = planner.discover()
         plan = planner.plan_from_snapshot(self._planning_snapshot, parallelism)
@@ -259,7 +326,11 @@ class DorisDatasource(Datasource):
         for split in plan.splits:
             split = replace(split, row_limit=per_task_row_limit)
             reader = _read_zero_columns if zero_columns else read_split
-            read_fn = partial(reader, self._config, split, plan.schema)
+            active = current_context()
+            diagnostics = replace(
+                active.snapshot if active else self._diagnostics, split_id=new_id()
+            )
+            read_fn = partial(reader, self._config, split, plan.schema, diagnostics)
             metadata = BlockMetadata(
                 num_rows=None,
                 size_bytes=None,
