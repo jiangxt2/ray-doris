@@ -137,6 +137,35 @@ assertions are unchanged; the recorded real-infrastructure evidence remains appl
 no container suite is repeated. Static self-review confirms import availability, serialization,
 the handler-failure boundary, cumulative scope and unchanged request/cleanup semantics.
 
+### Ray 2.49 callback contract correction
+
+PR #18 CI on `684987e057b45b2cc65bb9d3fe2d1beb25b6ffe1` failed three new logging
+contracts on Python 3.9 / Ray 2.49.2: metadata setup runs before upstream execution in
+legacy Ray, while newer Ray defers it until the first input. The upstream test's metadata
+mock also failed before the intended upstream error. This compatibility gap was missed
+by the earlier self-review; the original CI result is 656 passed and 3 failed.
+
+The user authorized fixing this on 2026-10-24. Only logging contract fixtures/assertions
+change: successful metadata for upstream failure, explicit error-origin assertions, and
+exact start counts for each existing `datasink_compatibility().schema_source` generation.
+Empty Dataset counts use the existing compatibility field. Driver terminal count,
+redaction, unknown-total omission, independent operations and worker/driver identity
+assertions remain enforced. No skip or broadly relaxed assertion is introduced.
+
+| Suite | Coverage and reason | Result |
+| --- | --- | --- |
+| Python 3.9.25 / Ray 2.49.2 / Arrow 21.0.0 | Five affected logging callbacks and three existing public Datasink contracts; an isolated environment reuses the installed interpreter and cached dependencies | 8 passed, zero failures/errors/skips, 22.89s; `legacy.xml` |
+| Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0 | Complete logging and Datasink contract files plus compatibility units; checks delayed start, actual workers/hooks and preserved lifecycle invariants | 43 passed (10 contracts and 33 units), zero failures/errors/skips, 42.14s; `primary.xml` |
+| Static and source comparison | Ruff format/lint, strict mypy, public API/Python safety/message/hygiene checks, whitespace and source SHA-256 comparison | Passed; all production source bytes unchanged |
+
+The execution matrix, original test snapshot, production manifest, complete logs, XML and
+actual patch are retained in `/private/tmp/rd-pr18-compat-20261024/`. Static self-review
+checks both callback generations, actual upstream versus metadata failures, empty writes,
+consecutive failures, recovery success, exact call counts and unchanged event invariants.
+No database, container or complete compatibility matrix is rerun for this test-only fix.
+Remote CI must be evaluated on the updated PR head; these local results do not supersede
+failed check runs from the original commit.
+
 ## Native metadata capability discovery
 
 User-approved code update on base `533f787f51b798ea3d8d1092ad1264c0f39329b8`.

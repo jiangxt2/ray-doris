@@ -12,6 +12,7 @@ import ray
 from ray.exceptions import RayTaskError
 
 from ray_doris import DorisConnection, DorisDatasink, DorisTable, DorisWriteError, _logging
+from ray_doris._compat import datasink_compatibility
 from ray_doris._logging import DiagnosticSnapshot, EventContext, emit
 from ray_doris._models import DorisPlanningSnapshot
 from ray_doris.datasource import DorisDatasource
@@ -97,16 +98,21 @@ def test_ray_notifies_driver_failure_without_fabricated_totals(monkeypatch, capl
         sink = InvalidSummarySink(DorisConnection(host="unused"), DorisTable("db", "table"))
     else:
         sink = DorisDatasink(DorisConnection(host="unused"), DorisTable("db", "table"))
-    discover = Mock(side_effect=RuntimeError("metadata-sensitive-message"))
+    # Upstream failures must reach the upstream operator even when legacy Ray
+    # performs metadata setup before executing it.
+    discover = Mock(
+        return_value=_metadata(),
+        side_effect=RuntimeError("metadata-sensitive-message") if boundary == "metadata" else None,
+    )
     monkeypatch.setattr("ray_doris.write.datasink.discover_table_metadata", discover)
     owned = not ray.is_initialized()
     if owned:
         ray.init(address="local", include_dashboard=False, num_cpus=2)
     try:
-        dataset = ray.data.from_arrow(pa.table({"id": [1]}))
+        dataset = ray.data.from_arrow(pa.table({"id": [1], "value": ["a"]}))
         if boundary == "upstream":
             dataset = dataset.map(_fail_upstream)
-        with pytest.raises((RuntimeError, DorisWriteError, RayTaskError)):
+        with pytest.raises((RuntimeError, DorisWriteError, RayTaskError)) as failure:
             dataset.write_datasink(sink, ray_remote_args={"max_retries": 0})
     finally:
         if owned:
@@ -120,12 +126,20 @@ def test_ray_notifies_driver_failure_without_fabricated_totals(monkeypatch, capl
     assert len(driver) == 1 and driver[0].status == "failed"
     assert not any(hasattr(driver[0], key) for key in ("loaded_rows", "uploaded_bytes", "batches"))
     assert "sensitive-message" not in str(driver[0].__dict__)
+    if boundary == "upstream":
+        assert "upstream-sensitive-message" in str(failure.value)
+    elif boundary == "metadata":
+        assert "metadata-sensitive-message" in str(failure.value)
+    else:
+        assert isinstance(failure.value, DorisWriteError)
     if boundary == "metadata":
         discover.assert_called_once()
         prepares = [
             r for r in caplog.records if getattr(r, "event", None) == "doris.write.prepare.finished"
         ]
         assert len(prepares) == 1 and prepares[0].status == "failed"
+    elif boundary == "upstream" and datasink_compatibility().schema_source == "worker_blocks":
+        discover.assert_called_once()
     else:
         discover.assert_not_called()
 
@@ -153,11 +167,16 @@ class SuccessfulSummarySink(DorisDatasink):
 
 
 @pytest.mark.parametrize("empty_first", [False, True])
-def test_reused_sink_reports_upstream_failures_before_start(monkeypatch, caplog, empty_first):
+def test_reused_sink_reports_upstream_failures_across_ray_lifecycles(
+    monkeypatch, caplog, empty_first
+):
     caplog.set_level("DEBUG", logger="ray_doris")
     sink = SuccessfulSummarySink(DorisConnection(host="unused"), DorisTable("db", "table"))
     discover = Mock(return_value=_metadata())
     monkeypatch.setattr("ray_doris.write.datasink.discover_table_metadata", discover)
+    compatibility = datasink_compatibility()
+    # Legacy Ray starts before execution; newer Ray starts at the first input.
+    starts_before_input = compatibility.schema_source == "worker_blocks"
     owned = not ray.is_initialized()
     if owned:
         ray.init(address="local", include_dashboard=False, num_cpus=2)
@@ -166,12 +185,13 @@ def test_reused_sink_reports_upstream_failures_before_start(monkeypatch, caplog,
         first = ray.data.range(0) if empty_first else dataset
         first.write_datasink(sink, ray_remote_args={"max_retries": 0})
         starts = discover.call_count
-        for _ in range(2):
+        assert starts == int(not empty_first or compatibility.on_write_start_on_empty_dataset)
+        for attempt in range(1, 3):
             with pytest.raises(RayTaskError):
                 dataset.map(_fail_upstream).write_datasink(sink, ray_remote_args={"max_retries": 0})
-            assert discover.call_count == starts
+            assert discover.call_count == starts + (attempt if starts_before_input else 0)
         dataset.write_datasink(sink, ray_remote_args={"max_retries": 0})
-        assert discover.call_count == starts + 1
+        assert discover.call_count == starts + (2 if starts_before_input else 0) + 1
     finally:
         if owned:
             ray.shutdown()
