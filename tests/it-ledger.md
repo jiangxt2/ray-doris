@@ -1,5 +1,171 @@
 # Integration test ledger
 
+## Debug logging validation
+
+Approved implementation on base `f6e51fa9143a5fbd71312647c54e62d661ead38f` in
+the `debug-logging` worktree. No commit, push or PR is authorized.
+Evidence root: `/private/tmp/rd-debug-logging-20261023/`.
+Runtime and test fingerprints, versions, exact commands and results accompany
+the final logs. New logging does not add queries, requests, retries or fallbacks.
+
+| Suite | Coverage and reason | Overlap and execution state |
+| --- | --- | --- |
+| Focused unit diagnostics | Reader, planner, datasource, native path and write events, snapshots, rate limits and error classification | 268 passed; development evidence in `focused-new.xml` |
+| Final unit/public contracts | Complete unit and contract suites, including actual-worker identity and independent progress budgets | Final unit: 590 passed (`unit-complete.xml`). Full public contracts: 85 passed within `unit-contract-fixed.xml`; three additional driver-failure cases passed in `driver-contract.xml` (metadata/aggregation) and `driver-upstream-fixed.xml` (Ray's task-error wrapper). Corrected hook: one passed (`hook-contract-fixed.xml`). Total: 89 distinct passing contracts, zero skips; counts do not add repeated runs. |
+| Real Doris 4.0.6 integration | Existing complete MySQL/Flight/planning/write suite plus driver aggregation log assertions | Final approved 4 GiB BE retry: 64 passed, zero failures/errors/skips, 1022.03s (`doris-retry-4g/pytest.xml`). The original 2 GiB run failed under MEM_LIMIT_EXCEEDED and remains historical evidence in `doris/`. Scoped teardown passed for both attempts. |
+| Slow full distributed suite | Existing full marker-driven worker/BE failures, TLS/Flight, actual writes and fault endpoint; new cross-process event assertions | Final approved corrected-hook retry: 15 passed, zero failures/skips, 107.92s, full/passed `slow-result.json`, 2972 retained events and verified cleanup in `slow-retry-hook/`. The first hook initialization attempt was interrupted with exit 143; its failed evidence remains in `slow/`. Core was not repeated. |
+| Native public contracts | Real temporary Parquet reads plus native selection/metadata unit tests | Included in final unit/contract run. Logging-only native edits do not change filesystem discovery or file reading; no additional Doris-version native matrix planned. |
+| Static/docs | Ruff, strict mypy, documentation contracts, strict Sphinx and spelling | All passed on final sources. Primary runtime: Python 3.12.12, Ray 2.59.0, Arrow 26.0.0, PyMySQL 1.2.3; Ruff 0.16.4 and mypy 1.20.2. Locked documentation environment uses Ray 2.58.0. No new external URL requires a whole-site linkcheck. |
+
+Each infrastructure suite uses the isolated `ray-doris-it` Compose project after
+verifying it is absent, prebuilds each distinct custom runtime once, starts with
+`--no-build`, and preserves logs before scoped teardown. Shared images and global
+caches remain intact. No passed long suite is rerun on the same covered state.
+
+Static self-review found and fixed two diagnostic details: failed worker counters
+cover only confirmed prior batches and are omitted before any response, and
+concurrency, output-block count and tablet grouping are recorded independently.
+The initial full unit/contract attempts exposed old package metadata, restricted
+process inspection and fixture signatures; those diagnostic failures remain in
+the evidence directory and are superseded by the passing results above.
+The native changes affect logging only; real Parquet contracts remain applicable.
+The interrupted infrastructure runs cannot validate the final complete diff.
+
+All owned containers, project networks/volumes and custom runtime tags were
+removed after both infrastructure attempts. The pre-existing dangling image
+`1991bd789d71` was preserved. Shared base images and global build cache were not
+removed. Ordinary IT results, runtime image IDs and cleanup lists are in `doris/`;
+slow build/test/cleanup output is in `slow/` and `slow-driver.log`.
+
+The user approved the additional runs on 2026-10-23: one complete ordinary IT
+run with a temporary 4 GiB BE Compose override, followed by one full slow run with
+the corrected hook and existing 3 GiB BE limits. Fresh evidence directories are
+`doris-retry-4g/` and `slow-retry-hook/`. The unchanged runtime/test fingerprint is
+`faa7d207013b1d0f95192a6987fb48c4c4fd6f9d0d46bfd6b6c94fc3a2038369`;
+`retry-authorization.json` records the approved scopes before execution. No repository
+Compose memory setting, dependency, SQL, retry policy or version is changed.
+
+Before the authorized slow retry, its test evidence handling was completed:
+the existing retry scenario checks distinct execution IDs for the same plan/split;
+the capture includes formatted messages so the redaction assertion observes them;
+the session exports safe JSON records before Compose removes its temporary volume.
+Only four test/runner files differ from the original retry fingerprint; production
+sources are byte-identical. `slow-retention-runtime-manifest.json` records that
+test state. The two affected actual-worker/hook contracts passed in
+`capture-retention-contract.xml` (no complete or infrastructure suite repeated).
+
+The authorized ordinary retry completed: **64 passed**, zero failures/errors/skips,
+1022.03 seconds, in `doris-retry-4g/pytest.xml`. `effective-resources.log` confirms
+BE memory 4294967296 bytes and FE memory 3221225472 bytes. The original SQL,
+reader/writer implementation and test assertions were retained; only the temporary
+BE resource limit differed from the failed run. Exit code is zero and the recorded
+remaining container/network/volume lists are empty. Existing dangling image
+`1991bd789d71` was preserved. This complete result supersedes the failed 2 GiB
+attempt for ordinary protocol validation; it is not slow-suite evidence.
+
+The authorized slow full retry completed: **15 passed**, zero failures/skips,
+20 upstream/test-cache warnings, 107.92 seconds (`slow-retry-hook/pytest.log`).
+`slow-result.json` reports full/passed on Ray 2.59.0. Its commit field identifies
+the unchanged base; the uncommitted implementation/test state is identified by
+`slow-retention-runtime-manifest.json`, fingerprint
+`03a8842121f265c98ea902d852400fb443863f2e4e38f0861f1aff5240b10dc9`.
+This is local worktree evidence, not a release artifact for that base commit.
+
+`slow-retry-hook/diagnostics.json` retains 2972 safe records, including formatted
+messages. `event-validation.json` verifies two distinct physical executions of
+one logical plan/split, three successful worker writes and one ambiguous request
+with the same generated label at start/finish, send_state=possibly_sent, exactly
+one worker and one driver failure event, and no fabricated row/byte totals.
+There are 585 read starts and 584 finishes: the missing finish belongs to the
+deliberately killed worker, as allowed by the best-effort lifecycle contract.
+The full suite passed its TLS/Flight, all-worker distribution, worker/BE failure,
+retry identity, successful writes and ambiguous fault-endpoint assertions.
+
+`cleanup-verification.json` confirms no owned containers, networks, volumes or
+per-run tags remain. Unique dangling ID and shared base IDs were preserved.
+The passing ordinary and slow retries close the planned infrastructure gates.
+Final static self-review covers the entire cumulative diff, including safe
+message retention, explicit worker import paths and export before volume removal.
+Ruff, strict mypy, documentation checks and the existing passing unit/contracts
+remain applicable; production sources did not change during these retries.
+
+### Approved P2 corrections
+
+On 2026-10-24 the user approved the two cumulative-review corrections, regression tests,
+necessary validation and complete static self-review. Evidence is in
+`/private/tmp/rd-debug-logging-p2-20261024/`; the execution matrix and source state were
+recorded before testing. No commit, push, PR or external write was performed.
+
+| Suite | Coverage, state and overlap | Result |
+| --- | --- | --- |
+| Regression reproduction | Original production, new weakref tests with details off/on, reused-sink callback test and first-serialization error guard | Three failures reproduce both P2 defects; the error guard passes (`regression-red.xml`). This is failed development evidence. |
+| Focused writer/logging units | Fixed production; payload release during later requests, exact request order/count, frozen options, independent callbacks, original serialization exception and no send on failure | 82 passed, zero skipped (`focused-unit.xml`). |
+| Final complete unit | All units, fixed production and final unit tests | 594 passed, zero skipped, 1.74s (`unit-final.xml`). Repeated focused cases are not added to this count. |
+| Public Ray contracts | Logging and Datasink selections; actual workers, hook, metadata/aggregation failure, reused sink after normal/empty success, two consecutive upstream failures before start, then success | 10 passed, zero skipped, 39.77s (`contract.xml`); three upstream deprecation warnings. Two modified reuse contracts additionally assert worker/driver operation identity and pass in 10.74s (`reuse-identity.xml`); no full suite was repeated. With unaffected prior contracts there are 91 distinct passing cases. |
+| Static checks | Final Python sources and tests | Ruff format/lint and strict mypy pass; 24 production files. Only the contract assertion changed after the complete unit/static run; its format/lint recheck passes. |
+| Retained real-infrastructure coverage | Original 64-case Doris IT at approved 4 GiB BE and 15-case slow full at 3 GiB BEs | Not rerun. Serializer, Stream Load/parser, SQL, metadata/schema validation, retry/TLS, reader and cluster code are byte-identical. Existing protocol and cluster evidence remains applicable to those unchanged behaviors; fresh units/contracts cover changed reference lifetime and driver operation boundaries. This does not claim byte-identical complete-source IT evidence. |
+
+The only runtime/test changes relative to `completed-runtime-manifest.json` are
+`src/ray_doris/write/datasink.py`, `tests/unit/test_logging.py` and
+`tests/contract/test_logging.py`. Final runtime/test fingerprint:
+`c0d40af721a8c94d0574e95b2a1efc3b9082f71273a9ad1d63338092a5284067`.
+The first preparation timer now encloses the existing iterator step without a separate
+first-payload reference. Driver callbacks follow Ray's single completion/failure notification
+per write call; the next start or terminal without a start opens a new operation. The
+synthetic duplicate-failure-callback unit invocation was replaced by tests of actual Ray
+write lifecycles, which assert one terminal for each distinct operation.
+A final source-comment clarification does not change the tested runtime AST.
+
+The earlier self-review missed these defects; its blanket no-P2 conclusion is withdrawn.
+Both are now closed. Complete cumulative static self-review covers all tracked and untracked
+source, test and documentation changes plus necessary context, with no remaining P0/P1/P2.
+No database/container suite or shared resource was started or cleaned during this correction.
+
+### Publication preparation checks
+
+The required local pre-push checker identified test imports inside functions and an empty
+observational logging exception branch. Imports now live at module scope, and handler failure
+returns explicitly without changing business behavior. No checks or test assertions were
+disabled. Evidence: `/private/tmp/rd-debug-logging-submit-20261024/`.
+
+The final complete unit suite passes all 594 cases; the seven affected logging contracts pass
+with real Ray workers, including hook setup and reused-sink identity. Slow test module collection
+finds all 15 cases with the relocated helper imports. Ruff format/lint, strict mypy and all
+local static pre-push layers pass. The checker uses `--skip-tests` only to reuse the recorded
+complete unit result instead of repeating the same unit selection. Database/cluster logic and
+assertions are unchanged; the recorded real-infrastructure evidence remains applicable and
+no container suite is repeated. Static self-review confirms import availability, serialization,
+the handler-failure boundary, cumulative scope and unchanged request/cleanup semantics.
+
+### Ray 2.49 callback contract correction
+
+PR #18 CI on `684987e057b45b2cc65bb9d3fe2d1beb25b6ffe1` failed three new logging
+contracts on Python 3.9 / Ray 2.49.2: metadata setup runs before upstream execution in
+legacy Ray, while newer Ray defers it until the first input. The upstream test's metadata
+mock also failed before the intended upstream error. This compatibility gap was missed
+by the earlier self-review; the original CI result is 656 passed and 3 failed.
+
+The user authorized fixing this on 2026-10-24. Only logging contract fixtures/assertions
+change: successful metadata for upstream failure, explicit error-origin assertions, and
+exact start counts for each existing `datasink_compatibility().schema_source` generation.
+Empty Dataset counts use the existing compatibility field. Driver terminal count,
+redaction, unknown-total omission, independent operations and worker/driver identity
+assertions remain enforced. No skip or broadly relaxed assertion is introduced.
+
+| Suite | Coverage and reason | Result |
+| --- | --- | --- |
+| Python 3.9.25 / Ray 2.49.2 / Arrow 21.0.0 | Five affected logging callbacks and three existing public Datasink contracts; an isolated environment reuses the installed interpreter and cached dependencies | 8 passed, zero failures/errors/skips, 22.89s; `legacy.xml` |
+| Python 3.12.12 / Ray 2.59.0 / Arrow 26.0.0 | Complete logging and Datasink contract files plus compatibility units; checks delayed start, actual workers/hooks and preserved lifecycle invariants | 43 passed (10 contracts and 33 units), zero failures/errors/skips, 42.14s; `primary.xml` |
+| Static and source comparison | Ruff format/lint, strict mypy, public API/Python safety/message/hygiene checks, whitespace and source SHA-256 comparison | Passed; all production source bytes unchanged |
+
+The execution matrix, original test snapshot, production manifest, complete logs, XML and
+actual patch are retained in `/private/tmp/rd-pr18-compat-20261024/`. Static self-review
+checks both callback generations, actual upstream versus metadata failures, empty writes,
+consecutive failures, recovery success, exact call counts and unchanged event invariants.
+No database, container or complete compatibility matrix is rerun for this test-only fix.
+Remote CI must be evaluated on the updated PR head; these local results do not supersede
+failed check runs from the original commit.
+
 ## Native metadata capability discovery
 
 User-approved code update on base `533f787f51b798ea3d8d1092ad1264c0f39329b8`.

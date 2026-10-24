@@ -22,6 +22,7 @@ from ray_doris._errors import (
     DorisPlanningError,
     DorisSchemaError,
 )
+from ray_doris._logging import DiagnosticSnapshot, EventContext, bind, emit, stage
 from ray_doris._metadata import ExternalMetadataReader
 from ray_doris._models import (
     DorisInputSplit,
@@ -311,27 +312,40 @@ def _validate_parallelism(parallelism: int) -> None:
 class DorisPlanner:
     """Discover a canonical schema and build tablet-level worker splits."""
 
-    def __init__(self, config: DorisReadConfig) -> None:
+    def __init__(
+        self, config: DorisReadConfig, diagnostics: Optional[DiagnosticSnapshot] = None
+    ) -> None:
         self._config = config
+        self._diagnostics = diagnostics or DiagnosticSnapshot()
 
     def discover(self) -> DorisPlanningSnapshot:
         """Discover schema and tablets once for one Ray datasource instance."""
+        with bind(EventContext(self._diagnostics)):
+            return self._discover()
+
+    def _discover(self) -> DorisPlanningSnapshot:
         schema = self.describe_schema()
         if self._config.catalog is not None:
             # Doris external tables have no internal tablet query-plan contract.
             return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
         base_sql, _ = build_read_sql(self._config, tablet_ids=None)
         try:
-            tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
+            with stage(logger, "doris.discovery", "tablet"):
+                tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
         except (DorisAuthenticationError, DorisPermissionError):
             raise
-        except DorisPlanningError as exc:
+        except DorisPlanningError:
             if self._config.on_query_plan_error == "error":
                 raise
-            logger.warning(
-                "Doris query-plan failed for %s; using one unpartitioned task (%s)",
-                _table_context(self._config),
-                type(exc).__name__,
+            emit(
+                logger,
+                logging.WARNING,
+                "doris.plan.fallback",
+                phase="tablet",
+                status="fallback",
+                from_plan="tablet",
+                to_plan="unpartitioned",
+                reason_code="query_plan_unavailable",
             )
             return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
         return DorisPlanningSnapshot(schema=schema, tablet_ids=tablet_ids)
@@ -360,7 +374,8 @@ class DorisPlanner:
 
     def describe_schema(self) -> pa.Schema:
         """Discover the visible schema before accepting a native predicate."""
-        return self._describe_schema()
+        with bind(EventContext(self._diagnostics)), stage(logger, "doris.discovery", "schema"):
+            return self._describe_schema()
 
     def _describe_schema(self) -> pa.Schema:
         try:

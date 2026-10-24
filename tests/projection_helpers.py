@@ -61,7 +61,7 @@ def _record_reader(read_fn, recorder, transport):
         yield from read_fn()
 
 
-def _fake_read(config, split, schema, *, table, recorder):
+def _fake_read(config, split, schema, diagnostics=None, *, table, recorder):
     del schema
     sql = build_select_sql(config.table, config.columns, config.filter, split.tablet_ids)
     ray.get(recorder.record.remote("synthetic", sql, ray.get_runtime_context().get_node_id()))

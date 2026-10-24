@@ -106,8 +106,13 @@ def test_native_path_log_matches_final_selection(monkeypatch, caplog, applicable
     with caplog.at_level("INFO", logger="ray_doris"):
         result = read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
     assert result == ("native" if applicable else "doris")
-    assert ("read path=native" in caplog.text) is applicable
-    assert ("read path=doris" in caplog.text) is not applicable
+    selected = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "doris.read.path_selected"
+    ]
+    assert len(selected) == 1
+    assert selected[0].path == ("native" if applicable else "doris")
 
 
 @pytest.mark.parametrize(
@@ -316,7 +321,13 @@ def test_not_applicable_retains_same_doris_source_and_logs_reason(monkeypatch, c
         "override_num_blocks": 3,
         "ray_remote_args": {"num_cpus": 0.25},
     }
-    assert "path=doris reason=unsupported layout" in caplog.text
+    selected = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "doris.read.path_selected"
+    ]
+    assert selected[0].path == "doris"
+    assert selected[0].reason_code == "native_profile_not_applicable"
 
 
 @pytest.mark.parametrize(
