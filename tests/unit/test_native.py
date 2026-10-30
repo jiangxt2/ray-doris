@@ -316,7 +316,7 @@ def test_not_applicable_retains_same_doris_source_and_logs_reason(monkeypatch, c
         "override_num_blocks": 3,
         "ray_remote_args": {"num_cpus": 0.25},
     }
-    assert "path=doris reason=unsupported layout" in caplog.text
+    assert "path=doris reason=native_profile_not_applicable" in caplog.text
 
 
 @pytest.mark.parametrize(

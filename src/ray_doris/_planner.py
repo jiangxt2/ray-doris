@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -321,16 +322,17 @@ class DorisPlanner:
             # Doris external tables have no internal tablet query-plan contract.
             return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
         base_sql, _ = build_read_sql(self._config, tablet_ids=None)
+        logger.debug("Discovering Doris tablets")
         try:
             tablet_ids = QueryPlanClient(self._config).fetch_tablet_ids(base_sql)
+            logger.debug("Discovered Doris tablets count=%d", len(tablet_ids))
         except (DorisAuthenticationError, DorisPermissionError):
             raise
         except DorisPlanningError as exc:
             if self._config.on_query_plan_error == "error":
                 raise
             logger.warning(
-                "Doris query-plan failed for %s; using one unpartitioned task (%s)",
-                _table_context(self._config),
+                "Doris query-plan unavailable; using one unpartitioned task error_type=%s",
                 type(exc).__name__,
             )
             return DorisPlanningSnapshot(schema=schema, tablet_ids=None)
@@ -360,7 +362,15 @@ class DorisPlanner:
 
     def describe_schema(self) -> pa.Schema:
         """Discover the visible schema before accepting a native predicate."""
-        return self._describe_schema()
+        started = time.monotonic()
+        logger.debug("Discovering Doris schema")
+        schema = self._describe_schema()
+        logger.debug(
+            "Discovered Doris schema columns=%d elapsed_ms=%.1f",
+            len(schema),
+            (time.monotonic() - started) * 1000,
+        )
+        return schema
 
     def _describe_schema(self) -> pa.Schema:
         try:

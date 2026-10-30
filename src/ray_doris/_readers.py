@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+import time
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
 import pyarrow as pa
@@ -104,8 +105,8 @@ def _close_reader_resource(resource: Any, *, label: str, context: str) -> None:
         return
     try:
         resource.close()
-    except Exception:
-        logger.warning("Failed to close Doris %s for %s", label, context)
+    except Exception as error:
+        logger.warning("Failed to close Doris %s error_type=%s", label, type(error).__name__)
 
 
 def _detach_mysql_result(connection: Any, cursor: Any, *, context: str) -> None:
@@ -129,8 +130,8 @@ def _detach_mysql_result(connection: Any, cursor: Any, *, context: str) -> None:
         if cursor is not None:
             cursor._result = None
             cursor.connection = None
-    except Exception:
-        logger.warning("Failed to detach Doris MySQL result for %s", context)
+    except Exception as error:
+        logger.warning("Failed to detach Doris MySQL result error_type=%s", type(error).__name__)
 
 
 def _cleanup_mysql_reader(
@@ -152,6 +153,9 @@ def read_mysql(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterator[pa.Table]:
     """Stream PyMySQL rows in bounded batches and convert to canonical Arrow."""
+    started = time.monotonic()
+    emitted_rows = emitted_blocks = 0
+    logger.debug("Doris MySQL read started batch_size=%d", config.batch_size)
     connection: Any = None
     cursor: Any = None
     reached_eof = False
@@ -161,6 +165,7 @@ def read_mysql(
         try:
             connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
             cursor = connection.cursor()
+            logger.debug("Doris MySQL connection ready; executing read")
             sql, parameters = build_read_sql(
                 config, split.tablet_ids, bind=True, row_limit=split.row_limit
             )
@@ -178,9 +183,17 @@ def read_mysql(
                     break
                 table = _rows_to_table(rows, names, schema)
                 del rows
+                if not emitted:
+                    logger.debug(
+                        "Doris MySQL first block elapsed_ms=%.1f",
+                        (time.monotonic() - started) * 1000,
+                    )
                 emitted = True
+                emitted_rows += table.num_rows
+                emitted_blocks += 1
                 yield table
             if config.catalog is not None and not emitted:
+                emitted_blocks += 1
                 yield pa.Table.from_batches([], schema=schema)
         finally:
             _cleanup_mysql_reader(
@@ -215,6 +228,20 @@ def read_mysql(
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
     except Exception:
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
+
+    finally:
+        error = sys.exc_info()[1]
+        logger.debug(
+            "Doris MySQL read finished status=%s rows=%d blocks=%d elapsed_ms=%.1f",
+            "eof"
+            if reached_eof
+            else "consumer_closed"
+            if isinstance(error, GeneratorExit)
+            else "failed",
+            emitted_rows,
+            emitted_blocks,
+            (time.monotonic() - started) * 1000,
+        )
 
 
 def _flight_is_installed() -> bool:
@@ -283,6 +310,11 @@ def read_flight(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterator[pa.Table]:
     """Stream Arrow RecordBatches from ADBC Flight SQL."""
+    started = time.monotonic()
+    reached_eof = False
+    status = "failed"
+    emitted_rows = emitted_blocks = 0
+    logger.debug("Doris Flight read started batch_size=%d", config.batch_size)
     try:
         try:
             connection = _flight_connection(config)
@@ -307,6 +339,7 @@ def read_flight(
                 raise
             try:
                 try:
+                    logger.debug("Doris Flight connection ready; executing read")
                     cursor.execute(_query(config, split))
                     reader = cursor.fetch_record_batch()
                 except Exception as exc:
@@ -319,9 +352,19 @@ def read_flight(
                     emitted = False
                     for batch in reader:
                         table = _cast_flight_batch(batch, schema)
+                        if not emitted and table.num_rows:
+                            logger.debug(
+                                "Doris Flight first block elapsed_ms=%.1f",
+                                (time.monotonic() - started) * 1000,
+                            )
                         emitted = emitted or table.num_rows > 0
-                        yield from _slice_flight_table(table, config.batch_size)
+                        for block in _slice_flight_table(table, config.batch_size):
+                            emitted_rows += block.num_rows
+                            emitted_blocks += 1
+                            yield block
+                    reached_eof = True
                     if config.catalog is not None and not emitted:
+                        emitted_blocks += 1
                         yield pa.Table.from_batches([], schema=schema)
                 finally:
                     reader.close()
@@ -335,10 +378,23 @@ def read_flight(
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)}: {exc}"
         ) from exc
+    except GeneratorExit:
+        status = "eof" if reached_eof else "consumer_closed"
+        raise
     except Exception:
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)} through Flight SQL"
         ) from None
+    else:
+        status = "eof"
+    finally:
+        logger.debug(
+            "Doris Flight read finished status=%s rows=%d blocks=%d elapsed_ms=%.1f",
+            status,
+            emitted_rows,
+            emitted_blocks,
+            (time.monotonic() - started) * 1000,
+        )
 
 
 def _is_flight_setup_error(exc: BaseException, *, allow_timeout: bool = True) -> bool:
@@ -396,14 +452,13 @@ def read_split(
     def auto_reader() -> Iterator[pa.Table]:
         try:
             yield from read_flight(config, split, schema)
-        except _FlightUnavailableError as exc:
+        except _FlightUnavailableError:
             if config.flight_scheme == "grpc+tls":
                 raise DorisReadError(
                     "Flight SQL TLS setup failed; refusing automatic MySQL fallback"
                 ) from None
             logger.warning(
-                "Flight SQL setup is unavailable; using MySQL: %s",
-                exc,
+                "Flight SQL setup is unavailable; using MySQL",
             )
             yield from read_mysql(config, split, schema)
 

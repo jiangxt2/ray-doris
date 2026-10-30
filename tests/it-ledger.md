@@ -1,5 +1,37 @@
 # Integration test ledger
 
+## Lightweight debug logging validation
+
+The user approved replacing PR #18's diagnostic framework on 2026-10-30 with
+standard module logging in the existing read/write paths. Ray owns worker logging
+and execution context. This local revision is not committed or pushed.
+
+| Check | Scope / runtime | Result |
+| --- | --- | --- |
+| Focused units | Plain messages, cache reuse, both readers, label/result/error safety | 264 passed; focused.xml |
+| Final unit + contract | Python 3.12.12 / Ray 2.59 / Arrow 26 | Final 583 units passed; 84 contracts retain coverage of unchanged API/protocol behavior; no skips or repeated full contracts |
+| Legacy Datasink contract | Python 3.9.25 / Ray 2.49.2 / Arrow 21; minimum public lifecycle check | 3 passed, no skips |
+| Real Doris integration | Doris 4.0.6; temporary 4 GiB BE / 3 GiB FE; cached fixed bases | 64 passed, no skips, 1026.95s; exact project, tags, volumes/networks removed; shared bases retained |
+| Static and docs | Ruff, mypy, documentation checker, strict Sphinx and spelling | Passed; network inventory and one spelling correction resolved normally |
+
+Evidence and the execution matrix: `/private/tmp/rd-light-20261030/`. It contains
+source snapshots, actual patches, complete logs and runtime facts. Prior framework
+results are historical, not proof of this revision. No passed long suite is
+repeated without a relevant change or failed/unreliable evidence. Scoped cleanup
+preserves unrelated Docker resources and shared base images. Slow business cases
+are unchanged; only the added capture/hook/export assertions are removed, so the
+full slow suite is not repeated. No CI, dependency or compatibility window changes.
+After IT, only two request log field names changed to `payload_bytes` rather than
+`uploaded_bytes`: the body size does not prove transmission. Exact text/AST comparison
+confirms unchanged protocol/control flow; full units verify the field and original errors.
+No baseline test functions were removed. Cumulative test additions are about 44% of
+production plus test additions; the final source/test manifest accompanies the logs.
+Review reproduced a Flight EOF log inheriting an unrelated caller exception. A local
+status now distinguishes successful completion, consumer close and actual failure.
+The new regression first failed as expected, then 48 focused and 583 full unit cases
+passed. Data/cleanup ASTs are unchanged, so no real IT was repeated. Supplemental
+logs, XML and source proof: `/private/tmp/rd-flight-eof-20261030/`.
+
 ## Native metadata capability discovery
 
 User-approved code update on base `533f787f51b798ea3d8d1092ad1264c0f39329b8`.

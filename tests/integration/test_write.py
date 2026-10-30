@@ -38,7 +38,10 @@ def _from_pydict(values: dict[str, list[Any]]) -> ray.data.Dataset:
     return ray.data.from_arrow(pa.table(values))
 
 
-def test_duplicate_stream_load_round_trips_rows_and_reports_doris_statistics(doris_config) -> None:
+def test_duplicate_stream_load_round_trips_rows_and_reports_doris_statistics(
+    doris_config, caplog
+) -> None:
+    caplog.set_level("INFO", logger="ray_doris")
     result = write_doris(
         _from_pydict(
             {
@@ -58,6 +61,8 @@ def test_duplicate_stream_load_round_trips_rows_and_reports_doris_statistics(dor
     assert result.loaded_rows == 2
     assert result.filtered_rows == 0
     assert result.ray_num_rows == 2
+    assert "Doris write completed status=success" in caplog.text
+    assert "loaded_rows=2" in caplog.text
     assert _query(
         doris_config,
         "SELECT id, category, score FROM write_events WHERE id IN (101, 102) ORDER BY id",

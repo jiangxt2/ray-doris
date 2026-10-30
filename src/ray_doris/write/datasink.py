@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import pickle
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, cast
 
@@ -23,6 +25,8 @@ from ray_doris.write.metadata import (
 from ray_doris.write.options import DorisWriteOptions
 from ray_doris.write.serialization import iter_serialized_batches
 from ray_doris.write.stream_load import StreamLoadClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -141,11 +145,17 @@ class DorisDatasink(Datasink[Mapping[str, Any]]):
     def on_write_start(self, schema: Optional[pa.Schema] = None) -> None:
         """Discover metadata and validate the first schema when Ray supplies one."""
         validate_datasink_signature()
+        logger.debug("Doris write preparing metadata and schema")
         metadata = discover_table_metadata(self._connection, self._table)
         if schema is not None:
             validate_write_table(metadata, operation=self._options.operation, arrow_schema=schema)
             self._input_arrow_schema = schema
         self._metadata = metadata
+        logger.debug(
+            "Doris write ready columns=%d operation=%s",
+            len(metadata.columns),
+            self._options.operation,
+        )
 
     def write(self, blocks: Iterable[Any], ctx: Any) -> Mapping[str, Any]:
         """Consume one Ray write bundle and return one serializable task summary."""
@@ -157,6 +167,13 @@ class DorisDatasink(Datasink[Mapping[str, Any]]):
             raise DorisConfigurationError(
                 "Doris Datasink on_write_start() must complete before write()"
             )
+        started = time.monotonic()
+        logger.debug(
+            "Doris write started format=%s batch_rows=%d batch_bytes=%d",
+            self._options.format or "parquet",
+            self._options.batch_rows,
+            self._options.batch_bytes,
+        )
         statuses: list[str] = []
         batches = 0
         attempted_rows = 0
@@ -191,8 +208,20 @@ class DorisDatasink(Datasink[Mapping[str, Any]]):
                 loaded_rows += result.loaded_rows
                 filtered_rows += result.filtered_rows
                 uploaded_bytes += len(batch.payload)
+        status = _summary_status(statuses)
+        logger.debug(
+            "Doris write finished status=%s batches=%d attempted_rows=%d loaded_rows=%d "
+            "filtered_rows=%d uploaded_bytes=%d elapsed_ms=%.1f",
+            status,
+            batches,
+            attempted_rows,
+            loaded_rows,
+            filtered_rows,
+            uploaded_bytes,
+            (time.monotonic() - started) * 1000,
+        )
         return {
-            "status": _summary_status(statuses),
+            "status": status,
             "request_statuses": tuple(statuses),
             "batches": batches,
             "attempted_rows": attempted_rows,
@@ -237,6 +266,22 @@ class DorisDatasink(Datasink[Mapping[str, Any]]):
             uploaded_bytes,
             int(write_result.num_rows),
             int(write_result.size_bytes),
+        )
+
+        logger.info(
+            "Doris write completed status=%s batches=%d attempted_rows=%d loaded_rows=%d "
+            "filtered_rows=%d uploaded_bytes=%d",
+            self._result.status,
+            batches,
+            attempted_rows,
+            loaded_rows,
+            filtered_rows,
+            uploaded_bytes,
+        )
+
+    def on_write_failed(self, error: Exception) -> None:
+        logger.warning(
+            "Doris write failed error_type=%s; global totals unavailable", type(error).__name__
         )
 
 

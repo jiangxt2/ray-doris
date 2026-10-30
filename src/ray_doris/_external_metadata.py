@@ -284,7 +284,11 @@ def discover_external(
                         raise DorisSchemaError(
                             "partition schema or value count differs from the table"
                         )
-            logger.info("Doris native metadata origins=%s", reader.origins)
+            logger.debug(
+                "Doris native metadata origin_count=%d origins=%s",
+                len(reader.origins),
+                ",".join(sorted(set(reader.origins.values()))),
+            )
             return ExternalMetadata(
                 schema, table.storage, partitions, table.partition_keys, version
             )

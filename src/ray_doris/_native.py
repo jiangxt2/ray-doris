@@ -254,7 +254,8 @@ def read_native(
         ray_remote_args=ray_remote_args,
     )
     logger.info(
-        "Doris read path=native reader=read_parquet doris_version=%s partitions=%d files=%d",
+        "Doris read path=native experimental=true reader=read_parquet "
+        "doris_version=%s partitions=%d files=%d",
         ".".join(str(part) for part in metadata.version) or "unknown",
         len(metadata.partitions),
         len(plan.files),

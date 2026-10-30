@@ -6,6 +6,7 @@ import base64
 import contextlib
 import http.client
 import json
+import logging
 import ssl
 import urllib.error
 import urllib.parse
@@ -20,6 +21,8 @@ from ray_doris._errors import (
 )
 from ray_doris.write.connection import DorisConnection, DorisTable
 from ray_doris.write.options import DorisWriteOptions
+
+logger = logging.getLogger(__name__)
 
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
@@ -194,48 +197,70 @@ class StreamLoadClient:
 
     def load(self, payload: bytes, *, rows: int, columns: tuple[str, ...]) -> DorisLoadResult:
         label = self._options.label()
-        headers = self._headers(label, columns)
-        transmission = _RequestTransmission()
-        request = _TrackedRequest(
-            self._connection.endpoint(self._table),
-            transmission=transmission,
-            data=payload,
-            method="PUT",
-            headers=headers,
+        logger.debug(
+            "Doris Stream Load started label=%s attempted_rows=%d payload_bytes=%d",
+            label,
+            rows,
+            len(payload),
         )
         try:
-            return self._open_and_parse(self._build_opener(transmission), request, rows)
-        except DorisWriteError:
+            headers = self._headers(label, columns)
+            transmission = _RequestTransmission()
+            request = _TrackedRequest(
+                self._connection.endpoint(self._table),
+                transmission=transmission,
+                data=payload,
+                method="PUT",
+                headers=headers,
+            )
+            try:
+                return self._open_and_parse(self._build_opener(transmission), request, rows)
+            except DorisWriteError:
+                raise
+            except urllib.error.HTTPError as exc:
+                if exc.code in (301, 302, 303, 307, 308):
+                    location = exc.headers.get("Location")
+                    self._close_http_error(exc)
+                    if not location:
+                        raise DorisWriteError(
+                            "Doris Stream Load redirect omitted its location"
+                        ) from None
+                    redirected_transmission = _RequestTransmission()
+                    redirected = _TrackedRequest(
+                        _validate_redirect_target(self._connection, location),
+                        transmission=redirected_transmission,
+                        data=payload,
+                        method="PUT",
+                        headers=headers,
+                    )
+                    try:
+                        return self._open_and_parse(
+                            self._build_opener(redirected_transmission), redirected, rows
+                        )
+                    except urllib.error.HTTPError as redirected_error:
+                        self._raise_http_error(
+                            redirected_error, rows=rows, transmission=redirected_transmission
+                        )
+                    except (
+                        TimeoutError,
+                        urllib.error.URLError,
+                        OSError,
+                        http.client.HTTPException,
+                    ):
+                        self._raise_transport_error(redirected_transmission)
+                self._raise_http_error(exc, rows=rows, transmission=transmission)
+            except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException):
+                self._raise_transport_error(transmission)
+        except Exception as error:
+            logger.warning(
+                "Doris Stream Load failed label=%s error_type=%s "
+                "attempted_rows=%d payload_bytes=%d",
+                label,
+                type(error).__name__,
+                rows,
+                len(payload),
+            )
             raise
-        except urllib.error.HTTPError as exc:
-            if exc.code in (301, 302, 303, 307, 308):
-                location = exc.headers.get("Location")
-                self._close_http_error(exc)
-                if not location:
-                    raise DorisWriteError(
-                        "Doris Stream Load redirect omitted its location"
-                    ) from None
-                redirected_transmission = _RequestTransmission()
-                redirected = _TrackedRequest(
-                    _validate_redirect_target(self._connection, location),
-                    transmission=redirected_transmission,
-                    data=payload,
-                    method="PUT",
-                    headers=headers,
-                )
-                try:
-                    return self._open_and_parse(
-                        self._build_opener(redirected_transmission), redirected, rows
-                    )
-                except urllib.error.HTTPError as redirected_error:
-                    self._raise_http_error(
-                        redirected_error, rows=rows, transmission=redirected_transmission
-                    )
-                except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException):
-                    self._raise_transport_error(redirected_transmission)
-            self._raise_http_error(exc, rows=rows, transmission=transmission)
-        except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException):
-            self._raise_transport_error(transmission)
 
     def _build_opener(self, transmission: _RequestTransmission) -> urllib.request.OpenerDirector:
         handlers: list[Any] = [
@@ -291,7 +316,18 @@ class StreamLoadClient:
                     raise _MalformedStreamLoadResponseError(
                         "Doris Stream Load response is too large"
                     )
-                return self._parse_response(raw, rows=rows)
+                result = self._parse_response(raw, rows=rows)
+                log = logger.debug if result.status == "Success" else logger.warning
+                log(
+                    "Doris Stream Load response label=%s status=%s attempted_rows=%d "
+                    "loaded_rows=%d filtered_rows=%d",
+                    request.get_header("Label"),
+                    result.status,
+                    rows,
+                    result.loaded_rows,
+                    result.filtered_rows,
+                )
+                return result
             except _MalformedStreamLoadResponseError as error:
                 self._raise_response_error(request.transmission, error)
         finally:

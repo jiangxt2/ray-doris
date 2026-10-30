@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from contextlib import closing
 from copy import copy
 from dataclasses import replace
@@ -47,6 +49,8 @@ from ray_doris._planner import DorisPlanner, _validate_parallelism
 from ray_doris._predicate import compile_predicate
 from ray_doris._readers import _ensure_flight_available, read_split
 from ray_doris._sql import normalize_columns, normalize_filter, parse_table
+
+logger = logging.getLogger(__name__)
 
 
 def _read_empty(schema: pa.Schema) -> List[pa.Table]:
@@ -231,8 +235,10 @@ class DorisDatasource(Datasource):
         _validate_parallelism(parallelism)
         _validate_row_limit(per_task_row_limit)
         planner = DorisPlanner(self._config)
+        cache_hit = self._planning_snapshot is not None
         if self._planning_snapshot is None:
             self._planning_snapshot = planner.discover()
+        started = time.monotonic()
         plan = planner.plan_from_snapshot(self._planning_snapshot, parallelism)
         zero_columns = self._projection_columns == ()
         schema = (
@@ -247,7 +253,7 @@ class DorisDatasource(Datasource):
                 exec_stats=None,
                 input_files=None,
             )
-            return [
+            tasks = [
                 make_read_task(
                     partial(_read_empty, schema),
                     metadata,
@@ -255,16 +261,30 @@ class DorisDatasource(Datasource):
                     per_task_row_limit,
                 )
             ]
-        tasks = []
-        for split in plan.splits:
-            split = replace(split, row_limit=per_task_row_limit)
-            reader = _read_zero_columns if zero_columns else read_split
-            read_fn = partial(reader, self._config, split, plan.schema)
-            metadata = BlockMetadata(
-                num_rows=None,
-                size_bytes=None,
-                exec_stats=None,
-                input_files=None,
-            )
-            tasks.append(make_read_task(read_fn, metadata, schema, per_task_row_limit))
+        else:
+            tasks = []
+            for split in plan.splits:
+                split = replace(split, row_limit=per_task_row_limit)
+                reader = _read_zero_columns if zero_columns else read_split
+                read_fn = partial(reader, self._config, split, plan.schema)
+                metadata = BlockMetadata(
+                    num_rows=None,
+                    size_bytes=None,
+                    exec_stats=None,
+                    input_files=None,
+                )
+                tasks.append(make_read_task(read_fn, metadata, schema, per_task_row_limit))
+        logger.debug(
+            "Doris read plan cache_hit=%s tablet_count=%s tasks=%d parallelism=%d "
+            "tablet_size=%d row_limit=%s elapsed_ms=%.1f",
+            cache_hit,
+            None
+            if self._planning_snapshot.tablet_ids is None
+            else len(self._planning_snapshot.tablet_ids),
+            len(tasks),
+            parallelism,
+            self._config.tablet_size,
+            per_task_row_limit,
+            (time.monotonic() - started) * 1000,
+        )
         return tasks

@@ -139,10 +139,19 @@ def read_doris(
                     ray_remote_args=ray_remote_args,
                 ),
             )
-        except _NativeReadNotApplicableError as exc:
-            logger.info("Doris read path=doris reason=%s", exc)
+        except _NativeReadNotApplicableError:
+            logger.info("Doris read path=doris reason=native_profile_not_applicable")
     else:
         logger.info("Doris read path=doris reason=automatic native reads disabled")
+    logger.debug(
+        "Doris read options transport=%s concurrency=%s override_num_blocks=%s "
+        "tablet_size=%d batch_size=%d",
+        datasource.config.transport,
+        concurrency if type(concurrency) is int else None,
+        override_num_blocks if type(override_num_blocks) is int else None,
+        datasource.config.tablet_size,
+        datasource.config.batch_size,
+    )
     return cast(
         Dataset,
         ray.data.read_datasource(

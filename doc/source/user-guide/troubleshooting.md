@@ -56,6 +56,39 @@ A Flight stream, schema, authentication, permission, or conversion error doesn't
 
 ## Diagnose slow or stalled reads
 
+### Enable connector debug logs
+
+The connector uses standard Python loggers under `ray_doris`. The application
+controls levels, handlers, and formatting. Configure Ray before starting workers:
+
+```python
+import logging
+import ray
+
+ray.init(logging_config=ray.LoggingConfig(encoding="TEXT", log_level="DEBUG"))
+logging.getLogger("ray_doris").setLevel(logging.DEBUG)
+```
+
+Driver logger settings alone do not reconfigure existing workers. For an existing
+Ray application, enable DEBUG for the connector and its output handler in both
+processes using the application's logging configuration. Setting the `ray.data`
+logger does not change the separate `ray_doris` logger.
+
+INFO reports path selection and completed write summaries. DEBUG adds planning
+cache reuse, applicable tablet and task counts, connection setup, first-block
+latency, observed read rows and blocks, and Stream Load labels and responses.
+WARNING reports fallback decisions, failed requests, and cleanup problems. No row data,
+SQL, credential names or values, option mappings, paths, or raw exception text
+are included. There is no connector-specific logging switch or worker hook.
+
+Read elapsed time includes consumer pauses; `consumer_closed` differs from EOF.
+A write can partially succeed. Investigate an uncertain request with its existing
+label rather than replaying it; `Publish Timeout` does not mean rollback. Driver
+failure logs omit unknown global totals. Request `payload_bytes` is the prepared
+body size, not proof of transmission; summary `uploaded_bytes` counts completed
+batches' serialized payload sizes. Ray owns distributed execution context;
+the connector does not create a separate hierarchy of diagnostic identifiers.
+
 `query_plan_timeout` bounds query-plan request I/O. `connect_timeout` doesn't stop an established
 query. Configure PyMySQL `read_timeout` and `write_timeout` or Arrow Database Connectivity (ADBC)
 Flight query and fetch timeouts. Then compare Ray task duration with Doris query and backend metrics.
