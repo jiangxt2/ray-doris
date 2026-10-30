@@ -10,7 +10,6 @@ import ray.data
 from ray.data import Dataset
 
 from ray_doris._errors import DorisConfigurationError, _NativeReadNotApplicableError
-from ray_doris._logging import EventContext, bind, emit
 from ray_doris._models import (
     FlightScheme,
     HttpScheme,
@@ -129,39 +128,29 @@ def read_doris(
             ):
                 raise _NativeReadNotApplicableError("explicit read options require Doris execution")
             native = import_module("ray_doris._native")
-            with bind(EventContext(datasource._diagnostics)):
-                return cast(
-                    Dataset,
-                    native.read_native(
-                        datasource.config,
-                        catalog,
-                        native_options or NativeReadOptions(),
-                        concurrency=concurrency,
-                        override_num_blocks=override_num_blocks,
-                        ray_remote_args=ray_remote_args,
-                    ),
-                )
+            return cast(
+                Dataset,
+                native.read_native(
+                    datasource.config,
+                    catalog,
+                    native_options or NativeReadOptions(),
+                    concurrency=concurrency,
+                    override_num_blocks=override_num_blocks,
+                    ray_remote_args=ray_remote_args,
+                ),
+            )
         except _NativeReadNotApplicableError:
-            reason = "native_profile_not_applicable"
+            logger.info("Doris read path=doris reason=native_profile_not_applicable")
     else:
-        reason = "automatic_native_disabled"
-    emit(
-        logger,
-        logging.INFO,
-        "doris.read.path_selected",
-        context=EventContext(datasource._diagnostics),
-        phase="selection",
-        status="selected",
-        path="doris",
-        reason_code=reason,
-        experimental=False,
-        catalog_kind="internal" if datasource.config.catalog is None else "external",
-        concurrency=concurrency if type(concurrency) is int and concurrency > 0 else None,
-        override_num_blocks=override_num_blocks
-        if type(override_num_blocks) is int and override_num_blocks > 0
-        else None,
-        tablet_size=datasource.config.tablet_size,
-        batch_size=datasource.config.batch_size,
+        logger.info("Doris read path=doris reason=automatic native reads disabled")
+    logger.debug(
+        "Doris read options transport=%s concurrency=%s override_num_blocks=%s "
+        "tablet_size=%d batch_size=%d",
+        datasource.config.transport,
+        concurrency if type(concurrency) is int else None,
+        override_num_blocks if type(override_num_blocks) is int else None,
+        datasource.config.tablet_size,
+        datasource.config.batch_size,
     )
     return cast(
         Dataset,

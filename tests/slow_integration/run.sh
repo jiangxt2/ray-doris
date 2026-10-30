@@ -105,7 +105,6 @@ cleanup() {
   {
     "${compose[@]}" ps -a
     "${compose[@]}" logs --no-color
-    "${compose[@]}" cp ray-head:/state/diagnostics.json "${log_dir}/diagnostics.json"
     "${compose[@]}" down -v
   } >> "${compose_log}" 2>&1
   for image in "${ray_image}" "${fe_image}" "${be_image}"; do

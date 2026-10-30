@@ -12,17 +12,6 @@ import pyarrow as pa
 import pymysql
 
 from ray_doris._errors import DorisConfigurationError, DorisReadError
-from ray_doris._logging import (
-    DiagnosticSnapshot,
-    EventContext,
-    ProgressBudget,
-    bind,
-    current_context,
-    emit,
-    error_type,
-    new_id,
-    stage,
-)
 from ray_doris._models import (
     _ADBC_CONNECT_TIMEOUT_OPTION,
     DorisInputSplit,
@@ -117,18 +106,7 @@ def _close_reader_resource(resource: Any, *, label: str, context: str) -> None:
     try:
         resource.close()
     except Exception as error:
-        active = current_context()
-        if active is not None:
-            active.cleanup_error = True
-        emit(
-            logger,
-            logging.WARNING,
-            "doris.cleanup.failed",
-            phase="cleanup",
-            status="failed",
-            resource_kind="mysql_cursor" if label == "MySQL cursor" else "mysql_connection",
-            error_type=error_type(error),
-        )
+        logger.warning("Failed to close Doris %s error_type=%s", label, type(error).__name__)
 
 
 def _detach_mysql_result(connection: Any, cursor: Any, *, context: str) -> None:
@@ -153,18 +131,7 @@ def _detach_mysql_result(connection: Any, cursor: Any, *, context: str) -> None:
             cursor._result = None
             cursor.connection = None
     except Exception as error:
-        active = current_context()
-        if active is not None:
-            active.cleanup_error = True
-        emit(
-            logger,
-            logging.WARNING,
-            "doris.cleanup.failed",
-            phase="detach",
-            status="failed",
-            resource_kind="mysql_result",
-            error_type=error_type(error),
-        )
+        logger.warning("Failed to detach Doris MySQL result error_type=%s", type(error).__name__)
 
 
 def _cleanup_mysql_reader(
@@ -182,33 +149,13 @@ def _cleanup_mysql_reader(
     _detach_mysql_result(connection, cursor, context=context)
 
 
-def _close_flight_resource(resource: Any, kind: str) -> None:
-    """Report close failures while preserving Flight's existing exception semantics."""
-    try:
-        resource.close()
-    except Exception as error:
-        active = current_context()
-        if active is not None:
-            active.cleanup_error = True
-        emit(
-            logger,
-            logging.WARNING,
-            "doris.cleanup.failed",
-            phase="cleanup",
-            status="failed",
-            resource_kind=kind,
-            error_type=error_type(error),
-        )
-        raise
-
-
 def read_mysql(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterator[pa.Table]:
     """Stream PyMySQL rows in bounded batches and convert to canonical Arrow."""
-    active = current_context()
-    if active is not None:
-        active.transport = "mysql"
+    started = time.monotonic()
+    emitted_rows = emitted_blocks = 0
+    logger.debug("Doris MySQL read started batch_size=%d", config.batch_size)
     connection: Any = None
     cursor: Any = None
     reached_eof = False
@@ -216,9 +163,9 @@ def read_mysql(
     context = _split_context(config, split)
     try:
         try:
-            with stage(logger, "doris.read.setup", "connection"):
-                connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
-                cursor = connection.cursor()
+            connection = pymysql.connect(**_mysql_connection_kwargs(config, streaming=True))
+            cursor = connection.cursor()
+            logger.debug("Doris MySQL connection ready; executing read")
             sql, parameters = build_read_sql(
                 config, split.tablet_ids, bind=True, row_limit=split.row_limit
             )
@@ -236,9 +183,17 @@ def read_mysql(
                     break
                 table = _rows_to_table(rows, names, schema)
                 del rows
+                if not emitted:
+                    logger.debug(
+                        "Doris MySQL first block elapsed_ms=%.1f",
+                        (time.monotonic() - started) * 1000,
+                    )
                 emitted = True
+                emitted_rows += table.num_rows
+                emitted_blocks += 1
                 yield table
             if config.catalog is not None and not emitted:
+                emitted_blocks += 1
                 yield pa.Table.from_batches([], schema=schema)
         finally:
             _cleanup_mysql_reader(
@@ -273,6 +228,20 @@ def read_mysql(
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
     except Exception:
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
+
+    finally:
+        error = sys.exc_info()[1]
+        logger.debug(
+            "Doris MySQL read finished status=%s rows=%d blocks=%d elapsed_ms=%.1f",
+            "eof"
+            if reached_eof
+            else "consumer_closed"
+            if isinstance(error, GeneratorExit)
+            else "failed",
+            emitted_rows,
+            emitted_blocks,
+            (time.monotonic() - started) * 1000,
+        )
 
 
 def _flight_is_installed() -> bool:
@@ -341,13 +310,14 @@ def read_flight(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterator[pa.Table]:
     """Stream Arrow RecordBatches from ADBC Flight SQL."""
-    active = current_context()
-    if active is not None:
-        active.transport = "flight"
+    started = time.monotonic()
+    reached_eof = False
+    status = "failed"
+    emitted_rows = emitted_blocks = 0
+    logger.debug("Doris Flight read started batch_size=%d", config.batch_size)
     try:
         try:
-            with stage(logger, "doris.read.setup", "connection"):
-                connection = _flight_connection(config)
+            connection = _flight_connection(config)
         except ImportError:
             raise _FlightUnavailableError(
                 f"Flight SQL setup is unavailable for {_split_context(config, split)}"
@@ -369,6 +339,7 @@ def read_flight(
                 raise
             try:
                 try:
+                    logger.debug("Doris Flight connection ready; executing read")
                     cursor.execute(_query(config, split))
                     reader = cursor.fetch_record_batch()
                 except Exception as exc:
@@ -381,26 +352,49 @@ def read_flight(
                     emitted = False
                     for batch in reader:
                         table = _cast_flight_batch(batch, schema)
+                        if not emitted and table.num_rows:
+                            logger.debug(
+                                "Doris Flight first block elapsed_ms=%.1f",
+                                (time.monotonic() - started) * 1000,
+                            )
                         emitted = emitted or table.num_rows > 0
-                        yield from _slice_flight_table(table, config.batch_size)
+                        for block in _slice_flight_table(table, config.batch_size):
+                            emitted_rows += block.num_rows
+                            emitted_blocks += 1
+                            yield block
+                    reached_eof = True
                     if config.catalog is not None and not emitted:
+                        emitted_blocks += 1
                         yield pa.Table.from_batches([], schema=schema)
                 finally:
-                    _close_flight_resource(reader, "flight_reader")
+                    reader.close()
             finally:
-                _close_flight_resource(cursor, "flight_cursor")
+                cursor.close()
         finally:
-            _close_flight_resource(connection, "flight_connection")
+            connection.close()
     except (_FlightUnavailableError, DorisConfigurationError):
         raise
     except DorisReadError as exc:
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)}: {exc}"
         ) from exc
+    except GeneratorExit:
+        status = "eof" if reached_eof else "consumer_closed"
+        raise
     except Exception:
         raise DorisReadError(
             f"failed to read Doris {_split_context(config, split)} through Flight SQL"
         ) from None
+    else:
+        status = "eof"
+    finally:
+        logger.debug(
+            "Doris Flight read finished status=%s rows=%d blocks=%d elapsed_ms=%.1f",
+            status,
+            emitted_rows,
+            emitted_blocks,
+            (time.monotonic() - started) * 1000,
+        )
 
 
 def _is_flight_setup_error(exc: BaseException, *, allow_timeout: bool = True) -> bool:
@@ -440,7 +434,7 @@ def _is_flight_setup_error(exc: BaseException, *, allow_timeout: bool = True) ->
     return False
 
 
-def _select_reader(
+def read_split(
     config: DorisReadConfig, split: DorisInputSplit, schema: pa.Schema
 ) -> Iterable[pa.Table]:
     """Select a transport and limit auto fallback to Flight setup failures."""
@@ -452,18 +446,7 @@ def _select_reader(
     if not _flight_is_installed():
         if config.flight_scheme == "grpc+tls":
             raise _flight_import_error()
-        active = current_context()
-        if active is not None:
-            active.transport = "mysql"
-        emit(
-            logger,
-            logging.DEBUG,
-            "doris.read.selection",
-            phase="setup",
-            status="selected",
-            reason_code="flight_extra_unavailable",
-            transport="mysql",
-        )
+        logger.info("Flight SQL extra is unavailable; using the MySQL protocol")
         return read_mysql(config, split, schema)
 
     def auto_reader() -> Iterator[pa.Table]:
@@ -474,133 +457,9 @@ def _select_reader(
                 raise DorisReadError(
                     "Flight SQL TLS setup failed; refusing automatic MySQL fallback"
                 ) from None
-            active = current_context()
-            if active is not None:
-                active.transport = "mysql"
-            emit(
-                logger,
-                logging.WARNING,
-                "doris.transport.fallback",
-                phase="setup",
-                status="fallback",
-                from_transport="flight",
-                to_transport="mysql",
-                reason_code="flight_setup_unavailable",
+            logger.warning(
+                "Flight SQL setup is unavailable; using MySQL",
             )
             yield from read_mysql(config, split, schema)
 
     return auto_reader()
-
-
-def read_split(
-    config: DorisReadConfig,
-    split: DorisInputSplit,
-    schema: pa.Schema,
-    diagnostics: Optional[DiagnosticSnapshot] = None,
-) -> Iterator[pa.Table]:
-    """Observe an existing stream without retaining context across consumer yields."""
-    context = EventContext(
-        diagnostics or DiagnosticSnapshot(),
-        role="worker",
-        transport="mysql" if config.transport == "mysql" else "flight",
-    )
-    # Preserve the existing eager dependency checks, without starting a database stream.
-    with bind(context):
-        try:
-            selected = _select_reader(config, split, schema)
-        except BaseException as error:
-            emit(
-                logger,
-                logging.ERROR,
-                "doris.read.finished",
-                phase="selection",
-                status="failed",
-                error_type=error_type(error),
-            )
-            raise
-
-    def observed() -> Iterator[pa.Table]:
-        context.execution_id = new_id()
-        started = time.monotonic()
-        rows = blocks = 0
-        first = False
-        status = "succeeded"
-        failure: Optional[str] = None
-        budget = ProgressBudget(context.snapshot.log_batches)
-        iterator = iter(selected)
-        emit(
-            logger,
-            logging.DEBUG,
-            "doris.read.started",
-            context=context,
-            phase="read",
-            status="started",
-            batch_size=config.batch_size,
-        )
-        try:
-            while True:
-                try:
-                    with bind(context):
-                        table = next(iterator)
-                except StopIteration:
-                    break
-                blocks += 1
-                rows += table.num_rows
-                if table.num_rows and not first:
-                    first = True
-                    emit(
-                        logger,
-                        logging.DEBUG,
-                        "doris.read.first_block",
-                        context=context,
-                        phase="read",
-                        status="produced",
-                        duration_ms=(time.monotonic() - started) * 1000,
-                    )
-                if budget.allow(logger):
-                    emit(
-                        logger,
-                        logging.DEBUG,
-                        "doris.read.progress",
-                        context=context,
-                        phase="read",
-                        status="produced",
-                        batch_index=blocks,
-                        emitted_rows=rows,
-                        arrow_bytes=table.nbytes,
-                    )
-                yield table
-        except GeneratorExit:
-            status = "consumer_closed"
-            raise
-        except BaseException as error:
-            status = "cancelled" if isinstance(error, KeyboardInterrupt) else "failed"
-            failure = error_type(error)
-            raise
-        finally:
-            try:
-                with bind(context):
-                    close = getattr(iterator, "close", None)
-                    if close is not None:
-                        close()
-            except BaseException as error:
-                status = "failed"
-                failure = error_type(error)
-                raise
-            finally:
-                emit(
-                    logger,
-                    logging.ERROR if status == "failed" else logging.DEBUG,
-                    "doris.read.finished",
-                    context=context,
-                    phase="read",
-                    status=status,
-                    emitted_rows=rows,
-                    emitted_blocks=blocks,
-                    cleanup_error=context.cleanup_error,
-                    duration_ms=(time.monotonic() - started) * 1000,
-                    error_type=failure,
-                    suppressed_progress=budget.seen - budget.emitted,
-                )
-
-    return observed()

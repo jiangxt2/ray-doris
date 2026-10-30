@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import ssl
 import time
@@ -29,7 +28,6 @@ from ray.data.aggregate import Count, Max, Min, Sum
 from ray.data.datasource import ReadTask
 from ray.data.expressions import col
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-from tests.logging_capture import records
 from tests.projection_helpers import RecordingDorisDatasource, SQLRecorder
 
 from ray_doris import (
@@ -406,28 +404,6 @@ def _assert_read_executes_on_all_ray_workers(
     assert row_count == slow_config.row_count
     assert id_sum == slow_config.expected_id_sum
 
-    diagnostic_events = [
-        record
-        for record in records("/state")
-        if record.get("operation_id") == datasource._diagnostics.operation_id
-    ]
-    finished = [
-        record for record in diagnostic_events if record.get("event") == "doris.read.finished"
-    ]
-    assert len(finished) == BUCKET_COUNT
-    assert all(
-        record["status"] == "succeeded" and record["transport"] == transport for record in finished
-    )
-    assert len({record["execution_id"] for record in finished}) == BUCKET_COUNT
-    assert len({record["split_id"] for record in finished}) == BUCKET_COUNT
-    plans = {
-        record["plan_id"]
-        for record in diagnostic_events
-        if record.get("event") == "doris.plan.finished"
-    }
-    assert {record["plan_id"] for record in finished} <= plans
-    assert sum(record["emitted_rows"] for record in finished) == row_count
-
     if proxy_before is not None:
         proxy_after = flight_proxy_backend_stats(slow_config)
         for backend in proxy_before:
@@ -578,25 +554,6 @@ def test_stream_load_write_executes_on_all_ray_workers(
         assert sink.result.attempted_rows == worker_rows
         assert sink.result.loaded_rows == worker_rows
         assert sink.result.ray_num_rows == worker_rows
-        diagnostic_events = [
-            record
-            for record in records("/state")
-            if record.get("operation_id") == sink._diagnostics.operation_id
-        ]
-        loads = [
-            record for record in diagnostic_events if record.get("event") == "doris.load.finished"
-        ]
-        assert len(loads) == 1 and loads[0]["status"] == "success"
-        assert loads[0]["loaded_rows"] == worker_rows
-        started = [
-            record for record in diagnostic_events if record.get("event") == "doris.load.started"
-        ]
-        assert len(started) == 1 and started[0]["label"] == loads[0]["label"]
-        summaries = [
-            record for record in diagnostic_events if record.get("event") == "doris.write.finished"
-        ]
-        assert sorted(record["role"] for record in summaries) == ["driver", "worker"]
-        assert all(record["loaded_rows"] == worker_rows for record in summaries)
         results.append(sink.result)
         offset += worker_rows
 
@@ -702,17 +659,6 @@ def test_worker_retry_and_backend_failover(
     assert id_sum == retry_sum
     assert observed_node_ids - {initial_node_id}
 
-    starts = [
-        record
-        for record in records("/state")
-        if record.get("event") == "doris.read.started"
-        and record.get("operation_id") == datasource._diagnostics.operation_id
-    ]
-    assert len(starts) >= 2
-    assert len({record["execution_id"] for record in starts}) == len(starts)
-    assert len({record["plan_id"] for record in starts}) == 1
-    assert len({record["split_id"] for record in starts}) == 1
-
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline and len(_ray_worker_nodes(slow_config)) != 2:
         time.sleep(2)
@@ -787,19 +733,3 @@ def test_stream_load_transport_fault_is_ambiguous(
     cause = getattr(captured.value, "as_instanceof_cause", lambda: captured.value)()
     assert isinstance(cause, DorisAmbiguousWriteError)
     assert body_marker.read_text(encoding="utf-8") == "body-started\n"
-    captured_events = [
-        record
-        for record in records("/state")
-        if record.get("operation_id") == sink._diagnostics.operation_id
-    ]
-    loads = [record for record in captured_events if record.get("event") == "doris.load.finished"]
-    assert len(loads) == 1
-    assert loads[0]["status"] == "ambiguous"
-    assert loads[0]["send_state"] == "possibly_sent"
-    assert loads[0]["label"].startswith("ray_doris_")
-    writes = [record for record in captured_events if record.get("event") == "doris.write.finished"]
-    assert sorted(record["role"] for record in writes) == ["driver", "worker"]
-    assert all(record["status"] == "failed" for record in writes)
-    driver = next(record for record in writes if record["role"] == "driver")
-    assert not any(key in driver for key in ("loaded_rows", "batches", "uploaded_bytes"))
-    assert "transport-fault" not in json.dumps(captured_events)

@@ -56,88 +56,38 @@ A Flight stream, schema, authentication, permission, or conversion error doesn't
 
 ## Diagnose slow or stalled reads
 
-### Enable connector diagnostics
+### Enable connector debug logs
 
-The application owns logging levels, handlers, formatting, and Ray worker setup.
-The connector does not configure the root logger or install a worker hook.
-Setting a logger level in the driver does not update existing worker processes.
-
-For an independent application, configure Ray before creating the Dataset:
+The connector uses standard Python loggers under `ray_doris`. The application
+controls levels, handlers, and formatting. Configure Ray before starting workers:
 
 ```python
 import logging
-import os
 import ray
 
-os.environ["RAY_DORIS_LOG_BATCHES"] = "1"
-ray.init(
-    logging_config=ray.LoggingConfig(encoding="TEXT", log_level="DEBUG"),
-    runtime_env={"env_vars": {"RAY_DORIS_LOG_BATCHES": "1"}},
-)
+ray.init(logging_config=ray.LoggingConfig(encoding="TEXT", log_level="DEBUG"))
 logging.getLogger("ray_doris").setLevel(logging.DEBUG)
 ```
 
-Ray's text and JSON logging configuration includes custom event fields. For a
-custom application formatter, explicitly include `event`, `phase`, `status`,
-`operation_id`, and available `plan_id`, `split_id`, `execution_id`, and `label`
-fields. Use defaults for fields that do not apply to every event. For example,
-this application formatter works with Python 3.9 and newer:
+Driver logger settings alone do not reconfigure existing workers. For an existing
+Ray application, enable DEBUG for the connector and its output handler in both
+processes using the application's logging configuration. Setting the `ray.data`
+logger does not change the separate `ray_doris` logger.
 
-```python
-class ConnectorFormatter(logging.Formatter):
-    def format(self, record):
-        keys = ("event", "phase", "status", "operation_id", "execution_id", "label")
-        return " ".join(f"{key}={getattr(record, key, '-')}" for key in keys)
-```
+INFO reports path selection and completed write summaries. DEBUG adds planning
+cache reuse, applicable tablet and task counts, connection setup, first-block
+latency, observed read rows and blocks, and Stream Load labels and responses.
+WARNING reports fallback decisions, failed requests, and cleanup problems. No row data,
+SQL, credential names or values, option mappings, paths, or raw exception text
+are included. There is no connector-specific logging switch or worker hook.
 
-When choosing package-specific output, install the application's formatter and
-handler in both the driver and its own `worker_process_setup_hook` before
-starting Ray. A Ray Jobs submission uses a fully qualified, importable setup
-function, such as `my_application.logging_setup.configure`. Workers must be able
-to import that package before executing tasks; install it or
-include it in the job runtime environment. An existing
-Ray session keeps its original worker configuration. A Tributo application
-configures the `ray_doris` namespace through its application logging policy;
-the connector also works independently of Tributo and does not send telemetry.
-
-`RAY_DORIS_LOG_BATCHES` accepts only `0` or `1`, defaults to `0`, and is frozen
-when constructing a datasource or sink. Invalid values fail before network I/O.
-Changing a worker's environment or changing the environment after construction
-does not override that snapshot. This option does not change logging levels:
-batch progress requires both the option and DEBUG output at the logger and handler.
-
-Progress records the first eligible batch, then batches divisible by 100 when
-at least one second has elapsed since the last record, with at most 100 records
-per physical execution. Failures, uncertain outcomes, cleanup warnings, and
-stage boundaries are independent of that budget. The first load request has
-start and finish events even when batch progress is disabled; later successful
-requests are sampled. Logging still follows the application's level and filters.
-
-`operation_id` identifies the logical read or write. Repeated planning retains
-that operation and gets a new `plan_id`; each split has a `split_id`. Each physical
-read or worker write has a new `execution_id`, including a retried read. A read
-retry restarts the entire split. Planning fallback changes tablet grouping to
-one unpartitioned task; transport fallback changes an eligible Flight setup to
-MySQL. These are separate events and do not introduce new fallback behavior.
-
-Discovery, preparation, and first-request start events help identify a blocked
-stage. A missing finish event can also mean process termination. Driver write
-failure callbacks are best effort and omit unknown global totals. A failed
-Dataset can have successful requests; `Publish Timeout` does not mean rollback.
-Failed worker totals, when available, describe only previously confirmed batches
-(`counts_scope=confirmed_batches`); they do not establish the final outcome of
-the failing request. No response means those counters are omitted.
-Use an exceptional load's generated `label` to investigate its existing request,
-and do not replay an ambiguous write automatically.
-
-Rows count connector output or validated Doris response counters, rather than
-consumer processing. Read elapsed time includes generator pauses and backpressure.
-`arrow_bytes` describes the observed Arrow block, while `uploaded_bytes` counts
-serialized request bytes. Empty streams do not have a first nonempty block event.
-Events exclude credentials, credential environment names, SQL, filters, paths,
-option mappings, raw exception chains, and business rows. Experimental native
-Hive Parquet reads report selection and metadata counts; Ray owns file reading
-statistics, and logging does not change native support or release status.
+Read elapsed time includes consumer pauses; `consumer_closed` differs from EOF.
+A write can partially succeed. Investigate an uncertain request with its existing
+label rather than replaying it; `Publish Timeout` does not mean rollback. Driver
+failure logs omit unknown global totals. Request `payload_bytes` is the prepared
+body size, not proof of transmission; summary `uploaded_bytes` counts completed
+batches' serialized payload sizes. Ray owns distributed execution context;
+the connector does not create a separate hierarchy of diagnostic identifiers.
 
 `query_plan_timeout` bounds query-plan request I/O. `connect_timeout` doesn't stop an established
 query. Configure PyMySQL `read_timeout` and `write_timeout` or Arrow Database Connectivity (ADBC)

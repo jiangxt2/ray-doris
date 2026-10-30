@@ -11,7 +11,7 @@ RUN python -c 'import ray; assert ray.__version__ == "2.59.0", ray.__version__' 
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY src ./src
 COPY tests/slow_integration ./tests/slow_integration
-COPY tests/__init__.py tests/projection_helpers.py tests/logging_capture.py ./tests/
+COPY tests/__init__.py tests/projection_helpers.py ./tests/
 
 RUN --mount=type=cache,target=/var/cache/uv \
     UV_CACHE_DIR=/var/cache/uv UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX} \

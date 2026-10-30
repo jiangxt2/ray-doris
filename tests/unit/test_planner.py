@@ -348,14 +348,7 @@ def test_planner_falls_back_to_single_task_only_for_planning_error(monkeypatch, 
         Mock(side_effect=DorisPlanningError("sensitive-planning-detail")),
     )
     assert planner.plan(4).splits == (DorisInputSplit(None),)
-    fallback = [
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "doris.plan.fallback"
-    ]
-    assert len(fallback) == 1
-    assert fallback[0].to_plan == "unpartitioned"
-    assert not hasattr(fallback[0], "to_transport")
+    assert "using one unpartitioned task" in caplog.text
     assert "sensitive-planning-detail" not in caplog.text
 
 

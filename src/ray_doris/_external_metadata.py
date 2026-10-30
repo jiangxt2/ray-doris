@@ -18,7 +18,6 @@ from ray_doris._errors import (
     _NativeReadNotApplicableError,
 )
 from ray_doris._hms import HivePartition, HiveStorage, HiveTable, open_hms
-from ray_doris._logging import emit
 from ray_doris._metadata import ExternalMetadataReader, capability_missing, named_row
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._planner import _mysql_access_error, _mysql_connection_kwargs, _mysql_error_code
@@ -285,14 +284,10 @@ def discover_external(
                         raise DorisSchemaError(
                             "partition schema or value count differs from the table"
                         )
-            emit(
-                logger,
-                logging.DEBUG,
-                "doris.native.metadata",
-                phase="native_metadata",
-                status="discovered",
-                origin_count=len(reader.origins),
-                origins=",".join(sorted(set(reader.origins.values()))),
+            logger.debug(
+                "Doris native metadata origin_count=%d origins=%s",
+                len(reader.origins),
+                ",".join(sorted(set(reader.origins.values()))),
             )
             return ExternalMetadata(
                 schema, table.storage, partitions, table.partition_keys, version

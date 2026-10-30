@@ -37,7 +37,7 @@ class LimitRecorder:
         return self.records
 
 
-def _fixture_read(config, split, schema, diagnostics=None, *, recorder):
+def _fixture_read(config, split, schema, recorder):
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute("ATTACH ':memory:' AS db")

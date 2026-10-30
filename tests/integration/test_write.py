@@ -61,15 +61,8 @@ def test_duplicate_stream_load_round_trips_rows_and_reports_doris_statistics(
     assert result.loaded_rows == 2
     assert result.filtered_rows == 0
     assert result.ray_num_rows == 2
-    summaries = [
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "doris.write.finished"
-        and getattr(record, "role", None) == "driver"
-    ]
-    assert len(summaries) == 1
-    assert summaries[0].loaded_rows == result.loaded_rows
-    assert summaries[0].batches == result.batches
+    assert "Doris write completed status=success" in caplog.text
+    assert "loaded_rows=2" in caplog.text
     assert _query(
         doris_config,
         "SELECT id, category, score FROM write_events WHERE id IN (101, 102) ORDER BY id",
