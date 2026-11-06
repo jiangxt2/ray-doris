@@ -3,6 +3,7 @@ import traceback
 from datetime import datetime
 from decimal import Decimal
 
+import pyarrow as pa
 import pymysql
 import pytest
 
@@ -43,6 +44,51 @@ def test_mysql_reads_projected_filtered_rows_in_bounded_batches(doris_config) ->
     assert rows[0]["created_at"] == datetime(2025, 1, 2, 1, 2, 3, 1)
     assert rows[0]["large_value"] == Decimal("-170141183460469231731687303715884105728")
     assert rows[1]["amount"] == Decimal("0.000001")
+
+
+def test_mysql_reads_internal_string_columns_reported_as_text(doris_config) -> None:
+    table = f"{doris_config.database}.string_alias_records"
+    connection = pymysql.connect(
+        host=doris_config.host,
+        port=doris_config.mysql_port,
+        user=doris_config.user,
+        password=doris_config.password,
+        autocommit=True,
+    )
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"CREATE TABLE `{doris_config.database}`.`string_alias_records` "
+                "(`id` BIGINT NOT NULL, `event` STRING NULL, `campaign` STRING NULL) "
+                "DUPLICATE KEY(`id`) DISTRIBUTED BY HASH(`id`) BUCKETS 1 "
+                'PROPERTIES ("replication_num"="1")'
+            )
+            cursor.execute(
+                f"INSERT INTO `{doris_config.database}`.`string_alias_records` VALUES "
+                "(1, 'click', NULL), (2, 'purchase', 'winter')"
+            )
+            cursor.execute(f"DESCRIBE `{doris_config.database}`.`string_alias_records`")
+            assert [row[1].lower() for row in cursor.fetchall()] == ["bigint", "text", "text"]
+    finally:
+        connection.close()
+
+    dataset = read_doris(
+        **doris_config.reader_kwargs(
+            table=table, columns=["campaign", "id", "event"], on_query_plan_error="error"
+        )
+    )
+    schema = dataset.schema().base_schema
+    assert schema == pa.schema(
+        [
+            pa.field("campaign", pa.string(), nullable=True),
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("event", pa.string(), nullable=True),
+        ]
+    )
+    assert sorted(dataset.take_all(), key=lambda row: row["id"]) == [
+        {"campaign": None, "id": 1, "event": "click"},
+        {"campaign": "winter", "id": 2, "event": "purchase"},
+    ]
 
 
 def test_mysql_parallel_plan_uses_multiple_tablet_tasks(doris_config) -> None:
