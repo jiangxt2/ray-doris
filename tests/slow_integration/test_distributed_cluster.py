@@ -694,15 +694,29 @@ def test_worker_retry_and_backend_failover(
     )
 
 
+@pytest.mark.parametrize("redirect_https", [False, True])
 def test_stream_load_transport_fault_is_ambiguous(
     slow_config: SlowITConfig,
+    redirect_https: bool,
 ) -> None:
-    body_marker = Path("/state/write-fault-body-started")
+    body_marker = Path(
+        "/state/write-fault-https-body-started"
+        if redirect_https
+        else "/state/write-fault-body-started"
+    )
+    redirect_marker = Path("/state/write-fault-redirect")
     body_marker.unlink(missing_ok=True)
+    redirect_marker.unlink(missing_ok=True)
+    redirect_port = int(os.environ.get("DORIS_STREAM_LOAD_HTTPS_FAULT_PORT", "18447"))
     sink = FaultInjectionDorisDatasink(
         DorisConnection(
             host="write-fault",
-            http_port=slow_config.stream_load_fault_port,
+            http_port=(
+                int(os.environ.get("DORIS_STREAM_LOAD_REDIRECT_PORT", "18446"))
+                if redirect_https
+                else slow_config.stream_load_fault_port
+            ),
+            redirect_ports=(redirect_port,) if redirect_https else (),
             username="fault",
             password="fault",
             request_timeout_seconds=30.0,
@@ -733,3 +747,5 @@ def test_stream_load_transport_fault_is_ambiguous(
     cause = getattr(captured.value, "as_instanceof_cause", lambda: captured.value)()
     assert isinstance(cause, DorisAmbiguousWriteError)
     assert body_marker.read_text(encoding="utf-8") == "body-started\n"
+    if redirect_https:
+        assert redirect_marker.read_text(encoding="utf-8") == "redirected\n"

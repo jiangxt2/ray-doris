@@ -214,7 +214,9 @@ class StreamLoadClient:
                 headers=headers,
             )
             try:
-                return self._open_and_parse(self._build_opener(transmission), request, rows)
+                return self._open_and_parse(
+                    self._build_opener(transmission, request.type), request, rows
+                )
             except DorisWriteError:
                 raise
             except urllib.error.HTTPError as exc:
@@ -235,7 +237,9 @@ class StreamLoadClient:
                     )
                     try:
                         return self._open_and_parse(
-                            self._build_opener(redirected_transmission), redirected, rows
+                            self._build_opener(redirected_transmission, redirected.type),
+                            redirected,
+                            rows,
                         )
                     except urllib.error.HTTPError as redirected_error:
                         self._raise_http_error(
@@ -262,13 +266,15 @@ class StreamLoadClient:
             )
             raise
 
-    def _build_opener(self, transmission: _RequestTransmission) -> urllib.request.OpenerDirector:
+    def _build_opener(
+        self, transmission: _RequestTransmission, scheme: Optional[str] = None
+    ) -> urllib.request.OpenerDirector:
         handlers: list[Any] = [
             urllib.request.ProxyHandler({}),
             _NoRedirectHandler(),
             _TrackingHTTPHandler(transmission),
         ]
-        if self._connection.http_secure:
+        if (scheme or self._connection.scheme) == "https":
             context = ssl.create_default_context(cafile=self._connection.http_ca_file)
             handlers.append(_TrackingHTTPSHandler(transmission, context))
         return urllib.request.build_opener(*handlers)
@@ -410,7 +416,7 @@ class StreamLoadClient:
             raise _MalformedStreamLoadResponseError(
                 "Doris Stream Load returned an invalid response"
             )
-        status_value = payload.get("Status", payload.get("status", "Fail"))
+        status_value = payload.get("Status", payload.get("status"))
         if not isinstance(status_value, str):
             raise _MalformedStreamLoadResponseError("Doris Stream Load response status is invalid")
         normalized = " ".join(status_value.casefold().replace("_", " ").split())
@@ -419,9 +425,11 @@ class StreamLoadClient:
         )
         if normalized == "label already exists":
             raise DorisLabelExistsError("Doris Stream Load label is already retained")
-        if normalized not in {"success", "publish timeout"}:
+        if normalized == "fail":
             suffix = f" (HTTP {http_error})" if http_error is not None else ""
             raise DorisWriteError(f"Doris Stream Load failed{suffix}")
+        if normalized not in {"success", "publish timeout"}:
+            raise _MalformedStreamLoadResponseError("Doris Stream Load response status is invalid")
         loaded_rows = _int_field(payload, "NumberLoadedRows")
         filtered_rows = _int_field(payload, "NumberFilteredRows")
         total_rows = _int_field(payload, "NumberTotalRows")

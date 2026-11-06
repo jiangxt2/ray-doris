@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import math
+import ssl
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -43,6 +45,9 @@ from ray_doris.write.serialization import (
 from ray_doris.write.stream_load import (
     DorisLoadResult,
     StreamLoadClient,
+    _RequestTransmission,
+    _TrackedRequest,
+    _TrackingHTTPSHandler,
     _validate_redirect_target,
 )
 
@@ -413,6 +418,99 @@ def test_stream_load_post_send_transport_failure_is_ambiguous_and_redacted(
         ).load(b"payload-secret", rows=1, columns=("id",))
     assert "password-secret" not in str(captured.value)
     assert "payload-secret" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("secure", "scheme", "tracked"),
+    [(False, "http", False), (False, "https", True), (True, "https", True)],
+)
+def test_stream_load_tracks_the_actual_request_scheme(secure, scheme, tracked) -> None:
+    client = StreamLoadClient(
+        _connection(http_secure=secure), DorisTable("db", "table"), DorisWriteOptions()
+    )
+    opener = client._build_opener(_RequestTransmission(), scheme)
+    handlers = [
+        handler for handler in opener.handlers if isinstance(handler, _TrackingHTTPSHandler)
+    ]
+    assert bool(handlers) is tracked
+    if handlers:
+        assert handlers[0]._ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert handlers[0]._ssl_context.check_hostname
+
+
+def test_tls_setup_failure_before_body_is_known_and_redacted(monkeypatch) -> None:
+    monkeypatch.setattr(ssl, "create_default_context", Mock(side_effect=ssl.SSLError("tls-secret")))
+    client = StreamLoadClient(
+        _connection(http_secure=True), DorisTable("db", "table"), DorisWriteOptions()
+    )
+    with pytest.raises(DorisWriteError, match="before request body") as captured:
+        client.load(b"payload", rows=1, columns=("id",))
+    assert type(captured.value) is DorisWriteError
+    assert "tls-secret" not in str(captured.value)
+
+
+@pytest.mark.parametrize("body", [b"{}", b'{"Status":null}', b'{"Status":"unknown-secret"}'])
+@pytest.mark.parametrize("body_started", [False, True])
+def test_unknown_stream_load_status_uses_transmission_state(body, body_started) -> None:
+    client = StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions())
+    transmission = _RequestTransmission(header_sent=True, body_started=body_started)
+    request = _TrackedRequest(
+        "http://fe.example/load",
+        transmission=transmission,
+        data=b"payload",
+        method="PUT",
+        headers={},
+    )
+    response = Mock()
+    response.read.return_value = body
+    opener = Mock()
+    opener.open.return_value = response
+    expected = DorisAmbiguousWriteError if body_started else DorisWriteError
+    with pytest.raises(expected) as captured:
+        client._open_and_parse(opener, request, rows=1)
+    assert type(captured.value) is expected
+    assert "unknown-secret" not in str(captured.value)
+    response.close.assert_called_once()
+    opener.open.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"), [(400, DorisWriteError), (500, DorisAmbiguousWriteError)]
+)
+def test_unknown_stream_load_status_preserves_http_error_boundary(status, expected) -> None:
+    client = StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions())
+    error = urllib.error.HTTPError("http://fe.example", status, "error", {}, io.BytesIO(b"{}"))
+    with pytest.raises(expected) as captured:
+        client._raise_http_error(
+            error, rows=1, transmission=_RequestTransmission(body_started=True)
+        )
+    assert type(captured.value) is expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (b'{"Status":"Fail"}', DorisWriteError),
+        (b'{"Status":"Label Already Exists"}', DorisLabelExistsError),
+    ],
+)
+def test_explicit_stream_load_failure_remains_distinct_after_send(body, expected) -> None:
+    client = StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions())
+    request = _TrackedRequest(
+        "http://fe.example/load",
+        transmission=_RequestTransmission(body_started=True),
+        data=b"payload",
+        method="PUT",
+        headers={},
+    )
+    response = Mock()
+    response.read.return_value = body
+    opener = Mock()
+    opener.open.return_value = response
+    with pytest.raises(expected) as captured:
+        client._open_and_parse(opener, request, rows=1)
+    assert type(captured.value) is expected
+    response.close.assert_called_once()
 
 
 def test_stream_load_response_is_closed_and_cleanup_error_does_not_mask_success(
