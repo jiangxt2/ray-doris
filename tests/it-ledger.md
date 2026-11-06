@@ -1,5 +1,34 @@
 # Integration test ledger
 
+## Internal STRING display alias
+
+Issue #22: internal-table schema discovery recognizes the `TEXT` display alias
+for Doris `STRING` while preserving projection order, Arrow types and nullability.
+The shared type mapper remains unchanged and continues to reject `TEXT` outside
+this internal-read boundary; other unsupported types still fail closed.
+
+The tested worktree is based on `f257596457f24216a38ca49f9a57c971baa7cdb0`
+with uncommitted production and test changes. The cumulative source/test diff
+excluding this ledger has SHA-256
+`496e8875d38f906b384246412996bc3007a5a81e24b3572e92fc9090fa02c9dc`.
+These results do not certify an exact release commit.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Static and unit/public contracts | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff format/lint and mypy | 687 passed, 41 warnings, no skips, 52.93s; static checks passed |
+| Required Doris IT | Doris 4.0.6 FE/BE; Python 3.12.12, Ray 2.59.0; isolated Compose project; FE 3 GiB, BE 4 GiB | 65 passed, 8 warnings, no skips, 1029.14s |
+
+The Doris regression creates an isolated internal table with `STRING` columns,
+confirms `DESCRIBE` reports `text`, and verifies projected schema, values and
+nulls through the public MySQL read path. The unchanged distributed scheduling,
+transport and write semantics do not require a repeated slow suite.
+
+The full pytest and Compose logs, image identities, temporary isolated overlay,
+runner and scoped cleanup output are retained under
+`/private/tmp/ray-doris-internal-text-validation.FsgLSk/`. This run's containers,
+network, volumes and custom test images were removed; shared base images and
+unrelated Docker resources were retained.
+
 ## Stream Load transmission and response classification
 
 Issues #20 and #21: HTTP-to-HTTPS redirects retain request-body transmission
