@@ -77,6 +77,27 @@ def ensure_native_ray_version() -> None:
         raise _NativeReadNotApplicableError("Ray lacks required public batch mapping parameters")
 
 
+def ensure_iceberg_ray_version() -> None:
+    """Require the public Iceberg reader and batch mapping contracts."""
+    ensure_supported_ray_version()
+    reader = getattr(ray.data, "read_iceberg", None)
+    required = {
+        "table_identifier",
+        "snapshot_id",
+        "selected_fields",
+        "catalog_kwargs",
+        "override_num_blocks",
+        "ray_remote_args",
+    }
+    if not callable(reader) or not required <= inspect.signature(reader).parameters.keys():
+        raise _NativeReadNotApplicableError("Ray lacks the required Iceberg reader contract")
+    if (
+        not {"batch_format", "batch_size"}
+        <= inspect.signature(ray.data.Dataset.map_batches).parameters.keys()
+    ):
+        raise _NativeReadNotApplicableError("Ray lacks the required public batch mapper")
+
+
 def native_uses_datasource_v2() -> bool:
     """Identify the configured reader or the supported legacy public signature."""
     ensure_native_ray_version()

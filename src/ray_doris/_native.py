@@ -6,7 +6,8 @@ import logging
 import posixpath
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Mapping, Optional, Tuple
+from importlib import import_module
+from typing import Any, Mapping, Optional, Tuple, cast
 from urllib.parse import urlparse, urlunparse
 
 import pyarrow as pa
@@ -26,6 +27,7 @@ from ray_doris._errors import (
     DorisConfigurationError,
     DorisPlanningError,
     DorisSchemaError,
+    _NativeCatalogTypeMismatchError,
     _NativeReadNotApplicableError,
 )
 from ray_doris._external_metadata import ExternalMetadata, discover_external, partition_value
@@ -242,7 +244,21 @@ def read_native(
 ) -> Dataset:
     ensure_native_ray_version()
     validate_identifier(catalog, kind="catalog name")
-    metadata = discover_external(config, catalog, options)
+    try:
+        metadata = discover_external(config, catalog, options)
+    except _NativeCatalogTypeMismatchError:
+        iceberg = import_module("ray_doris._iceberg")
+        return cast(
+            Dataset,
+            iceberg.read_iceberg(
+                config,
+                catalog,
+                options,
+                concurrency=concurrency,
+                override_num_blocks=override_num_blocks,
+                ray_remote_args=ray_remote_args,
+            ),
+        )
     if config.columns is not None and any(c not in metadata.schema.names for c in config.columns):
         raise DorisConfigurationError("native projection includes an unknown column")
     plan = plan_files(metadata, options)

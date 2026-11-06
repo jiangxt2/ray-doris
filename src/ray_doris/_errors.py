@@ -1,5 +1,7 @@
 """Public exceptions raised by ray-doris."""
 
+import pyarrow as pa
+
 
 class DorisError(Exception):
     """Base exception for ray-doris."""
@@ -19,6 +21,19 @@ class DorisPlanningError(DorisError):
 
 class _NativeReadNotApplicableError(DorisPlanningError):
     """A valid table or request outside the automatic file-read profile."""
+
+
+class _NativeCatalogTypeMismatchError(_NativeReadNotApplicableError):
+    """The catalog is visible but belongs to another native reader."""
+
+
+class _PinnedNativeFallbackError(DorisPlanningError):
+    """A known incompatibility after selecting an Iceberg snapshot."""
+
+    def __init__(self, snapshot_id: int, schema: pa.Schema) -> None:
+        super().__init__("Iceberg native reader is incompatible with the selected snapshot")
+        self.snapshot_id = snapshot_id
+        self.schema = schema
 
 
 class DorisAuthenticationError(DorisPlanningError):

@@ -161,13 +161,20 @@ class DorisDatasource(Datasource):
         """Return the immutable datasource configuration."""
         return self._config
 
+    def _with_snapshot(self, snapshot_id: int, schema: pa.Schema) -> DorisDatasource:
+        """Create a fresh internal datasource for a pinned Iceberg fallback."""
+        clone = copy(self)
+        clone._config = replace(self._config, snapshot_id=snapshot_id)
+        clone._planning_snapshot = DorisPlanningSnapshot(schema=schema, tablet_ids=None)
+        return clone
+
     def estimate_inmemory_data_size(self) -> Optional[int]:
         """Avoid an expensive COUNT or sampling query during Ray auto-parallelism."""
         return None
 
     def supports_predicate_pushdown(self) -> bool:
         """Advertise the verified public V1 predicate contract without network I/O."""
-        return supports_native_predicates()
+        return self._config.snapshot_id is None and supports_native_predicates()
 
     def apply_predicate(self, predicate_expr: Any) -> DorisDatasource:
         """Accept a complete equivalent predicate or preserve Ray's residual Filter."""
@@ -197,7 +204,7 @@ class DorisDatasource(Datasource):
 
     def supports_projection_pushdown(self) -> bool:
         """Advertise only the Ray releases with verified projection contracts."""
-        return supports_projection_pushdown()
+        return self._config.snapshot_id is None and supports_projection_pushdown()
 
     def get_projection_map(self) -> Optional[Dict[str, str]]:
         """Return a fresh identity map without exposing mutable source state."""

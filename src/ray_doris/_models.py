@@ -160,9 +160,19 @@ class DorisReadConfig:
     client_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
     flight_options: Tuple[Tuple[str, Any], ...] = field(default_factory=tuple, repr=False)
     catalog: Optional[str] = None
+    # Internal only: an Iceberg fallback must retain the driver's selected version.
+    snapshot_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         """Validate scalar settings without performing network I/O."""
+        if self.snapshot_id is not None and (
+            isinstance(self.snapshot_id, bool)
+            or not isinstance(self.snapshot_id, int)
+            or self.snapshot_id <= 0
+            or self.snapshot_id > (1 << 63) - 1
+            or self.catalog is None
+        ):
+            raise DorisConfigurationError("snapshot_id must identify an external table snapshot")
         if not isinstance(self.host, str) or not self.host.strip():
             raise DorisConfigurationError("host must not be empty")
         if not isinstance(self.user, str) or not self.user:

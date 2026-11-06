@@ -76,3 +76,5 @@ Hudi
 libhdfs
 HotSpot
 libjsig
+Gravitino
+Kerberos
