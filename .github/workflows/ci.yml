@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv venv --python ${{ matrix.python }}
-      - run: uv pip install -e ".[test]" "ray[data]==${{ matrix.ray }}"
+      - run: uv pip install -e ".[test,iceberg]" "ray[data]==${{ matrix.ray }}"
       - name: Show resolved runtime versions
         run: >-
           .venv/bin/python -c

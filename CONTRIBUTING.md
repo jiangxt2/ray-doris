@@ -23,7 +23,7 @@ Use Python 3.12 for the main development environment:
 
 ```bash
 uv venv --python 3.12
-uv pip install -e ".[dev,flight]"
+uv pip install -e ".[dev,flight,iceberg]"
 pre-commit install --hook-type pre-commit
 .venv/bin/ruff format --check .
 .venv/bin/ruff check .

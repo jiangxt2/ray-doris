@@ -65,3 +65,19 @@ This does not skip either selected version's native suite.
 Only rerun failed, interrupted or affected states. A passed source/config/environment
 state must reuse its existing result. Store results in `tests/it-ledger.md`; a passing
 native matrix is functional evidence, not a performance or release certification.
+
+## Iceberg REST checks
+
+The `--iceberg` option adds the isolated REST catalog, PostgreSQL and Iceberg
+cases. Use `--versions 4.0.6 3.0.6.2 4.1.5` for the planned matrix. The runner
+records the image IDs, build versions and cleanup outcome; it does not pull base
+images. The static S3 credential provider is a separate test service. It does not
+validate expiring credentials or Kerberos.
+
+For failure diagnosis and non-overlapping completion, `--iceberg-preflight`
+selects the 4.0.6 S3/HDFS smoke checks, `--iceberg-compat-only` selects the other
+versions' minimal checks, and `--iceberg-cases` accepts individual test function
+names for one version. `--doris-regression-only --versions 4.0.6` runs only the
+existing Doris suite; the runner checks that `.venv` uses Ray 2.59.0 before it
+starts containers. Reuse previously passing results where the code and relevant
+environment have not changed.

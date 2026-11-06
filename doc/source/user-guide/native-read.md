@@ -69,7 +69,7 @@ these checks do not extend the HDFS/S3 cluster matrix to those Ray releases.
 
 - Native selection requires Hive Parquet without transactions, with standard
   InputFormat and SerDe on HDFS or S3. Other formats, Hive ACID, views,
-  Iceberg/Hudi/Delta and custom handlers retain Doris reading where supported by Doris.
+  Iceberg/Hudi/Delta and custom handlers in Hive retain Doris reading where supported by Doris.
 - Publish a stable batch before reading. Files, schema and registered partitions
   must remain unchanged throughout consumption. A file list is not a snapshot.
 - Data columns use the existing Doris-to-Arrow mapping and must agree with HMS.
@@ -96,6 +96,82 @@ Native reading maps Parquet data columns by name. The driver checks the effectiv
 `hive_parquet_use_column_names` setting; `false` retains Doris execution. For
 reference SQL queries, use `SET hive_parquet_use_column_names = true;` in the
 Doris SQL session. The connector does not change session settings automatically.
+
+## Try Iceberg REST catalog reads
+
+The `ray-doris[iceberg]` extra provides a separate experimental profile for a
+Doris Iceberg Catalog backed by an independent Iceberg REST Catalog. It uses the
+same `catalog`, `table`, and `auto_native_read=True` arguments; no snapshot
+argument is needed. The real-service checks and remaining limits are listed below.
+The Hive options and the Hive catalog path above do not configure Iceberg FileIO.
+
+The driver checks Doris catalog properties, the caller's visible Doris policies,
+the actual requested columns and an independently configured REST identity. When
+available, shared immutable metadata and the same table UUID establish identity.
+On older versions such as Doris 3.0.6.2, the connector instead compares the selected
+snapshot ID and manifest list, or those of a reachable common ancestor. This is
+weaker evidence: it does not prove the current Doris table UUID, and the connector
+logs a warning when it selects this path. Missing evidence retains Doris execution;
+conflicting manifest metadata is an error.
+
+Before enabling this profile, ensure the Doris and Ray REST identities resolve the
+same table and that the actual table and storage access are authorized. The
+connector cannot independently verify hidden identity-based routing or every table
+replacement; enabling the option is not proof of authorization equivalence.
+On Doris 3.0.6.2, `iceberg_meta` also checks table-level `SELECT` privilege; its
+permission errors are reported even if a projected ordinary query is permitted.
+Custom
+authorization controllers, unavailable policy information, remote name mapping,
+explicit concurrency and non-default `NativeReadOptions` also retain Doris.
+
+For eligible reads, Doris's `main` ref supplies the snapshot when available;
+otherwise the REST current snapshot is used only after the required identity
+checks. A selected snapshot is passed to Ray and to any Doris fallback. Ray's
+deferred catalog load rechecks the REST table UUID and snapshot. A later ordinary
+Doris query can see a different snapshot because of concurrent writes or caches;
+on the ancestor path Doris may not yet be able to read the selected REST snapshot.
+If native planning is known to be incompatible after snapshot selection, Doris
+fallback must read that same snapshot or fail. An expired snapshot, inconsistent
+metadata or a failed native execution is an error; results from native and Doris
+execution are never combined.
+
+PyIceberg uses its existing catalog configuration and environment for REST
+authentication and storage access. Its S3 credential delegation does not imply
+Doris policy equivalence, a particular credential lifetime, or HDFS authorization.
+When absent from the named PyIceberg configuration, the connector can reuse
+visible Doris S3 endpoint and region, and `OAuth2` server `URI` and scope as
+non-secret defaults. Explicit PyIceberg settings and REST server overrides keep
+their existing precedence. The connector never forwards Doris credentials;
+S3 path-style options still require independent PyIceberg configuration.
+Automatically reused endpoints must be HTTP(S) URLs without embedded credentials,
+query strings or fragments; configure other supported forms explicitly.
+Configure the catalog before PyIceberg loads in each relevant process: changing
+environment variables later does not necessarily refresh its cached configuration.
+HDFS uses the deployed Hadoop identity and configuration on the driver and Ray
+workers. With PyIceberg 0.10's PyArrow FileIO, qualified HDFS paths do not pass
+the `hdfs.user` or `hdfs.kerberos_ticket` properties to the `URI` constructor.
+Kerberos credentials and renewal require separate deployment validation.
+Never copy masked Doris secrets into Ray; use a trusted Ray cluster
+because Iceberg FileIO and credentials may be serialized to workers. The connector
+currently leaves the REST service's management origin unknown; it does not query
+a Gravitino management server or infer management from the URL or credential
+delegation. Gravitino-governed policy equivalence has not been verified.
+
+Known unsupported delete representations and file formats retain a snapshot-pinned
+Doris query when possible; this feature does not write or delete Iceberg data.
+Real-service checks cover S3 and HDFS on Doris `4.0.6-rc02`, S3 on
+`4.1.5-release`, and S3 snapshot and cached-ancestor native reads on
+`3.0.6.2-rc01`. The 3.0.6.2 native path has not been verified with HDFS or
+schema evolution.
+A 4.0.6 check also
+covered static S3 credential vending, table replacement, snapshot expiration
+and a failed native read. Targeted checks cover worker retry at a pinned snapshot,
+row-policy fallback, an empty table, a simulated unsupported delete falling back
+to Doris at the same snapshot, and an explicit error on incompatible historical
+schema. A 4.1.5 Position Delete check compared automatic and Doris query results;
+it did not separately assert the selected path. These checks do not establish
+equality-delete or deletion-vector coverage, STS credential refresh, or Kerberos
+support.
 
 Native timestamps require an effective UTC Doris session; other session time zones
 retain Doris execution. Adjusted timestamps use timezone-free UTC values,
