@@ -1,5 +1,35 @@
 # Integration test ledger
 
+## Stream Load transmission and response classification
+
+Issues #20 and #21: HTTP-to-HTTPS redirects retain request-body transmission
+tracking, and missing or unknown response statuses follow the existing
+transmission-aware error boundary. Known failures, duplicate labels, successful
+responses, certificate verification, redirect allowlists, and zero replay remain
+separate contracts.
+
+The tested worktree is based on `6e4077cf87f6fa9f9f046836e911ab5264c1effc`
+with uncommitted production and test changes. The cumulative source/test diff
+excluding this ledger has SHA-256
+`956a98a39d7050980b1ca6bdbcf672cbcf6b74fab71e1c2f8571cc4bb292cb37`.
+These results do not certify an exact release commit.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Static and unit/public contracts | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff format/lint and mypy | 681 passed, 42 warnings, no skips, 52.14s; static checks passed |
+| Required Doris IT | Doris 4.0.6 FE/BE; Python 3.12.12, Ray 2.59.0; isolated Compose project; FE 3 GiB, BE 4 GiB | 64 passed, 8 warnings, no skips, 1025.86s |
+| Full distributed slow IT | Doris 4.0.6; Python 3.12.14, Ray 2.59.0; one FE, three BEs, three Ray workers; BE 3 GiB | 16 passed, 21 warnings, no skips, 109.35s; includes worker/BE faults and HTTP→HTTPS redirect followed by body-started disconnect |
+
+The HTTPS fault endpoint uses a CA-verified test certificate and records one
+redirect and one body-started request; it is a fault simulator, not a claim that
+a Doris backend committed the request. The slow suite's pytest-cache warning is
+caused by container workspace permissions; it did not skip or weaken tests.
+The full logs, actual image identities, temporary isolated Compose overlays,
+runner, and scoped cleanup output are retained under
+`/private/tmp/ray-doris-stream-load-validation.Q8URNv/`. All containers,
+networks, volumes and custom test images created by each run were removed;
+shared base images and unrelated Docker resources were retained.
+
 ## Lightweight debug logging validation
 
 The user approved replacing PR #18's diagnostic framework on 2026-10-30 with
