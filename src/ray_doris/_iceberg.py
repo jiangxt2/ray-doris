@@ -44,7 +44,13 @@ logger = logging.getLogger(__name__)
 _DELEGATION = "header.X-Iceberg-Access-Delegation"
 
 
-def _load_table(load_catalog: Any, catalog: str, rest: dict[str, Any], identifier: str) -> Any:
+def _load_table(
+    load_catalog: Any,
+    catalog: str,
+    rest: dict[str, Any],
+    identifier: str,
+    configured: Mapping[str, Any],
+) -> Any:
     try:
         return load_catalog(catalog, **rest).load_table(identifier)
     except Exception as error:
@@ -54,7 +60,7 @@ def _load_table(load_catalog: Any, catalog: str, rest: dict[str, Any], identifie
         if (
             not isinstance(error, exceptions.BadRequestError)
             or "No credential provider found for path " not in str(error)
-            or _DELEGATION in rest
+            or any(key.lower() == _DELEGATION.lower() for key in (*rest, *configured))
         ):
             raise
         rest[_DELEGATION] = ""
@@ -167,7 +173,11 @@ def read_iceberg(
             rest.update(defaults)
             try:
                 table = _load_table(
-                    load_catalog, catalog, rest, f"{config.table.database}.{config.table.table}"
+                    load_catalog,
+                    catalog,
+                    rest,
+                    f"{config.table.database}.{config.table.table}",
+                    configured,
                 )
             except Exception as error:
                 if _unsupported_v1_inline_manifests(error):
@@ -243,7 +253,7 @@ def read_iceberg(
                 raise DorisPlanningError(
                     "selected Iceberg snapshot schema differs from Doris"
                 ) from None
-            if table.metadata.format_version >= 3:
+            if table.metadata.format_version >= 2:
                 try:
                     manifests = snapshot.manifests(table.io)
                     has_deletes = any(

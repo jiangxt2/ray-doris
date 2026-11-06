@@ -172,8 +172,17 @@ def test_append_after_snapshot_selection_keeps_pinned_data(tables, monkeypatch):
 
 
 @pytest.mark.parametrize("medium", ["s3", "hdfs"])
-def test_projection_and_workers_match_doris_schema(tables, medium):
+def test_projection_and_workers_match_doris_schema(tables, medium, monkeypatch):
     name, namespace, _ = tables[medium]
+    native = ray.data.read_iceberg
+    calls = []
+
+    @functools.wraps(native)
+    def record(**kwargs):
+        calls.append(kwargs)
+        return native(**kwargs)
+
+    monkeypatch.setattr(ray.data, "read_iceberg", record)
     expected = read_doris(
         host="fe", catalog=name, table=namespace + ".events", columns=["label", "id"]
     )
@@ -184,7 +193,7 @@ def test_projection_and_workers_match_doris_schema(tables, medium):
         if node["Alive"] and node["Resources"].get("CPU", 0) > 0
     ]
     assert len(workers) == 2
-    for node in workers:
+    for index, node in enumerate(workers, start=1):
         actual = data(
             name,
             namespace,
@@ -196,6 +205,8 @@ def test_projection_and_workers_match_doris_schema(tables, medium):
         actual_table = pa.concat_tables(ray.get(actual.to_arrow_refs()))
         assert actual_table.schema == expected_table.schema
         assert actual_table.to_pylist() == expected_table.to_pylist()
+        assert len(calls) == index
+        assert calls[-1]["ray_remote_args"]["scheduling_strategy"].node_id == node
 
 
 def scratch_table(name, namespace, scratch, *, with_label=False):
@@ -669,7 +680,9 @@ def test_unavailable_policy_visibility_keeps_doris_filter(tables, monkeypatch):
     assert calls == []
 
 
-def test_doris_position_delete(tables):
+def test_doris_position_delete(tables, monkeypatch):
+    from pyiceberg.manifest import DataFileContent, ManifestContent
+
     name, namespace, _ = tables["s3"]
     _, table = scratch_table(name, namespace, "scratch_delete", with_label=True)
     with table.transaction() as transaction:
@@ -681,7 +694,44 @@ def test_doris_position_delete(tables):
     sql(f"REFRESH TABLE {name}.{namespace}.scratch_delete")
     sql(f"DELETE FROM {name}.{namespace}.scratch_delete WHERE id = 1")
     sql(f"REFRESH TABLE {name}.{namespace}.scratch_delete")
+    table.refresh()
+    snapshot = table.current_snapshot()
+    assert snapshot is not None
+    delete_manifests = [
+        manifest
+        for manifest in snapshot.manifests(table.io)
+        if manifest.content == ManifestContent.DELETES
+    ]
+    assert any(
+        entry.data_file.content == DataFileContent.POSITION_DELETES
+        for manifest in delete_manifests
+        for entry in manifest.fetch_manifest_entry(table.io, discard_deleted=True)
+    )
+    original = ray.data.read_datasource
+    selected = []
+
+    @functools.wraps(original)
+    def record(source, *args, **kwargs):
+        if isinstance(source, DorisDatasource):
+            selected.append(source.config.snapshot_id)
+        return original(source, *args, **kwargs)
+
+    native = ray.data.read_iceberg
+    native_calls = []
+
+    @functools.wraps(native)
+    def record_native(**kwargs):
+        native_calls.append(kwargs)
+        return native(**kwargs)
+
+    monkeypatch.setattr(ray.data, "read_datasource", record)
+    monkeypatch.setattr(ray.data, "read_iceberg", record_native)
     actual = data(name, namespace, table="scratch_delete").take_all()
-    expected = sql(f"SELECT id, label FROM {name}.{namespace}.scratch_delete")
+    assert selected == [snapshot.snapshot_id]
+    assert native_calls == []
+    expected = sql(
+        f"SELECT id, label FROM {name}.{namespace}.scratch_delete "
+        f"FOR VERSION AS OF {snapshot.snapshot_id}"
+    )
     assert expected == ((2, "two"),)
     assert actual == [{"id": 2, "label": "two"}]

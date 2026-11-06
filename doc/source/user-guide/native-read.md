@@ -143,6 +143,9 @@ visible Doris S3 endpoint and region, and `OAuth2` server `URI` and scope as
 non-secret defaults. Explicit PyIceberg settings and REST server overrides keep
 their existing precedence. The connector never forwards Doris credentials;
 S3 path-style options still require independent PyIceberg configuration.
+For the Gravitino missing-credential-provider response, the connector retries
+without delegation only when the delegation header was not explicitly configured.
+An explicit setting is preserved and the error remains visible.
 Automatically reused endpoints must be HTTP(S) URLs without embedded credentials,
 query strings or fragments; configure other supported forms explicitly.
 Configure the catalog before PyIceberg loads in each relevant process: changing
@@ -157,8 +160,12 @@ currently leaves the REST service's management origin unknown; it does not query
 a Gravitino management server or infer management from the URL or credential
 delegation. Gravitino-governed policy equivalence has not been verified.
 
-Known unsupported delete representations and file formats retain a snapshot-pinned
-Doris query when possible; this feature does not write or delete Iceberg data.
+For Iceberg v2 and v3 snapshots containing a delete manifest, the connector uses a
+snapshot-pinned Doris query instead of native reading. This conservative check
+also covers delete manifests that might not affect the requested data. Manifest
+inspection failures remain errors. Other known unsupported file formats retain a
+snapshot-pinned Doris query when possible; this feature does not write or delete
+Iceberg data.
 Real-service checks cover S3 and HDFS on Doris `4.0.6-rc02`, S3 on
 `4.1.5-release`, and S3 snapshot and cached-ancestor native reads on
 `3.0.6.2-rc01`. The 3.0.6.2 native path has not been verified with HDFS or
@@ -168,10 +175,10 @@ covered static S3 credential vending, table replacement, snapshot expiration
 and a failed native read. Targeted checks cover worker retry at a pinned snapshot,
 row-policy fallback, an empty table, a simulated unsupported delete falling back
 to Doris at the same snapshot, and an explicit error on incompatible historical
-schema. A 4.1.5 Position Delete check compared automatic and Doris query results;
-it did not separately assert the selected path. These checks do not establish
-equality-delete or deletion-vector coverage, STS credential refresh, or Kerberos
-support.
+schema. A 4.1.5 position-delete check verified the delete manifest, pinned Doris
+fallback and results. It did not test a position delete with the same sequence
+number as its data file. These checks do not establish equality-delete or
+deletion-vector coverage, STS credential refresh, or Kerberos support.
 
 Native timestamps require an effective UTC Doris session; other session time zones
 retain Doris execution. Adjusted timestamps use timezone-free UTC values,

@@ -765,3 +765,21 @@ Publication preparation moves two unit-test dataclasses imports to module scope 
 test or production behavior. The local pre-push checks pass Ruff lint/format, strict mypy, public
 Ray API and Python safety rules, message/hygiene checks, and the three affected unit-test files.
 The database and distributed evidence above remains applicable; no additional Docker IT was run.
+
+## Iceberg delete and delegation review fixes
+
+The changes based on `7d9eeae` guard v2 delete manifests before PyIceberg file
+planning and preserve an explicitly configured REST delegation header. Reuse
+the earlier passing results for unaffected versions and storage cases. The
+runner records source fingerprints, image IDs, logs and cleanup for each run.
+
+| Suite | Coverage and reason | State |
+| --- | --- | --- |
+| Doris 4.1.5 Iceberg position delete | Real delete manifest, fixed-snapshot Doris fallback and results; the earlier passing case lacked path and manifest assertions | Passed: 1 case, `doris-4.1.5-release-917b20be838`; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-delete-review-20261106/` |
+| Doris 4.0.6 Iceberg projection and workers | S3/HDFS real native reader and worker affinity; earlier passing cases lacked native-path assertions | Passed: 2 cases, `doris-4.0.6-rc02-1663f25c16f`; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-projection-review-20261106/` |
+| Doris 4.0.6 integration | Required ordinary Doris regression after the Iceberg planning change; the earlier 64-case result used the prior code state | Passed: 64 cases, 8 warnings; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-doris-regression-20261106/` |
+
+All three runs used source fingerprint
+`f895d11ec362392ca2e2d9e1a87cad1827652b94af8d7b2232ac215dce495e7c` and cached
+base images. The position-delete case did not construct a delete file with the
+same sequence number as its data file. No full multi-version Iceberg matrix was run.

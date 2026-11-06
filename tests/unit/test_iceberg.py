@@ -43,7 +43,9 @@ def iceberg_environment(monkeypatch):
     table = Mock()
     table.metadata.table_uuid = "table-uuid"
     table.metadata.format_version = 2
-    table.snapshot_by_id.return_value = SimpleNamespace(snapshot_id=123, schema_id=0)
+    table.snapshot_by_id.return_value = SimpleNamespace(
+        snapshot_id=123, schema_id=0, manifests=Mock(return_value=[SimpleNamespace(content=0)])
+    )
     table.metadata.schemas = [SimpleNamespace(schema_id=0)]
     scan = table.scan.return_value
     scan.projection.return_value.as_arrow.return_value = schema
@@ -104,7 +106,9 @@ def test_snapshot_without_schema_id_passes_schema_fingerprint(iceberg_environmen
     from pyiceberg.types import LongType, NestedField
 
     iceberg, _, table, _, public_read = iceberg_environment
-    table.snapshot_by_id.return_value = SimpleNamespace(snapshot_id=123, schema_id=None)
+    table.snapshot_by_id.return_value = SimpleNamespace(
+        snapshot_id=123, schema_id=None, manifests=Mock(return_value=[])
+    )
     table.current_snapshot.return_value = SimpleNamespace(snapshot_id=123)
     table.schema.return_value = Schema(
         NestedField(field_id=1, name="id", field_type=LongType(), required=False)
@@ -260,15 +264,28 @@ def test_storage_format_and_options_obey_fallback_boundary(iceberg_environment):
     public_read.assert_not_called()
 
 
-def test_v3_delete_manifests_keep_the_selected_snapshot(iceberg_environment):
-    _, _, table, _, _ = iceberg_environment
-    table.metadata.format_version = 3
+@pytest.mark.parametrize("version", [2, 3])
+def test_delete_manifests_keep_the_selected_snapshot(iceberg_environment, version):
+    _, _, table, scan, public_read = iceberg_environment
+    table.metadata.format_version = version
     table.snapshot_by_id.return_value = Mock(
         schema_id=0, manifests=Mock(return_value=[SimpleNamespace(content=1)])
     )
     with pytest.raises(_PinnedNativeFallbackError) as error:
         invoke(iceberg_environment)
     assert error.value.snapshot_id == 123
+    scan.plan_files.assert_not_called()
+    public_read.assert_not_called()
+
+
+def test_delete_manifest_inspection_error_does_not_fall_back(iceberg_environment):
+    _, _, table, scan, public_read = iceberg_environment
+    table.snapshot_by_id.return_value.manifests.side_effect = PermissionError("secret")
+    with pytest.raises(DorisPlanningError, match="delete manifest inspection failed") as error:
+        invoke(iceberg_environment)
+    assert "secret" not in str(error.value)
+    scan.plan_files.assert_not_called()
+    public_read.assert_not_called()
 
 
 def test_rest_snapshot_is_used_only_when_doris_refs_are_unavailable(iceberg_environment):
@@ -288,7 +305,9 @@ def test_legacy_identity_uses_rest_snapshot_and_warns(iceberg_environment, caplo
     iceberg.verify_table_identity.return_value = False
     iceberg.doris_main_snapshot.return_value = None
     table.current_snapshot.return_value = SimpleNamespace(snapshot_id=456)
-    table.snapshot_by_id.return_value = SimpleNamespace(snapshot_id=456, schema_id=0)
+    table.snapshot_by_id.return_value = SimpleNamespace(
+        snapshot_id=456, schema_id=0, manifests=Mock(return_value=[])
+    )
     iceberg.verify_legacy_snapshot_identity = Mock(return_value=evidence)
     with caplog.at_level(logging.WARNING):
         invoke(iceberg_environment)
@@ -545,12 +564,84 @@ def test_vending_retry_only_for_explicit_missing_provider(monkeypatch):
         table,
     ]
     rest = {"type": "rest", "uri": "https://rest"}
-    assert iceberg._load_table(loader, "lake", rest, "db.events") is table
+    assert iceberg._load_table(loader, "lake", rest, "db.events", {}) is table
     assert rest["header.X-Iceberg-Access-Delegation"] == ""
     loader.return_value.load_table.side_effect = PermissionError("denied")
     with pytest.raises(PermissionError):
-        iceberg._load_table(loader, "lake", {"type": "rest", "uri": "https://rest"}, "db.events")
+        iceberg._load_table(
+            loader, "lake", {"type": "rest", "uri": "https://rest"}, "db.events", {}
+        )
     assert loader.call_count == 3
+
+
+@pytest.mark.parametrize("source", ["rest", "configured"])
+def test_vending_retry_preserves_explicit_case_insensitive_header(source):
+    from pyiceberg.exceptions import BadRequestError
+
+    import ray_doris._iceberg as iceberg
+
+    loader = Mock()
+    loader.return_value.load_table.side_effect = BadRequestError(
+        "No credential provider found for path s3://bucket/table"
+    )
+    rest = {"type": "rest", "uri": "https://rest"}
+    configured = {}
+    target = rest if source == "rest" else configured
+    target["header.x-iceberg-access-delegation"] = "vended-credentials"
+    with pytest.raises(BadRequestError):
+        iceberg._load_table(loader, "lake", rest, "db.events", configured)
+    loader.assert_called_once()
+    assert "header.X-Iceberg-Access-Delegation" not in rest
+
+
+def test_named_delegation_configuration_reaches_retry_check(iceberg_environment, monkeypatch):
+    import importlib
+    import json
+    import os
+
+    import pyiceberg.catalog as catalogs
+    import requests
+    from pyiceberg.utils.config import Config
+
+    iceberg, _, _, _, public_read = iceberg_environment
+    for key in list(os.environ):
+        if key.lower().startswith("pyiceberg_"):
+            monkeypatch.delenv(key)
+    delegation = "vended-credentials,remote-signing"
+    monkeypatch.setenv("PYICEBERG_CATALOG__LAKE__HEADER__X_ICEBERG_ACCESS_DELEGATION", delegation)
+    monkeypatch.setattr(Config, "_from_configuration_files", staticmethod(lambda: {}))
+    monkeypatch.setattr(catalogs, "_ENV_CONFIG", Config())
+    monkeypatch.setattr(iceberg, "import_module", importlib.import_module)
+    calls = []
+
+    def send(_adapter, request, **_kwargs):
+        calls.append((request.url, request.headers.get("X-Iceberg-Access-Delegation")))
+        response = requests.Response()
+        response.url = request.url
+        response.request = request
+        if request.url.endswith("/v1/config"):
+            response.status_code = 200
+            body = {"defaults": {}, "overrides": {}}
+        else:
+            response.status_code = 400
+            body = {
+                "error": {
+                    "type": "BadRequestException",
+                    "message": "No credential provider found for path s3://bucket/table",
+                    "code": 400,
+                }
+            }
+        response._content = json.dumps(body).encode()
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    with pytest.raises(DorisPlanningError, match="REST catalog discovery failed"):
+        invoke(iceberg_environment)
+    assert calls == [
+        ("https://rest/v1/config", delegation),
+        ("https://rest/v1/namespaces/db/tables/events", delegation),
+    ]
+    public_read.assert_not_called()
 
 
 @pytest.mark.parametrize(
