@@ -646,38 +646,85 @@ def test_vended_s3_credentials_are_available_to_workers(tables, monkeypatch):
     assert len(calls) == 1
 
 
-def test_unavailable_policy_visibility_keeps_doris_filter(tables, monkeypatch):
+def test_unavailable_policy_visibility_keeps_doris_filter(
+    tables, monkeypatch, record_testsuite_property
+):
+    import ray_doris._iceberg as iceberg
+    from ray_doris._errors import _NativeReadNotApplicableError
+    from ray_doris._metadata import named_row
+
     name, namespace, _ = tables["s3"]
-    _, table = scratch_table(name, namespace, "scratch_policy", with_label=True)
+    _, table = scratch_table(name, namespace, "scratch_policy_contract", with_label=True)
     table.append(
         pa.Table.from_pylist([{"id": 100, "label": "allowed"}], schema=table.schema().as_arrow())
     )
-    sql(f"REFRESH TABLE {name}.{namespace}.scratch_policy")
-    sql("CREATE USER 'ice_limited' IDENTIFIED BY %s", (os.environ["NATIVE_S3_PASSWORD"],))
-    sql(f"GRANT SELECT_PRIV ON {name}.{namespace}.scratch_policy TO 'ice_limited'")
-    sql(f"GRANT SELECT_PRIV ON {name}.information_schema.columns TO 'ice_limited'")
+    sql(f"REFRESH TABLE {name}.{namespace}.scratch_policy_contract")
+    sql("CREATE USER 'authprobe_reader' IDENTIFIED BY %s", (os.environ["NATIVE_S3_PASSWORD"],))
+    sql(f"GRANT SELECT_PRIV ON {name}.{namespace}.scratch_policy_contract TO 'authprobe_reader'")
+    sql(f"GRANT SELECT_PRIV ON {name}.information_schema.columns TO 'authprobe_reader'")
     sql(
-        f"CREATE ROW POLICY ice_policy ON {name}.{namespace}.scratch_policy "
-        "AS RESTRICTIVE TO ice_limited USING (id = 100)"
+        f"CREATE ROW POLICY authprobe_policy ON {name}.{namespace}.scratch_policy_contract "
+        "AS RESTRICTIVE TO authprobe_reader USING (id = 100)"
     )
+    with pymysql.connect(
+        host="fe", port=9030, user="root", cursorclass=pymysql.cursors.DictCursor
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW ROW POLICY")
+            rows = [named_row(row) for row in cursor.fetchall()]
+    assert any(
+        (row.get("catalogname"), row.get("dbname"), row.get("tablename"))
+        == (name, namespace, "scratch_policy_contract")
+        for row in rows
+    )
+    policy = iceberg.verify_doris_policy
+    reasons = []
+
+    def record_policy(*args, **kwargs):
+        try:
+            return policy(*args, **kwargs)
+        except _NativeReadNotApplicableError as error:
+            reasons.append(str(error))
+            raise
+
     native = ray.data.read_iceberg
-    calls = []
+    native_calls = []
 
     @functools.wraps(native)
-    def record(**kwargs):
-        calls.append(kwargs)
+    def record_native(**kwargs):
+        native_calls.append(kwargs)
         return native(**kwargs)
 
-    monkeypatch.setattr(ray.data, "read_iceberg", record)
-    rows = data(
+    original = ray.data.read_datasource
+    selected = []
+
+    @functools.wraps(original)
+    def record_datasource(source, *args, **kwargs):
+        if isinstance(source, DorisDatasource):
+            selected.append(source.config.snapshot_id)
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(iceberg, "verify_doris_policy", record_policy)
+    monkeypatch.setattr(ray.data, "read_iceberg", record_native)
+    monkeypatch.setattr(ray.data, "read_datasource", record_datasource)
+    admin_rows = data(name, namespace, table="scratch_policy_contract").take_all()
+    restricted_rows = data(
         name,
         namespace,
-        table="scratch_policy",
-        user="ice_limited",
+        table="scratch_policy_contract",
+        user="authprobe_reader",
         password=os.environ["NATIVE_S3_PASSWORD"],
     ).take_all()
-    assert rows == [{"id": 100, "label": "allowed"}]
-    assert calls == []
+    assert sorted(row["id"] for row in admin_rows) == [1, 100]
+    assert restricted_rows == [{"id": 100, "label": "allowed"}]
+    assert not native_calls and selected == [None, None]
+    assert reasons == [
+        "Doris row policies require Doris",
+        "Doris policy applicability is not visible",
+    ]
+    record_testsuite_property(
+        "policy_contract", "admin_nonempty_policy_detected;both_doris;restricted_filtered"
+    )
 
 
 def test_doris_position_delete(tables, monkeypatch):
