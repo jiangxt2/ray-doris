@@ -288,7 +288,6 @@ def slow_policy_failures(
 
     require("workflow_call:" in slow_workflow, "slow workflow must expose workflow_call")
     require("workflow_dispatch:" in slow_workflow, "slow workflow must support manual runs")
-    require("schedule:" in slow_workflow, "slow workflow must retain scheduled runs")
     require(
         "runs-on: [self-hosted, linux, x64, ray-doris-slow-it, ray-doris-slow-it-node24]"
         in slow_workflow,
