@@ -68,6 +68,24 @@ def test_build_select_rejects_empty_or_invalid_tablets() -> None:
             build_select_sql(table, None, None, tablets)
 
 
+def test_snapshot_read_is_pinned_before_predicate_and_limit() -> None:
+    config = DorisReadConfig.from_options(
+        table=parse_table("db.records"), host="fe", user="reader", catalog="lake"
+    )
+    config = replace(
+        config, snapshot_id=42, predicate=DorisPredicate("`id` = %s", (1,), "`id` = 1")
+    )
+    assert build_read_sql(config, None, bind=True, row_limit=3) == (
+        "SELECT * FROM `lake`.`db`.`records` FOR VERSION AS OF 42 WHERE `id` = %s LIMIT 3",
+        (1,),
+    )
+    for invalid in (0, -1, True, 1 << 63, "42"):
+        with pytest.raises(DorisConfigurationError):
+            replace(config, snapshot_id=invalid)
+    with pytest.raises(DorisConfigurationError):
+        build_read_sql(config, (1,))
+
+
 @pytest.mark.parametrize("budget", [None, 0, 1, 10000])
 @pytest.mark.parametrize("bind", [False, True])
 def test_read_limit_follows_complete_bound_predicate(budget, bind) -> None:

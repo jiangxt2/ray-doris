@@ -167,6 +167,17 @@ def test_conflicting_catalog_type_is_not_downgraded():
     assert query.call_count == 1
 
 
+def test_iceberg_catalog_can_be_cached_without_changing_hive_eligibility():
+    query = Mock(
+        return_value=[{"CatalogType": "iceberg", "Property": "uri", "Value": "https://rest"}]
+    )
+    reader = ExternalMetadataReader(Mock(), query)
+    assert reader.catalog("lake", expected_kind="iceberg") == {"uri": "https://rest"}
+    with pytest.raises(_NativeReadNotApplicableError):
+        reader.catalog("lake")
+    assert query.call_count == 1
+
+
 @pytest.mark.parametrize(
     "rows", [[{"Variable_name": "unrelated", "Value": "true"}], [{"use_names": "true"}]]
 )

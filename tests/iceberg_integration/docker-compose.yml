@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:16.14
+    environment:
+      POSTGRES_USER: ${NATIVE_S3_USER:?}
+      POSTGRES_PASSWORD: ${NATIVE_S3_PASSWORD:?}
+      POSTGRES_DB: iceberg
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d iceberg"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    networks:
+      doris:
+        ipv4_address: 172.16.127.7
+  iceberg-s3:
+    image: apache/gravitino:1.3.1
+    entrypoint: ["bash", "/fixture/iceberg-entrypoint.sh"]
+    environment: &iceberg-env
+      ICEBERG_USER: ${NATIVE_S3_USER:?}
+      ICEBERG_PASSWORD: ${NATIVE_S3_PASSWORD:?}
+      ICEBERG_WAREHOUSE: s3://native-bucket/iceberg
+      ICEBERG_IO: org.apache.iceberg.aws.s3.S3FileIO
+      HADOOP_USER_NAME: root
+      GRAVITINO_MEM: -Xmx768m
+    volumes: &iceberg-mounts
+      - ${NATIVE_SOURCE_DIR:?}/tests/iceberg_integration/iceberg-entrypoint.sh:/fixture/iceberg-entrypoint.sh:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks:
+      doris:
+        ipv4_address: 172.16.127.8
+  iceberg-hdfs:
+    image: apache/gravitino:1.3.1
+    entrypoint: ["bash", "/fixture/iceberg-entrypoint.sh"]
+    environment:
+      <<: *iceberg-env
+      ICEBERG_WAREHOUSE: hdfs://hms:9000/iceberg
+      ICEBERG_IO: org.apache.iceberg.hadoop.HadoopFileIO
+    volumes: *iceberg-mounts
+    depends_on:
+      postgres: {condition: service_healthy}
+      iceberg-s3: {condition: service_started}
+    networks:
+      doris:
+        ipv4_address: 172.16.127.9
+  iceberg-vended:
+    image: apache/gravitino:1.3.1
+    entrypoint: ["bash", "/fixture/iceberg-entrypoint.sh"]
+    environment:
+      <<: *iceberg-env
+      ICEBERG_VENDING: s3-secret-key
+    volumes: *iceberg-mounts
+    depends_on:
+      postgres: {condition: service_healthy}
+      iceberg-s3: {condition: service_started}
+    networks:
+      doris:
+        ipv4_address: 172.16.127.10
+  ray-head:
+    environment: &iceberg-client-env
+      PYTHONPATH: /workspace/src:/workspace
+      PYICEBERG_CATALOG__ICES3__URI: http://iceberg-s3:9001/iceberg
+      PYICEBERG_CATALOG__ICES3__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__ICES3__S3__ACCESS_KEY_ID: ${NATIVE_S3_USER:?}
+      PYICEBERG_CATALOG__ICES3__S3__SECRET_ACCESS_KEY: ${NATIVE_S3_PASSWORD:?}
+      PYICEBERG_CATALOG__ICES3__S3__REGION: us-east-1
+      PYICEBERG_CATALOG__ICES3__S3__FORCE_VIRTUAL_ADDRESSING: "false"
+      PYICEBERG_CATALOG__ICEHDFS__URI: http://iceberg-hdfs:9001/iceberg
+      PYICEBERG_CATALOG__ICEVEND__URI: http://iceberg-vended:9001/iceberg
+      PYICEBERG_CATALOG__ICEVEND__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__ICEVEND__S3__REGION: us-east-1
+      PYICEBERG_CATALOG__ICEVEND__S3__FORCE_VIRTUAL_ADDRESSING: "false"
+  ray-worker-a:
+    environment: *iceberg-client-env
+  ray-worker-b:
+    environment: *iceberg-client-env

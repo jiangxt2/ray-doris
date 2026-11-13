@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -52,13 +53,16 @@ def verify_cleanup(run, owned_volumes, images):
         ["docker", "network", "ls", "-q", "--filter", project_filter], capture=True
     ).split()
     volumes = set(run(["docker", "volume", "ls", "--format", "{{.Name}}"], capture=True).split())
+    labeled_volumes = set(
+        run(["docker", "volume", "ls", "-q", "--filter", project_filter], capture=True).split()
+    )
     tags = set(
         run(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], capture=True).split()
     )
     remaining = {
         "containers": containers,
         "networks": networks,
-        "volumes": sorted(volumes.intersection(owned_volumes)),
+        "volumes": sorted(volumes.intersection(owned_volumes).union(labeled_volumes)),
         "images": sorted(tags.intersection(images)),
     }
     if any(remaining.values()):
@@ -96,11 +100,36 @@ def main():
     parser.add_argument("--logs", required=True)
     parser.add_argument("--hadoop-source", required=True)
     parser.add_argument("--skip-query-regression", action="store_true")
+    parser.add_argument("--iceberg", action="store_true")
+    parser.add_argument("--iceberg-preflight", action="store_true")
+    parser.add_argument("--iceberg-compat-only", action="store_true")
+    parser.add_argument("--doris-regression-only", action="store_true")
+    parser.add_argument("--iceberg-cases", nargs="+")
     args = parser.parse_args()
+    if args.iceberg_preflight and (not args.iceberg or args.versions != ["4.0.6"]):
+        parser.error("Iceberg preflight requires --iceberg --versions 4.0.6")
+    if args.iceberg_compat_only and (
+        not args.iceberg or args.iceberg_preflight or "4.0.6" in args.versions
+    ):
+        parser.error("Iceberg compatibility mode requires non-4.0.6 versions")
+    if args.doris_regression_only and (
+        args.iceberg or args.skip_query_regression or args.versions != ["4.0.6"]
+    ):
+        parser.error("Doris regression mode requires only --versions 4.0.6")
+    if args.iceberg_cases and (
+        not args.iceberg
+        or len(args.versions) != 1
+        or args.iceberg_preflight
+        or args.iceberg_compat_only
+        or any(re.fullmatch(r"test_[a-z0-9_]+", item) is None for item in args.iceberg_cases)
+    ):
+        parser.error("Iceberg cases require one version and valid test function names")
+    if args.iceberg:
+        PREFIX.extend(["-f", str(ROOT / "tests/iceberg_integration/docker-compose.yml")])
     hadoop_source = Path(args.hadoop_source).resolve()
     if not (hadoop_source / "SOURCE.json").is_file():
         parser.error("prepare the pinned Hadoop JNI source context first")
-    if any(v not in ("4.0.6", "3.0.6.2") for v in args.versions):
+    if any(v not in ("4.0.6", "3.0.6.2", "4.1.5") for v in args.versions):
         parser.error("only the approved cached versions are accepted")
     logs = Path(args.logs).resolve()
     logs.mkdir(parents=True, exist_ok=False)
@@ -122,6 +151,7 @@ def main():
         NATIVE_BE_IMAGE="ray-doris-it-be:" + tag,
     )
     logfile = logs / "commands.log"
+    host_python = str(ROOT / ".venv/bin/python")
     images = []
     results = []
     owned_volumes = set()
@@ -155,6 +185,48 @@ def main():
     def compose(*command, check=True):
         return run(PREFIX + list(command), check=check)
 
+    def run_doris_regression(version):
+        result = run(
+            [
+                host_python,
+                "-m",
+                "pytest",
+                "tests/integration",
+                "-v",
+                f"--junitxml={logs}/query-regression.xml",
+            ],
+            check=False,
+        )
+        results.append({"version": version, "suite": "query-regression", "exit_code": result})
+        (logs / "results.json").write_text(json.dumps(results, indent=2))
+        if result:
+            raise RuntimeError("existing integration regression failed")
+
+    if (
+        "4.0.6" in args.versions
+        and not args.skip_query_regression
+        and not args.iceberg_preflight
+        and not args.iceberg_compat_only
+        and not args.iceberg_cases
+    ):
+        runtime = json.loads(
+            run(
+                [
+                    host_python,
+                    "-c",
+                    "import json,sys,ray,pyarrow; "
+                    "print(json.dumps({'python':sys.version.split()[0], "
+                    "'ray':ray.__version__, 'pyarrow':pyarrow.__version__}))",
+                ],
+                capture=True,
+            )
+        )
+        (logs / "host-runtime.json").write_text(json.dumps(runtime, indent=2))
+        if runtime.get("ray") != "2.59.0":
+            raise RuntimeError(
+                f"Doris regression requires Ray 2.59.0; found {runtime.get('ray')!r}"
+            )
+
     existing = run(
         ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=ray-doris-it"],
         capture=True,
@@ -176,13 +248,23 @@ def main():
     (logs / "source-fingerprint.txt").write_text(fingerprints.hexdigest() + "\n")
     run(["docker", "image", "ls", "--filter", "dangling=true"])
     run(["docker", "system", "df"])
-    bases = [
-        "apache/gravitino-ci:hive-0.1.20",
-        "rayproject/ray:2.59.0-py312",
-        "apache/spark:3.5.8",
-        "minio/minio:RELEASE.2025-09-07T16-13-09Z",
+    bases = (
+        []
+        if args.doris_regression_only
+        else [
+            "apache/gravitino-ci:hive-0.1.20",
+            "rayproject/ray:2.59.0-py312",
+            "apache/spark:3.5.8",
+            "minio/minio:RELEASE.2025-09-07T16-13-09Z",
+        ]
+    )
+    if args.iceberg:
+        bases += ["apache/gravitino:1.3.1", "postgres:16.14"]
+    bases += [
+        f"{'docker.m.daocloud.io/apache/doris' if v == '4.1.5' else 'apache/doris'}:{role}-{v}"
+        for v in args.versions
+        for role in ["fe", "be"]
     ]
-    bases += [f"apache/doris:{role}-{v}" for v in args.versions for role in ["fe", "be"]]
     metadata = run(["docker", "image", "inspect", *bases], capture=True)
     inspected = json.loads(metadata)
     (logs / "base-images.json").write_text(
@@ -215,23 +297,25 @@ def main():
             raise
 
     with cleanup_on_termination(cleanup):
-        images.append(env["NATIVE_RAY_IMAGE"])
-        run(
-            [
-                "docker",
-                "build",
-                "--build-context",
-                "hadoop-native-source=" + str(hadoop_source),
-                "--pull=false",
-                "-t",
-                images[-1],
-                "-f",
-                "tests/native_integration/ray.Dockerfile",
-                ".",
-            ]
-        )
+        if not args.doris_regression_only:
+            images.append(env["NATIVE_RAY_IMAGE"])
+            run(
+                [
+                    "docker",
+                    "build",
+                    "--build-context",
+                    "hadoop-native-source=" + str(hadoop_source),
+                    "--pull=false",
+                    "-t",
+                    images[-1],
+                    "-f",
+                    "tests/native_integration/ray.Dockerfile",
+                    ".",
+                ]
+            )
         for version in args.versions:
             env["NATIVE_DORIS_VERSION"] = version
+            repo = "docker.m.daocloud.io/apache/doris" if version == "4.1.5" else "apache/doris"
             for role in ["fe", "be"]:
                 name = f"ray-doris-it-{role}:{tag}-{version}"
                 images.append(name)
@@ -244,7 +328,7 @@ def main():
                         "-t",
                         name,
                         "--build-arg",
-                        f"DORIS_BASE_IMAGE=apache/doris:{role}-{version}",
+                        f"DORIS_BASE_IMAGE={repo}:{role}-{version}",
                         "--build-arg",
                         f"DORIS_ROLE={role}",
                         "-f",
@@ -252,7 +336,22 @@ def main():
                         ".",
                     ]
                 )
-            compose("up", "-d", "--no-build", "fe", "be", "hms", "minio", "ray-head")
+            services = ["fe", "be"]
+            if not args.doris_regression_only:
+                services += ["hms", "minio", "ray-head"]
+            if args.iceberg:
+                services += ["postgres", "iceberg-s3", "iceberg-hdfs"]
+                if (
+                    not args.iceberg_preflight
+                    and not args.iceberg_compat_only
+                    and (
+                        not args.iceberg_cases
+                        or "test_vended_s3_credentials_are_available_to_workers"
+                        in args.iceberg_cases
+                    )
+                ):
+                    services.append("iceberg-vended")
+            compose("up", "-d", "--no-build", *services)
             container_ids = run(
                 [
                     "docker",
@@ -269,7 +368,7 @@ def main():
                     mount["Name"] for mount in container["Mounts"] if mount["Type"] == "volume"
                 )
             (logs / "owned-volumes.json").write_text(json.dumps(sorted(owned_volumes)))
-            for service in ["hms", "fe", "be", "ray-head", "minio"]:
+            for service in services:
                 running = run(
                     [
                         "docker",
@@ -283,6 +382,9 @@ def main():
                 if running.strip() != "true":
                     raise RuntimeError(f"{service} exited during startup; inspect service logs")
             run(["docker", "image", "inspect", "--format", "{{.RepoTags}} {{.Id}}", *images])
+            if args.doris_regression_only:
+                run_doris_regression(version)
+                continue
             compose(
                 "exec",
                 "-T",
@@ -293,9 +395,32 @@ def main():
                 "tests/native_integration/wait_services.py",
             )
             if version == args.versions[0]:
-                compose("run", "--rm", "--no-deps", "spark-producer")
+                if (
+                    not args.iceberg_preflight
+                    and not args.iceberg_compat_only
+                    and not args.iceberg_cases
+                ):
+                    compose("run", "--rm", "--no-deps", "spark-producer")
                 compose("up", "-d", "--no-build", "ray-worker-a", "ray-worker-b")
             started = time.time()
+            version_tests = ["tests/native_integration/test_native_cluster.py"]
+            if args.iceberg_cases:
+                target = "tests/iceberg_integration/test_iceberg_cluster.py::"
+                version_tests = [target + name for name in args.iceberg_cases]
+            elif args.iceberg and (
+                args.iceberg_preflight or args.iceberg_compat_only or version != args.versions[0]
+            ):
+                target = "tests/iceberg_integration/test_iceberg_cluster.py::"
+                version_tests = [
+                    target
+                    + (
+                        "test_version_compatibility"
+                        if args.iceberg_preflight
+                        else "test_version_compatibility[s3]"
+                    )
+                ]
+                if version == "4.1.5":
+                    version_tests.append(target + "test_doris_position_delete")
             result = compose(
                 "exec",
                 "-T",
@@ -305,9 +430,9 @@ def main():
                 "python",
                 "-m",
                 "pytest",
-                "tests/native_integration/test_native_cluster.py",
+                *version_tests,
                 "-v",
-                "--maxfail=1",
+                "--maxfail=0" if args.iceberg_cases else "--maxfail=1",
                 "--tb=short",
                 f"--junitxml=/evidence/native-{version}.xml",
                 check=False,
@@ -318,27 +443,42 @@ def main():
             (logs / "results.json").write_text(json.dumps(results, indent=2))
             compose("logs", "--no-color", "fe", "be")
             if result:
-                raise RuntimeError(
-                    f"native {version} integration failed; preserve and diagnose logs"
-                )
-            if version == "4.0.6" and not args.skip_query_regression:
-                regression = run(
-                    [
-                        str(ROOT / ".venv/bin/python"),
-                        "-m",
-                        "pytest",
-                        "tests/integration",
-                        "-v",
-                        f"--junitxml={logs}/query-regression.xml",
-                    ],
+                raise RuntimeError(f"version {version} integration failed; inspect logs")
+            if (
+                args.iceberg
+                and not args.iceberg_preflight
+                and not args.iceberg_compat_only
+                and not args.iceberg_cases
+                and version == args.versions[0]
+            ):
+                result = compose(
+                    "exec",
+                    "-T",
+                    "ray-head",
+                    "bash",
+                    "tests/native_integration/ray-entrypoint.sh",
+                    "python",
+                    "-m",
+                    "pytest",
+                    "tests/iceberg_integration",
+                    "-k",
+                    "not test_doris_position_delete",
+                    "-v",
+                    "--maxfail=1",
+                    f"--junitxml=/evidence/iceberg-{version}.xml",
                     check=False,
                 )
-                results.append(
-                    {"version": version, "suite": "query-regression", "exit_code": regression}
-                )
+                results.append({"version": version, "suite": "iceberg", "exit_code": result})
                 (logs / "results.json").write_text(json.dumps(results, indent=2))
-                if regression:
-                    raise RuntimeError("existing integration regression failed")
+                if result:
+                    raise RuntimeError(f"Iceberg {version} integration failed; inspect logs")
+            if (
+                version == "4.0.6"
+                and not args.skip_query_regression
+                and not args.iceberg_preflight
+                and not args.iceberg_cases
+            ):
+                run_doris_regression(version)
             compose("stop", "fe", "be")
             compose("rm", "-f", "fe", "be")
             run(["docker", "volume", "rm", "ray-doris-it_fe-data", "ray-doris-it_be-data"])
