@@ -39,8 +39,9 @@ The matrix tests structured metadata, typed registered partitions, scalar schema
 projection, empty tables, enumeration limits, permissions and execution across two
 Ray workers. Automatic selection tests compare actual Doris fallback results for
 ORC, unsupported native layouts, enumeration budgets, session settings and Ray V2
-limitations; the disabled switch must avoid native discovery. Real source errors
-and native runtime failures must not replay through Doris. The 4.0.6 stage also executes the existing
+limitations; the disabled switch must avoid native discovery. Native planning
+failures before calling Ray's Parquet reader fall back to Doris; failures after
+the call must not replay through Doris. The 4.0.6 stage also executes the existing
 query/write integration suite from the host runtime. The head reserves no CPUs.
 Native reads are hard-pinned to each worker in turn for both HDFS and S3; the
 test checks that the real public reader receives that constraint and records
@@ -57,6 +58,30 @@ These cases prove the alternate interface contracts on the selected baselines;
 they do not certify an untested older Doris release. An unknown diagnostic build
 string must not prevent otherwise eligible native reading. Reader spies retain
 the public function signature so capability checks execute the intended branch.
+
+## Kerberos HDFS with two workers
+
+The isolated Kerberos runner currently targets macOS ARM64 with Docker Desktop,
+the cached images above, Homebrew Kerberos binaries under `/opt/homebrew/opt/krb5`,
+and the `trash` command. Prepare the verified Hadoop JNI source as described
+above, then run with an existing evidence directory:
+
+```bash
+export RD_HADOOP_SOURCE=/tmp/rd-hadoop-jni-source
+export RD_KERBEROS_EVIDENCE="$(mktemp -d /tmp/rd-kerberos-evidence.XXXXXX)"
+.venv/bin/python tests/native_integration/kerberos_cluster_run.py
+```
+
+The fixture uses a simple HMS and a Kerberos-protected HDFS. It checks the Doris
+reference rows, reads on both Ray workers, renews or reacquires short-lived
+tickets, and tests the driver fallback and deferred worker failure boundaries.
+It does not test Kerberos-authenticated HMS. The runner keeps logs in the evidence
+directory and cleans only its own Docker resources. Its temporary directory,
+including synthetic test credentials, is moved to the Trash on normal exit or
+SIGTERM; an uncatchable process termination requires manual cleanup.
+The separate `kerberos_identity_probe.py` uses a caller-provided empty
+`RD_HDFS_IDENTITY_DIR` and leaves its fixture files, including synthetic
+credentials, there; the caller must clean that directory after the probe.
 
 When an unchanged query/write regression result is explicitly reused, pass
 `--skip-query-regression` and record the reason and prior evidence in the ledger.

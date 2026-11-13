@@ -49,7 +49,8 @@ class NativeReadOptions:
     """Options for experimental, ordinary Hive Parquet reads.
 
     HMS currently uses plain Thrift in a trusted network. Storage authorization
-    belongs to the supplied Arrow filesystem or its standard credential chain.
+    uses the supplied Arrow filesystem, its standard credential chain, or the
+    opt-in HDFS Kerberos catalog configuration described in the native-read guide.
     Files must remain unchanged throughout Dataset consumption.
     """
 

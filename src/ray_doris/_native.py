@@ -6,7 +6,7 @@ import logging
 import posixpath
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Callable, Mapping, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import pyarrow as pa
@@ -29,6 +29,7 @@ from ray_doris._errors import (
     _NativeReadNotApplicableError,
 )
 from ray_doris._external_metadata import ExternalMetadata, discover_external, partition_value
+from ray_doris._hdfs_proxy import HdfsKerberosHandler
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._sql import validate_identifier
 
@@ -60,12 +61,29 @@ def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> Native
     scheme, authority, root = _location(metadata.storage.location)
     normalized_uri = urlunparse((scheme, authority, root, "", "", ""))
     try:
-        if options.filesystem is None:
+        filesystem: pafs.FileSystem
+        if options.filesystem is None and metadata.hdfs_auth is not None:
+            parsed_uri = urlparse(normalized_uri)
+            if not parsed_uri.hostname:
+                raise DorisPlanningError("invalid HDFS authority")
+            conf = dict(metadata.hdfs_conf)
+            conf["hadoop.security.authentication"] = "kerberos"
+            filesystem = pafs.PyFileSystem(
+                HdfsKerberosHandler(
+                    parsed_uri.hostname, parsed_uri.port or 0, metadata.hdfs_auth, conf
+                )
+            )
+            base = root
+        elif options.filesystem is None:
             filesystem, base = pafs.FileSystem.from_uri(normalized_uri)
         else:
             filesystem = options.filesystem
             base = authority + root if scheme == "s3" else root
-        if filesystem.type_name != scheme:
+        if filesystem.type_name != scheme and not (
+            scheme == "hdfs"
+            and isinstance(filesystem, pafs.PyFileSystem)
+            and isinstance(filesystem.handler, HdfsKerberosHandler)
+        ):
             raise DorisConfigurationError("filesystem must match the HMS storage scheme")
         base = filesystem.normalize_path(base).rstrip("/")
         files = []
@@ -175,7 +193,14 @@ def read_native_plan(
     concurrency: Optional[int],
     override_num_blocks: Optional[int],
     ray_remote_args: Optional[Mapping[str, Any]],
+    on_read_start: Optional[Callable[[], None]] = None,
 ) -> Dataset:
+    """Build a Ray Dataset for a planned Hive Parquet read.
+
+    Arrow HDFS single-path metadata lookups can report I/O errors as missing
+    (https://github.com/apache/arrow/issues/55424). Ray may surface these
+    as FileNotFoundError during deferred file discovery.
+    """
     selected = (
         plan.schema if columns is None else pa.schema([plan.schema.field(c) for c in columns])
     )
@@ -208,17 +233,23 @@ def read_native_plan(
             },
             filesystem=plan.filesystem,
         )
+    paths = list(plan.files)
+    selected_columns = list(columns) if columns is not None else None
+    remote_args = dict(ray_remote_args) if ray_remote_args is not None else {}
+    parquet_options = native_parquet_options(
+        base_dir=plan.base_dir, filesystem=plan.filesystem, partitioning=partitioning
+    )
+    if on_read_start is not None:
+        on_read_start()
     dataset = ray.data.read_parquet(
-        list(plan.files),
+        paths,
         filesystem=plan.filesystem,
-        columns=list(columns) if columns is not None else None,
+        columns=selected_columns,
         file_extensions=None,
         concurrency=concurrency,
         override_num_blocks=override_num_blocks,
-        ray_remote_args=dict(ray_remote_args) if ray_remote_args is not None else {},
-        **native_parquet_options(
-            base_dir=plan.base_dir, filesystem=plan.filesystem, partitioning=partitioning
-        ),
+        ray_remote_args=remote_args,
+        **parquet_options,
     )
     # Let Ray infer the physical data schema and synthesize partitions first.
     # Pinning the full logical schema makes V1 retain NULL partition placeholders.
@@ -239,6 +270,7 @@ def read_native(
     concurrency: Optional[int],
     override_num_blocks: Optional[int],
     ray_remote_args: Optional[Mapping[str, Any]],
+    on_read_start: Optional[Callable[[], None]] = None,
 ) -> Dataset:
     ensure_native_ray_version()
     validate_identifier(catalog, kind="catalog name")
@@ -252,6 +284,7 @@ def read_native(
         concurrency=concurrency,
         override_num_blocks=override_num_blocks,
         ray_remote_args=ray_remote_args,
+        on_read_start=on_read_start,
     )
     logger.info(
         "Doris read path=native experimental=true reader=read_parquet "
