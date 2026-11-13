@@ -46,11 +46,14 @@ The driver makes one source decision before returning the Dataset:
 | The flag is disabled | Read through Doris without native discovery |
 | The Hive table, session, files and public Ray capabilities fit the native profile | Use public Ray Parquet reading |
 | A known valid context is outside that profile | Keep Doris reading and log the reason |
-| Authentication, connection, source access, missing objects or contradictory metadata fail | Raise the error |
-| An error occurs after native execution starts | Raise the error without replaying through Doris |
+| Native planning fails because of storage, credentials, metadata or reader errors | Log a warning and use Doris |
+| Doris authentication or authorization fails when reading through Doris | Raise the error |
+| Ray's Parquet reader is called and then fails | Raise the error without replaying through Doris |
 
-Only a specific not-applicable decision permits planning fallback. Ordinary
-planning errors are not treated as optimization misses. External tables use one
+Once `ray.data.read_parquet()` is called, fallback is not supported, even if no
+rows were consumed. If the native read fails, retry the operation with
+`auto_native_read=False` to read through Doris. Deferred Ray errors retain their
+original messages and may not include this suggestion. External tables use one
 fully qualified table query through the existing bounded MySQL/Flight readers;
 they do not use the internal tablet query-plan endpoint. Internal reads retain
 their existing planning behavior. Ray output blocks do not multiply that external query.
@@ -107,9 +110,10 @@ combinations remain unverified; this is not a promise of general timezone parity
 
 Doris supplies catalog properties, logical columns, and registered partition metadata.
 HMS supplies the original partition identifiers, storage descriptors and actual
-locations. Native discovery currently requires plain Thrift HMS in a trusted network;
-SASL/Kerberos and catalog name remapping retain Doris execution. An explicit `hms_uri`
-must match a URI advertised by the Doris catalog.
+locations. Native discovery currently requires plain Thrift HMS in a trusted network.
+Visible SASL/Kerberos settings and catalog name remapping retain Doris execution;
+authentication settings hidden in Doris-side configuration may not be visible.
+An explicit `hms_uri` must match a URI advertised by the Doris catalog.
 
 ### Discover metadata capabilities
 
@@ -139,10 +143,29 @@ results and their origins belong to one driver read, without a global metadata c
 Storage access is independent of Doris permissions. Supply an Arrow `filesystem`
 in `NativeReadOptions`, or configure Arrow's standard environment and credential
 providers on the driver and every eligible Ray worker. HDFS requires compatible
-Java, Hadoop configuration and libhdfs on every node. S3 endpoints and credentials
+Java, Hadoop configuration, libhdfs and a Hadoop `CLASSPATH` on every node. Set
+`CLASSPATH` in each process before its first HDFS access, including a driver
+started separately from a Ray container's startup command. S3 endpoints and credentials
 must address the same store as the catalog. Secrets are not recovered from Doris
 masked attributes. Arrow filesystem serialization may carry authentication state;
 use a trusted Ray cluster and read-only storage identities.
+
+For an HDFS-backed Hive catalog using Kerberos, a trusted deployment may enable
+automatic catalog authentication by setting `RAY_DORIS_HDFS_KEYTAB_ROOT` to the
+absolute directory containing the catalog's keytab on the driver and every
+eligible worker. The catalog's HDFS authentication type, principal, and keytab
+path are discovered from Doris; the keytab must be mounted at the same path on
+each node and resolve under that trusted root. This does not distribute keytabs.
+Hadoop and Kerberos configuration, `kinit`, `klist`, libhdfs, and connectivity
+to the KDC and HDFS are required on each node. An explicitly supplied filesystem
+takes precedence. Without this deployment setting, Arrow's existing credential
+configuration remains in use.
+
+The connector keeps process-local ticket caches and periodically attempts renewal
+or keytab login. It creates a new HDFS client after a ticket refresh; open streams
+may have their own credential lifetime. Do not serialize or distribute keytab
+contents. Only enable this mode where the Ray workers are authorized to use the
+catalog's HDFS service identity and to read the selected files directly.
 
 On Linux with HotSpot, Ray and the embedded HDFS JVM can conflict over signal
 handlers. Load the matching JDK's `libjsig.so` through `LD_PRELOAD` before
