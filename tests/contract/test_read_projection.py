@@ -162,7 +162,7 @@ def test_expression_filter_retains_dependency_but_prunes_unneeded_data(table, re
     else:
         dataset = dataset.filter(lambda row: row["unused"] == 0)
     rows = dataset.select_columns(["value", "id"]).take_all()
-    assert rows == table.select(["value", "id"]).to_pylist()
+    assert sorted(rows, key=lambda row: row["id"]) == table.select(["value", "id"]).to_pylist()
     queries = [sql for stage, sql, _ in ray.get(recorder.read.remote()) if stage == "synthetic"]
     assert queries
     if supports_projection_pushdown():
