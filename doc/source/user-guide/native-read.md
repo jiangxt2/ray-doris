@@ -39,7 +39,7 @@ dataset = read_doris(
 
 ## Understand source selection
 
-The driver makes one source decision before returning the Dataset:
+For Hive Parquet, the driver makes one source decision before returning the Dataset:
 
 | Condition | Selected path |
 | --- | --- |
@@ -115,7 +115,10 @@ logs a warning when it selects this path. Missing evidence retains Doris executi
 conflicting manifest metadata is an error.
 
 Before enabling this profile, ensure the Doris and Ray REST identities resolve the
-same table and that the actual table and storage access are authorized. The
+same table and that the actual table and storage access are authorized. Keep the
+Doris Catalog's target mapping unchanged from planning until the read and its
+retries finish. A normal append to the same Iceberg table does not change the
+selected snapshot. The
 connector cannot independently verify hidden identity-based routing or every table
 replacement; enabling the option is not proof of authorization equivalence.
 On Doris 3.0.6.2, `iceberg_meta` also checks table-level `SELECT` privilege; its
@@ -126,14 +129,36 @@ explicit concurrency and non-default `NativeReadOptions` also retain Doris.
 
 For eligible reads, Doris's `main` ref supplies the snapshot when available;
 otherwise the REST current snapshot is used only after the required identity
-checks. A selected snapshot is passed to Ray and to any Doris fallback. Ray's
-deferred catalog load rechecks the REST table UUID and snapshot. A later ordinary
+checks. A selected snapshot is passed to Ray and to any Doris fallback. Before
+each execution, the coordinator reloads the REST table and checks its UUID and
+the selected snapshot; a newer snapshot does not replace the selection. This check
+does not lock the Doris catalog mapping or prevent a later concurrent replacement.
+A later ordinary
 Doris query can see a different snapshot because of concurrent writes or caches;
 on the ancestor path Doris may not yet be able to read the selected REST snapshot.
-If native planning is known to be incompatible after snapshot selection, Doris
-fallback must read that same snapshot or fail. An expired snapshot, inconsistent
-metadata or a failed native execution is an error; results from native and Doris
-execution are never combined.
+REST discovery and native read failures before the coordinator yields its first
+block to the outer Ray Dataset can select Doris. After snapshot selection, Doris
+must read the same snapshot or fail; no unpinned retry is made. An inconsistent
+table identity or snapshot schema remains an error. After the first block, native
+failures fail with a suggestion to disable `auto_native_read`; native and Doris
+results are never mixed. The first block may reach Ray before the caller receives
+rows. Failures of the coordinator itself can still fail the task before output.
+
+The Iceberg path uses one streaming coordinator around Ray's parallel native
+read. It does not materialize the table, but adds scheduling and data-transfer
+overhead and may limit throughput or available resources on small clusters.
+The coordinator receives a caller-supplied task `runtime_env` and
+`scheduling_strategy` for the REST check and any Doris fallback; its own task
+retries remain disabled. Other task resource requirements are not applied to the
+coordinator, so deployments using custom resource selectors must also ensure it
+can access REST and Doris.
+When `ray_remote_args` contains a non-`None` `label_selector`, Iceberg retains
+the ordinary Doris path before selecting a snapshot and forwards the Ray arguments
+unchanged. The caller's Ray version must support the supplied arguments.
+The coordinator acts when Ray reports a native failure; Ray's configured native
+task retries can occur first. If Ray is configured to retry map errors or skip
+blocks with errors, the connector retains Doris reading instead of attempting native
+execution. It does not change the caller's Ray error policy for Doris.
 
 PyIceberg uses its existing catalog configuration and environment for REST
 authentication and storage access. Its S3 credential delegation does not imply
@@ -141,11 +166,12 @@ Doris policy equivalence, a particular credential lifetime, or HDFS authorizatio
 When absent from the named PyIceberg configuration, the connector can reuse
 visible Doris S3 endpoint and region, and `OAuth2` server `URI` and scope as
 non-secret defaults. Explicit PyIceberg settings and REST server overrides keep
-their existing precedence. The connector never forwards Doris credentials;
-S3 path-style options still require independent PyIceberg configuration.
+their existing precedence. The connector never retrieves Doris catalog secrets.
+Caller-supplied `runtime_env` values are passed to Ray and may contain sensitive
+information. S3 path-style options still require independent PyIceberg configuration.
 For the Gravitino missing-credential-provider response, the connector retries
 without delegation only when the delegation header was not explicitly configured.
-An explicit setting is preserved and the error remains visible.
+An explicit setting is preserved; an unsuccessful native attempt can use Doris.
 Automatically reused endpoints must be HTTP(S) URLs without embedded credentials,
 query strings or fragments; configure other supported forms explicitly.
 Configure the catalog before PyIceberg loads in each relevant process: changing
@@ -163,10 +189,10 @@ delegation. Gravitino-governed policy equivalence has not been verified.
 For Iceberg v2 and v3 snapshots containing a delete manifest, the connector uses a
 snapshot-pinned Doris query instead of native reading. This conservative check
 also covers delete manifests that might not affect the requested data. Manifest
-inspection failures remain errors. Other known unsupported file formats retain a
+inspection failures use the pinned Doris query. Other unsupported file formats retain a
 snapshot-pinned Doris query when possible; this feature does not write or delete
 Iceberg data.
-Real-service checks cover S3 and HDFS on Doris `4.0.6-rc02`, S3 on
+Earlier real-service checks, before the streaming coordinator change, covered S3 and HDFS on Doris `4.0.6-rc02`, S3 on
 `4.1.5-release`, and S3 snapshot and cached-ancestor native reads on
 `3.0.6.2-rc01`. The 3.0.6.2 native path has not been verified with HDFS or
 schema evolution.
@@ -286,6 +312,7 @@ containing that data column retain Doris reading under V2; the same public V1
 setting permits native reading. A path-derived partition key named `path` is
 not a physical data column and does not have this restriction.
 
-The connector does not change that global setting. Native reader failures remain
-visible; retries, task scheduling, output blocks and cancellation belong to Ray.
+The connector does not change that global setting. Hive native reader failures remain
+visible; Iceberg follows the streaming fallback boundary described above. Retries,
+task scheduling, output blocks and cancellation belong to Ray.
 Performance gains depend on the workload and are not guaranteed.

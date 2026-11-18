@@ -101,17 +101,9 @@ def main():
     parser.add_argument("--hadoop-source", required=True)
     parser.add_argument("--skip-query-regression", action="store_true")
     parser.add_argument("--iceberg", action="store_true")
-    parser.add_argument("--iceberg-preflight", action="store_true")
-    parser.add_argument("--iceberg-compat-only", action="store_true")
     parser.add_argument("--doris-regression-only", action="store_true")
     parser.add_argument("--iceberg-cases", nargs="+")
     args = parser.parse_args()
-    if args.iceberg_preflight and (not args.iceberg or args.versions != ["4.0.6"]):
-        parser.error("Iceberg preflight requires --iceberg --versions 4.0.6")
-    if args.iceberg_compat_only and (
-        not args.iceberg or args.iceberg_preflight or "4.0.6" in args.versions
-    ):
-        parser.error("Iceberg compatibility mode requires non-4.0.6 versions")
     if args.doris_regression_only and (
         args.iceberg or args.skip_query_regression or args.versions != ["4.0.6"]
     ):
@@ -119,9 +111,10 @@ def main():
     if args.iceberg_cases and (
         not args.iceberg
         or len(args.versions) != 1
-        or args.iceberg_preflight
-        or args.iceberg_compat_only
-        or any(re.fullmatch(r"test_[a-z0-9_]+", item) is None for item in args.iceberg_cases)
+        or any(
+            re.fullmatch(r"test_[a-z0-9_]+(?:\[[A-Za-z0-9_-]+\])?", item) is None
+            for item in args.iceberg_cases
+        )
     ):
         parser.error("Iceberg cases require one version and valid test function names")
     if args.iceberg:
@@ -202,13 +195,7 @@ def main():
         if result:
             raise RuntimeError("existing integration regression failed")
 
-    if (
-        "4.0.6" in args.versions
-        and not args.skip_query_regression
-        and not args.iceberg_preflight
-        and not args.iceberg_compat_only
-        and not args.iceberg_cases
-    ):
+    if "4.0.6" in args.versions and not args.skip_query_regression and not args.iceberg_cases:
         runtime = json.loads(
             run(
                 [
@@ -342,13 +329,8 @@ def main():
             if args.iceberg:
                 services += ["postgres", "iceberg-s3", "iceberg-hdfs"]
                 if (
-                    not args.iceberg_preflight
-                    and not args.iceberg_compat_only
-                    and (
-                        not args.iceberg_cases
-                        or "test_vended_s3_credentials_are_available_to_workers"
-                        in args.iceberg_cases
-                    )
+                    not args.iceberg_cases
+                    or "test_vended_s3_credentials_are_available_to_workers" in args.iceberg_cases
                 ):
                     services.append("iceberg-vended")
             compose("up", "-d", "--no-build", *services)
@@ -395,11 +377,7 @@ def main():
                 "tests/native_integration/wait_services.py",
             )
             if version == args.versions[0]:
-                if (
-                    not args.iceberg_preflight
-                    and not args.iceberg_compat_only
-                    and not args.iceberg_cases
-                ):
+                if not args.iceberg_cases:
                     compose("run", "--rm", "--no-deps", "spark-producer")
                 compose("up", "-d", "--no-build", "ray-worker-a", "ray-worker-b")
             started = time.time()
@@ -407,18 +385,9 @@ def main():
             if args.iceberg_cases:
                 target = "tests/iceberg_integration/test_iceberg_cluster.py::"
                 version_tests = [target + name for name in args.iceberg_cases]
-            elif args.iceberg and (
-                args.iceberg_preflight or args.iceberg_compat_only or version != args.versions[0]
-            ):
+            elif args.iceberg and version != args.versions[0]:
                 target = "tests/iceberg_integration/test_iceberg_cluster.py::"
-                version_tests = [
-                    target
-                    + (
-                        "test_version_compatibility"
-                        if args.iceberg_preflight
-                        else "test_version_compatibility[s3]"
-                    )
-                ]
+                version_tests = [target + "test_version_compatibility[s3]"]
                 if version == "4.1.5":
                     version_tests.append(target + "test_doris_position_delete")
             result = compose(
@@ -444,13 +413,7 @@ def main():
             compose("logs", "--no-color", "fe", "be")
             if result:
                 raise RuntimeError(f"version {version} integration failed; inspect logs")
-            if (
-                args.iceberg
-                and not args.iceberg_preflight
-                and not args.iceberg_compat_only
-                and not args.iceberg_cases
-                and version == args.versions[0]
-            ):
+            if args.iceberg and not args.iceberg_cases and version == args.versions[0]:
                 result = compose(
                     "exec",
                     "-T",
@@ -472,12 +435,7 @@ def main():
                 (logs / "results.json").write_text(json.dumps(results, indent=2))
                 if result:
                     raise RuntimeError(f"Iceberg {version} integration failed; inspect logs")
-            if (
-                version == "4.0.6"
-                and not args.skip_query_regression
-                and not args.iceberg_preflight
-                and not args.iceberg_cases
-            ):
+            if version == "4.0.6" and not args.skip_query_regression and not args.iceberg_cases:
                 run_doris_regression(version)
             compose("stop", "fe", "be")
             compose("rm", "-f", "fe", "be")

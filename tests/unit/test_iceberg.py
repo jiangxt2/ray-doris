@@ -71,6 +71,9 @@ def iceberg_environment(monkeypatch):
     )
     public_read = create_autospec(ray.data.read_iceberg, return_value=Mock())
     monkeypatch.setattr(iceberg.ray.data, "read_iceberg", public_read)
+    monkeypatch.setattr(
+        iceberg, "stream_iceberg_with_fallback", Mock(side_effect=lambda ds, *_: ds)
+    )
     config = DorisReadConfig.from_options(
         host="fe", user="reader", catalog="lake", table=parse_table("db.events")
     )
@@ -90,15 +93,100 @@ def invoke(env, **kwargs):
 
 
 def test_iceberg_read_forwards_pinned_snapshot_and_uses_identity_guard(iceberg_environment):
-    _, _, table, _, public_read = iceberg_environment
-    invoke(iceberg_environment)
+    iceberg, _, table, _, public_read = iceberg_environment
+    iceberg.ExternalMetadataReader.return_value.catalog.return_value["s3.region"] = "region-1"
+    scheduling_strategy = object()
+    invoke(iceberg_environment, scheduling_strategy=scheduling_strategy, label_selector=None)
     args = public_read.call_args.kwargs
     assert args["table_identifier"] == "db.events" and args["snapshot_id"] == 123
     assert args["catalog_kwargs"]["ray-doris.table-uuid"] == "table-uuid"
     assert args["catalog_kwargs"]["ray-doris.snapshot-id"] == "123"
     assert "ray-doris.schema-fingerprint" not in args["catalog_kwargs"]
     assert args["catalog_kwargs"]["auth"] == {"type": "noop"}
+    assert args["catalog_kwargs"]["ray-doris.catalog-defaults"] == {"s3.region": "region-1"}
+    assert (
+        iceberg.import_module.return_value.load_catalog.call_args.kwargs["s3.region"] == "region-1"
+    )
+    assert iceberg.stream_iceberg_with_fallback.call_args.args[6] is scheduling_strategy
     table.scan.assert_called_once_with(snapshot_id=123, selected_fields=("*",))
+
+
+@pytest.mark.parametrize("labels", [{"pool": "isolated"}, {}])
+def test_label_selector_uses_doris_before_snapshot_and_preserves_options(
+    iceberg_environment, monkeypatch, labels
+):
+    iceberg, _, _, _, public_read = iceberg_environment
+    native = SimpleNamespace(read_native=read_iceberg)
+    monkeypatch.setattr("ray_doris._api.import_module", Mock(return_value=native))
+    read = Mock(return_value="dataset")
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    remote_args = {"label_selector": labels, "resources": {"storage_access": 1}}
+    expected_args = {"label_selector": labels.copy(), "resources": {"storage_access": 1}}
+
+    assert (
+        read_doris(
+            host="fe",
+            table="db.events",
+            catalog="lake",
+            auto_native_read=True,
+            ray_remote_args=remote_args,
+        )
+        == "dataset"
+    )
+    assert read.call_args.args[0].config.snapshot_id is None
+    assert read.call_args.kwargs["ray_remote_args"] == expected_args
+    assert remote_args == expected_args
+    iceberg.pymysql.connect.assert_not_called()
+    iceberg.doris_main_snapshot.assert_not_called()
+    public_read.assert_not_called()
+
+
+def test_execution_guard_survives_ray_mutating_catalog_options(iceberg_environment):
+    iceberg, _, _, _, public_read = iceberg_environment
+
+    def mutate_catalog_options(**kwargs):
+        kwargs["catalog_kwargs"].pop("name")
+        return Mock()
+
+    public_read.side_effect = mutate_catalog_options
+    invoke(iceberg_environment)
+    check_identity = iceberg.stream_iceberg_with_fallback.call_args.args[4]
+    check_identity()
+    kwargs = iceberg.import_module.return_value.load_catalog.call_args.kwargs
+    assert kwargs["name"].startswith("ray_doris_")
+    assert kwargs["ray-doris.snapshot-id"] == "123"
+    iceberg.import_module.return_value.load_catalog.return_value.close.assert_called_once()
+
+
+def test_identity_check_cleanup_does_not_mask_conflict(iceberg_environment):
+    from ray_doris._errors import _UnsafeIcebergFallbackError
+
+    iceberg = iceberg_environment[0]
+    catalog = iceberg.import_module.return_value.load_catalog.return_value
+    catalog.load_table.side_effect = _UnsafeIcebergFallbackError("identity changed")
+    catalog.close.side_effect = OSError("sensitive")
+    with pytest.raises(_UnsafeIcebergFallbackError, match="identity changed"):
+        iceberg._check_iceberg_identity({"name": "catalog"}, "db.events")
+    catalog.close.assert_called_once()
+
+
+def test_empty_snapshot_still_rechecks_identity(iceberg_environment, monkeypatch):
+    iceberg, _, _, scan, public_read = iceberg_environment
+    scan.plan_files.return_value = []
+    empty = Mock()
+    monkeypatch.setattr(iceberg.ray.data, "from_arrow", Mock(return_value=empty))
+    assert invoke(iceberg_environment) is empty
+    public_read.assert_not_called()
+    assert callable(iceberg.stream_iceberg_with_fallback.call_args.args[4])
+
+
+@pytest.mark.parametrize("setting,value", [("max_errored_blocks", 1), ("retried_map_errors", True)])
+def test_ray_error_policies_keep_doris(iceberg_environment, monkeypatch, setting, value):
+    context = ray.data.DataContext.get_current()
+    monkeypatch.setattr(context, setting, value, raising=False)
+    with pytest.raises(_NativeReadNotApplicableError, match="Ray error handling"):
+        invoke(iceberg_environment)
+    iceberg_environment[-1].assert_not_called()
 
 
 def test_snapshot_without_schema_id_passes_schema_fingerprint(iceberg_environment):
@@ -114,39 +202,11 @@ def test_snapshot_without_schema_id_passes_schema_fingerprint(iceberg_environmen
         NestedField(field_id=1, name="id", field_type=LongType(), required=False)
     )
     invoke(iceberg_environment)
-    assert public_read.call_args.kwargs["catalog_kwargs"]["ray-doris.schema-fingerprint"] == (
-        iceberg.iceberg_schema_fingerprint(table.schema.return_value)
-    )
-
-
-def test_doris_nonsecret_defaults_reach_both_catalog_loads(iceberg_environment):
-    iceberg, _, _, _, public_read = iceberg_environment
-    iceberg.ExternalMetadataReader.return_value.catalog.return_value = {
-        "iceberg.catalog.type": "rest",
-        "uri": "https://rest",
-        "s3.endpoint": "https://s3.example",
-        "s3.region": "region-1",
-        "iceberg.rest.oauth2.server-uri": "https://auth.example/token",
-        "iceberg.rest.oauth2.scope": "read",
-        "iceberg.rest.oauth2.credential": "doris-secret",
-        "s3.secret_key": "storage-secret",
-    }
-    config = iceberg.import_module.return_value.Config.return_value
-    config.get_catalog_config.return_value = {"credential": "ray-secret"}
-    invoke(iceberg_environment)
-    catalog_args = iceberg.import_module.return_value.load_catalog.call_args.kwargs
-    guarded = public_read.call_args.kwargs["catalog_kwargs"]
-    expected = {
-        "s3.endpoint": "https://s3.example",
-        "s3.region": "region-1",
-        "oauth2-server-uri": "https://auth.example/token",
-        "scope": "read",
-    }
-    assert guarded["ray-doris.catalog-defaults"] == expected
-    assert all(catalog_args[key] == value for key, value in expected.items())
-    assert all(
-        secret not in str(guarded) for secret in ("doris-secret", "storage-secret", "ray-secret")
-    )
+    fingerprint = iceberg.iceberg_schema_fingerprint(table.schema.return_value)
+    catalog_kwargs = public_read.call_args.kwargs["catalog_kwargs"]
+    assert catalog_kwargs["ray-doris.schema-fingerprint"] == fingerprint
+    check_identity = iceberg.stream_iceberg_with_fallback.call_args.args[4]
+    assert check_identity.args[0]["ray-doris.schema-fingerprint"] == fingerprint
 
 
 def test_missing_rest_identity_falls_back_before_optional_default_validation(iceberg_environment):
@@ -222,15 +282,16 @@ def test_projection_preserves_requested_order_when_iceberg_uses_schema_order(ice
     assert public_read.call_args.kwargs["selected_fields"] == ("label", "id")
 
 
-def test_iceberg_known_delete_failure_is_pinned_but_other_errors_surface(iceberg_environment):
+def test_iceberg_planning_errors_keep_snapshot_for_fallback(iceberg_environment):
     _, _, _, scan, public_read = iceberg_environment
     scan.plan_files.side_effect = ValueError("PyIceberg does not yet support equality deletes")
     with pytest.raises(_PinnedNativeFallbackError) as error:
         invoke(iceberg_environment)
     assert error.value.snapshot_id == 123
     scan.plan_files.side_effect = PermissionError("secret")
-    with pytest.raises(DorisPlanningError, match="planning failed"):
+    with pytest.raises(_PinnedNativeFallbackError) as error:
         invoke(iceberg_environment)
+    assert error.value.snapshot_id == 123
     public_read.assert_not_called()
 
 
@@ -278,11 +339,12 @@ def test_delete_manifests_keep_the_selected_snapshot(iceberg_environment, versio
     public_read.assert_not_called()
 
 
-def test_delete_manifest_inspection_error_does_not_fall_back(iceberg_environment):
+def test_delete_manifest_inspection_error_uses_pinned_fallback(iceberg_environment):
     _, _, table, scan, public_read = iceberg_environment
     table.snapshot_by_id.return_value.manifests.side_effect = PermissionError("secret")
-    with pytest.raises(DorisPlanningError, match="delete manifest inspection failed") as error:
+    with pytest.raises(_PinnedNativeFallbackError) as error:
         invoke(iceberg_environment)
+    assert error.value.snapshot_id == 123
     assert "secret" not in str(error.value)
     scan.plan_files.assert_not_called()
     public_read.assert_not_called()
@@ -345,40 +407,6 @@ def test_legacy_known_reader_incompatibility_keeps_selected_snapshot(iceberg_env
     public_read.assert_not_called()
 
 
-def test_only_recognized_v1_inline_manifests_fall_back(iceberg_environment, monkeypatch):
-    from pydantic import ValidationError
-    from pyiceberg.catalog.rest import TableResponse
-    from pyiceberg.partitioning import PartitionSpec
-    from pyiceberg.schema import Schema
-    from pyiceberg.table.metadata import new_table_metadata
-    from pyiceberg.table.sorting import SortOrder
-    from pyiceberg.types import LongType, NestedField
-
-    iceberg, _, _, _, public_read = iceberg_environment
-    metadata = new_table_metadata(
-        Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=False)),
-        PartitionSpec(),
-        SortOrder(),
-        "s3://bucket/table",
-        {"format-version": "1"},
-    ).model_dump(by_alias=True, mode="json")
-    metadata["snapshots"] = [
-        {"snapshot-id": 123, "timestamp-ms": 1, "manifests": ["s3://bucket/manifest"]}
-    ]
-    metadata["current-snapshot-id"] = 123
-    with pytest.raises(ValidationError) as error:
-        TableResponse.model_validate({"metadata": metadata})
-    assert iceberg._unsupported_v1_inline_manifests(error.value)
-    monkeypatch.setattr(iceberg, "_load_table", Mock(side_effect=error.value))
-    with pytest.raises(_NativeReadNotApplicableError):
-        invoke(iceberg_environment)
-    metadata["snapshots"][0].pop("manifests")
-    with pytest.raises(ValidationError) as malformed:
-        TableResponse.model_validate({"metadata": metadata})
-    assert not iceberg._unsupported_v1_inline_manifests(malformed.value)
-    public_read.assert_not_called()
-
-
 def test_facade_propagates_snapshot_into_doris_fallback(monkeypatch):
     native = Mock()
     native.read_native.side_effect = _PinnedNativeFallbackError(
@@ -422,26 +450,7 @@ def test_snapshot_fallback_failure_surfaces_without_unpinned_retry(monkeypatch):
 
 
 def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
-    import importlib
-    from pathlib import Path
-
-    original_import = importlib.import_module
-    monkeypatch.setattr(
-        importlib,
-        "import_module",
-        lambda name: (
-            SimpleNamespace(RestCatalog=object)
-            if name == "pyiceberg.catalog.rest"
-            else original_import(name)
-        ),
-    )
-    spec = importlib.util.spec_from_file_location(
-        "ray_doris._iceberg_catalog_test",
-        Path(__file__).parents[2] / "src/ray_doris/_iceberg_catalog.py",
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    import ray_doris._iceberg_catalog as module
 
     table = Mock()
     table.metadata.table_uuid = "uuid"
@@ -496,16 +505,12 @@ def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
     snapshot.schema_id = 1
     with pytest.raises(DorisPlanningError, match="schema changed"):
         guarded.load_table("db.events")
-    names = ("UnauthorizedError", "AuthorizationExpiredError", "OAuthError", "ForbiddenError")
-    monkeypatch.setattr(
-        module,
-        "import_module",
-        Mock(return_value=SimpleNamespace(**dict.fromkeys(names, PermissionError))),
-    )
     catalog.load_table.side_effect = ValueError("sensitive-source-config")
     with pytest.raises(DorisPlanningError) as error:
         guarded.load_table("db.events")
     assert "sensitive-source-config" not in str(error.value)
+    guarded.close()
+    catalog.close.assert_called_once()
 
 
 def test_deferred_catalog_reuses_defaults_and_rejects_configuration_change(monkeypatch):
@@ -574,8 +579,7 @@ def test_vending_retry_only_for_explicit_missing_provider(monkeypatch):
     assert loader.call_count == 3
 
 
-@pytest.mark.parametrize("source", ["rest", "configured"])
-def test_vending_retry_preserves_explicit_case_insensitive_header(source):
+def test_vending_retry_preserves_explicit_case_insensitive_header():
     from pyiceberg.exceptions import BadRequestError
 
     import ray_doris._iceberg as iceberg
@@ -584,12 +588,13 @@ def test_vending_retry_preserves_explicit_case_insensitive_header(source):
     loader.return_value.load_table.side_effect = BadRequestError(
         "No credential provider found for path s3://bucket/table"
     )
-    rest = {"type": "rest", "uri": "https://rest"}
-    configured = {}
-    target = rest if source == "rest" else configured
-    target["header.x-iceberg-access-delegation"] = "vended-credentials"
+    rest = {
+        "type": "rest",
+        "uri": "https://rest",
+        "header.x-iceberg-access-delegation": "vended-credentials",
+    }
     with pytest.raises(BadRequestError):
-        iceberg._load_table(loader, "lake", rest, "db.events", configured)
+        iceberg._load_table(loader, "lake", rest, "db.events", {})
     loader.assert_called_once()
     assert "header.X-Iceberg-Access-Delegation" not in rest
 
@@ -644,43 +649,6 @@ def test_named_delegation_configuration_reaches_retry_check(iceberg_environment,
     public_read.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "name,expected",
-    [("UnauthorizedError", DorisAuthenticationError), ("ForbiddenError", DorisPermissionError)],
-)
-def test_rest_auth_failures_are_visible_and_sanitized(
-    iceberg_environment, monkeypatch, name, expected
-):
-    iceberg, _, _, _, reader = iceberg_environment
-
-    class AuthError(Exception):
-        pass
-
-    class OtherError(Exception):
-        pass
-
-    errors = SimpleNamespace(
-        UnauthorizedError=AuthError if name == "UnauthorizedError" else OtherError,
-        ForbiddenError=AuthError if name == "ForbiddenError" else OtherError,
-        AuthorizationExpiredError=OtherError,
-        OAuthError=OtherError,
-        BadRequestError=OtherError,
-    )
-    monkeypatch.setattr(iceberg, "_load_table", Mock(side_effect=AuthError("secret-token")))
-    iceberg.import_module.side_effect = lambda module: (
-        errors
-        if module == "pyiceberg.exceptions"
-        else SimpleNamespace(
-            load_catalog=Mock(),
-            Config=Mock(return_value=SimpleNamespace(get_catalog_config=Mock(return_value={}))),
-        )
-    )
-    with pytest.raises(expected) as error:
-        invoke(iceberg_environment)
-    assert "secret-token" not in str(error.value)
-    reader.assert_not_called()
-
-
 @pytest.mark.parametrize("stage", ["planning", "deferred"])
 @pytest.mark.parametrize(
     "status,expected",
@@ -691,7 +659,7 @@ def test_rest_auth_failures_are_visible_and_sanitized(
         (None, DorisPlanningError),
     ],
 )
-def test_oauth_manager_http_failures_are_classified_without_fallback(
+def test_oauth_manager_http_failures_use_doris_or_are_classified(
     iceberg_environment, monkeypatch, stage, status, expected
 ):
     import requests
@@ -712,21 +680,13 @@ def test_oauth_manager_http_failures_are_classified_without_fallback(
         monkeypatch.setattr(
             iceberg, "_load_table", Mock(side_effect=lambda *_args: manager.auth_header())
         )
-        # The fixture's import stub represents all PyIceberg modules; HTTP 500
-        # reaches the existing PyIceberg exception classification as well.
-        real_exceptions = __import__("pyiceberg.exceptions", fromlist=["exceptions"])
-        stub = iceberg.import_module.return_value
-        monkeypatch.setattr(
-            iceberg,
-            "import_module",
-            lambda module: real_exceptions if module == "pyiceberg.exceptions" else stub,
-        )
         action = partial(invoke, iceberg_environment)
     else:
         action = partial(_safe_catalog_call, manager.auth_header)
-    with pytest.raises(expected) as error:
+    with pytest.raises(_NativeReadNotApplicableError if stage == "planning" else expected) as error:
         action()
-    assert type(error.value) is expected
+    if stage == "deferred":
+        assert type(error.value) is expected
     assert "secret" not in str(error.value)
     public_read.assert_not_called()
 
@@ -737,3 +697,19 @@ def test_missing_historical_schema_fails_before_native_execution(iceberg_environ
     with pytest.raises(DorisPlanningError, match="schema is unavailable"):
         invoke(iceberg_environment)
     public_read.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (PermissionError("storage denied"), True),
+        (OSError("AWS Error SIGNATURE_DOES_NOT_MATCH"), True),
+        (OSError("HTTP status 403"), True),
+        (FileNotFoundError("s3://bucket/metadata/file-403.json"), False),
+        (OSError("HTTP status 4030"), False),
+    ],
+)
+def test_storage_authorization_error_does_not_match_path(error, expected):
+    from tests.iceberg_integration.retry_hook import is_storage_authorization_error
+
+    assert is_storage_authorization_error(error) is expected

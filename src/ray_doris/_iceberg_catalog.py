@@ -5,9 +5,9 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Callable
 
-from ray_doris._errors import DorisAuthenticationError, DorisPermissionError, DorisPlanningError
+from ray_doris._errors import DorisPlanningError, _UnsafeIcebergFallbackError
 from ray_doris._iceberg_metadata import (
-    iceberg_http_access_error,
+    iceberg_access_error,
     iceberg_schema_fingerprint,
     validate_iceberg_catalog_defaults,
 )
@@ -25,21 +25,9 @@ def _safe_catalog_call(operation: Callable[..., Any], *args: Any, **kwargs: Any)
     try:
         return operation(*args, **kwargs)
     except Exception as error:
-        access_error = iceberg_http_access_error(error)
+        access_error = iceberg_access_error(error)
         if access_error is not None:
             raise access_error from None
-        exceptions = import_module("pyiceberg.exceptions")
-        if isinstance(
-            error,
-            (
-                exceptions.UnauthorizedError,
-                exceptions.AuthorizationExpiredError,
-                exceptions.OAuthError,
-            ),
-        ):
-            raise DorisAuthenticationError("Iceberg REST authentication failed") from None
-        if isinstance(error, exceptions.ForbiddenError):
-            raise DorisPermissionError("Iceberg REST permission denied") from None
         raise DorisPlanningError("deferred Iceberg REST catalog request failed") from None
 
 
@@ -76,13 +64,16 @@ class PinnedRestCatalog(_RestCatalog):
     def load_table(self, identifier: Any) -> Any:
         table = _safe_catalog_call(self._source.load_table, identifier)
         if str(table.metadata.table_uuid) != self._expected_uuid:
-            raise DorisPlanningError("Iceberg table identity changed after planning")
+            raise _UnsafeIcebergFallbackError("Iceberg table identity changed after planning")
         snapshot = table.snapshot_by_id(self._snapshot_id)
         if snapshot is None:
-            raise DorisPlanningError("selected Iceberg snapshot is no longer available")
+            raise _UnsafeIcebergFallbackError("selected Iceberg snapshot is no longer available")
         if self._expected_schema_fingerprint is not None and (
             snapshot.schema_id is not None
             or iceberg_schema_fingerprint(table.schema()) != self._expected_schema_fingerprint
         ):
-            raise DorisPlanningError("Iceberg snapshot schema changed after planning")
+            raise _UnsafeIcebergFallbackError("Iceberg snapshot schema changed after planning")
         return table
+
+    def close(self) -> None:
+        self._source.close()

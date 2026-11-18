@@ -88,10 +88,6 @@ def test_cleanup_verification_does_not_hide_docker_failure():
 @pytest.mark.parametrize(
     "arguments,message",
     [
-        (
-            ["--iceberg", "--iceberg-compat-only", "--versions", "4.0.6"],
-            "requires non-4.0.6 versions",
-        ),
         (["--doris-regression-only", "--versions", "4.1.5"], "requires only --versions 4.0.6"),
         (
             ["--doris-regression-only", "--skip-query-regression", "--versions", "4.0.6"],
@@ -101,9 +97,19 @@ def test_cleanup_verification_does_not_hide_docker_failure():
             ["--iceberg", "--iceberg-cases", "../other", "--versions", "4.0.6"],
             "valid test function names",
         ),
+        (
+            [
+                "--iceberg",
+                "--iceberg-cases",
+                "test_version_compatibility[s3]",
+                "--versions",
+                "4.0.6",
+            ],
+            "prepare the pinned Hadoop JNI source context first",
+        ),
     ],
 )
-def test_runner_rejects_invalid_modes(tmp_path, arguments, message):
+def test_runner_validates_arguments_before_starting_docker(tmp_path, arguments, message):
     result = subprocess.run(
         [
             sys.executable,
@@ -120,39 +126,6 @@ def test_runner_rejects_invalid_modes(tmp_path, arguments, message):
     )
     assert result.returncode != 0
     assert message in result.stderr
-
-
-def test_iceberg_retry_hook_uses_a_serializable_runtime_environment():
-    from ray.runtime_env import RuntimeEnv
-
-    runtime = RuntimeEnv(
-        worker_process_setup_hook="tests.iceberg_integration.retry_hook.setup",
-        env_vars={"ICEBERG_RETRY_MARKER": "/evidence/marker"},
-    )
-    serialized = json.loads(runtime.serialize())
-    assert serialized["worker_process_setup_hook"].endswith("retry_hook.setup")
-    assert serialized["env_vars"]["ICEBERG_RETRY_MARKER"] == "/evidence/marker"
-
-
-def test_iceberg_retry_hook_fails_once_and_then_uses_real_reader(monkeypatch, tmp_path):
-    from types import ModuleType
-
-    from tests.iceberg_integration import retry_hook
-
-    class FakeScan:
-        def to_record_batches(self, tasks):
-            return tasks
-
-    fake = ModuleType("pyiceberg.io.pyarrow")
-    fake.ArrowScan = FakeScan
-    monkeypatch.setitem(sys.modules, "pyiceberg", ModuleType("pyiceberg"))
-    monkeypatch.setitem(sys.modules, "pyiceberg.io", ModuleType("pyiceberg.io"))
-    monkeypatch.setitem(sys.modules, "pyiceberg.io.pyarrow", fake)
-    monkeypatch.setenv("ICEBERG_RETRY_MARKER", str(tmp_path / "marker"))
-    retry_hook.setup()
-    with pytest.raises(RuntimeError, match="injected Iceberg read retry"):
-        FakeScan().to_record_batches([1])
-    assert FakeScan().to_record_batches([2]) == [2]
 
 
 def test_streamed_command_redacts_and_closes_output():

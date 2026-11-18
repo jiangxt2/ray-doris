@@ -36,6 +36,10 @@ class _PinnedNativeFallbackError(DorisPlanningError):
         self.schema = schema
 
 
+class _UnsafeIcebergFallbackError(DorisPlanningError):
+    """The selected Iceberg identity or schema changed after planning."""
+
+
 class DorisAuthenticationError(DorisPlanningError):
     """Raised when Doris rejects credentials."""
 

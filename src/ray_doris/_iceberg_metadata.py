@@ -26,14 +26,22 @@ def iceberg_schema_fingerprint(schema: Any) -> str:
     return sha256(schema.model_dump_json(by_alias=True).encode("utf-8")).hexdigest()
 
 
-def iceberg_http_access_error(error: Exception) -> Optional[DorisPlanningError]:
-    """Classify HTTP authentication failures without exposing the response."""
+def iceberg_access_error(error: Exception) -> Optional[DorisPlanningError]:
+    """Classify REST authentication and authorization failures without exposing details."""
     http_error = import_module("requests.exceptions").HTTPError
     if isinstance(error, http_error) and error.response is not None:
         if error.response.status_code == 401:
             return DorisAuthenticationError("Iceberg REST authentication failed")
         if error.response.status_code == 403:
             return DorisPermissionError("Iceberg REST permission denied")
+    exceptions = import_module("pyiceberg.exceptions")
+    if isinstance(
+        error,
+        (exceptions.UnauthorizedError, exceptions.AuthorizationExpiredError, exceptions.OAuthError),
+    ):
+        return DorisAuthenticationError("Iceberg REST authentication failed")
+    if isinstance(error, exceptions.ForbiddenError):
+        return DorisPermissionError("Iceberg REST permission denied")
     return None
 
 
@@ -50,7 +58,9 @@ def _nonsecret_value(properties: Mapping[str, str], keys: tuple[str, ...]) -> Op
     return next(iter(values), None)
 
 
-def _safe_endpoint(value: str) -> str:
+def _safe_endpoint(
+    value: str, error_message: str = "Doris returned an invalid non-sensitive endpoint"
+) -> str:
     try:
         parsed = urlsplit(value)
         valid = (
@@ -65,7 +75,7 @@ def _safe_endpoint(value: str) -> str:
     except ValueError:
         valid = False
     if not valid:
-        raise DorisPlanningError("Doris returned an invalid non-sensitive endpoint")
+        raise DorisPlanningError(error_message)
     return value
 
 
@@ -160,22 +170,7 @@ def rest_catalog_properties(properties: Mapping[str, str]) -> dict[str, str]:
         raise _NativeReadNotApplicableError("Iceberg REST URI is unavailable")
     if any(not value for value in values) or len(set(values)) != 1:
         raise DorisPlanningError("Doris Iceberg REST URI properties disagree")
-    uri = values[0]
-    try:
-        parsed = urlsplit(uri)
-        valid = (
-            parsed.scheme in ("http", "https")
-            and bool(parsed.hostname)
-            and not parsed.username
-            and not parsed.password
-            and not parsed.query
-            and not parsed.fragment
-            and (parsed.port is None or 0 < parsed.port < 65536)
-        )
-    except ValueError:
-        valid = False
-    if not valid:
-        raise DorisPlanningError("Doris returned an invalid Iceberg REST URI")
+    uri = _safe_endpoint(values[0], "Doris returned an invalid Iceberg REST URI")
     result = {"type": "rest", "uri": uri}
     if "warehouse" in properties:
         if not properties["warehouse"]:

@@ -73,12 +73,14 @@ def read_doris(
     ``auto_native_read`` is disabled by default. When enabled, a compatible Hive
     table can use Ray's public Parquet reader with independent HMS/storage access
     and immutable published files. Known unsupported cases retain Doris reading;
-    authentication, storage and inconsistent-metadata errors remain visible.
-    This API accepts a table identifier, not a complete SQL statement. A selected
-    native read never replays through Doris after execution begins.
+    Hive authentication, storage and inconsistent-metadata errors remain visible.
+    This API accepts a table identifier, not a complete SQL statement.
 
     The separate Iceberg REST profile fixes a snapshot for native reading and
-    any eligible Doris fallback. See {doc}`the native read guide
+    any eligible Doris fallback. Before its first block is yielded to Ray, an
+    Iceberg native read failure can select Doris; after that block it fails
+    without replay. A coordinator failure itself may still fail the task.
+    See {doc}`the native read guide
     </user-guide/native-read>` for version limits and independent source authorization.
     Native reads do not execute Doris row filters or column masking.
 

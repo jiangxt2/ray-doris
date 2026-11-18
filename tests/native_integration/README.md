@@ -74,10 +74,10 @@ records the image IDs, build versions and cleanup outcome; it does not pull base
 images. The static S3 credential provider is a separate test service. It does not
 validate expiring credentials or Kerberos.
 
-For failure diagnosis and non-overlapping completion, `--iceberg-preflight`
-selects the 4.0.6 S3/HDFS smoke checks, `--iceberg-compat-only` selects the other
-versions' minimal checks, and `--iceberg-cases` accepts individual test function
-names for one version. `--doris-regression-only --versions 4.0.6` runs only the
-existing Doris suite; the runner checks that `.venv` uses Ray 2.59.0 before it
-starts containers. Reuse previously passing results where the code and relevant
-environment have not changed.
+For failure diagnosis and non-overlapping completion, `--iceberg-cases` accepts
+individual test function names, or a quoted parametrized case such as
+`test_version_compatibility[s3]`, for one version. The option
+`--doris-regression-only --versions 4.0.6` runs only the existing Doris suite;
+the runner checks that `.venv` uses Ray 2.59.0 before it starts containers.
+Reuse previously passing results where the code and relevant environment have
+not changed.

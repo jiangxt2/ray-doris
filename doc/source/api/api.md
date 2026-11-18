@@ -34,8 +34,9 @@ ReadTask payload.
 
 Tables are read through Doris by default. Supply `catalog` for an external table,
 and enable `auto_native_read=True` to select Ray's native reader when the shared
-Hive Parquet profile applies. Known unsupported contexts retain Doris reading;
-real errors and failures after native execution starts do not trigger a replay.
+Hive Parquet or Iceberg REST profile applies. Known unsupported contexts retain
+Doris reading. Iceberg native failures before the first block is yielded to Ray
+can fall back to a snapshot-pinned Doris read; later failures do not replay.
 The API accepts a table identifier; complete SQL statements and SQL rewriting are unsupported.
 
 See [shared-storage reads](../user-guide/native-read.md) for the experimental

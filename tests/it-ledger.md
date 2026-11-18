@@ -783,3 +783,29 @@ All three runs used source fingerprint
 `f895d11ec362392ca2e2d9e1a87cad1827652b94af8d7b2232ac215dce495e7c` and cached
 base images. The position-delete case did not construct a delete file with the
 same sequence number as its data file. No full multi-version Iceberg matrix was run.
+
+## Iceberg streaming and authorization follow-up
+
+| Suite | Coverage and state | Result |
+| --- | --- | --- |
+| Ray 2.49.2 stream contracts | Python 3.9.25, PyArrow 21.0.0 and PyIceberg 0.10.0; current streaming and fallback code | 7 passed, none skipped. Offline dependencies; logs and XML: `/private/tmp/rd-iceberg-ray249-compat-20261118/`. |
+| Doris 4.0.6 Iceberg | HDFS projection/worker path and S3 append/retry after test reduction | 2 passed on `doris-4.0.6-rc02-1663f25c16f`; fingerprint `6a7a1c6b17b53cdaa7aa193981860d7355bdac6a78801da6aa8f5b9a75b54a95`. Logs: `/private/tmp/rd-iceberg-trim-406-20261118/`. |
+| Doris 4.0.6 storage denial | Real S3 denial and pre-snapshot Doris fallback with tightened error matching | 1 passed on `doris-4.0.6-rc02-1663f25c16f`; fingerprint `f6adbc7e23874505668ff402530a7aab9fcd7afea214d93556e142640ce2e1ba`. Logs: `/private/tmp/rd-iceberg-auth-match-406-20261118/`. |
+| Slow distributed full profile | Ordinary Doris worker and BE failure, retry, TLS and write-fault scenarios; Ray 2.59.0 / Python 3.12.14 | 15 passed, none skipped, on `doris-4.0.6-rc02-1663f25c16f`. Logs and cleanup: `/private/tmp/rd-iceberg-slow-full-20261118/`. |
+
+The Ray 2.49.2 source/test/config fingerprint was
+`ea2a8441bf206205204e00104ec5d06d0d390975dcbc9d3915ec48e541e96b54` before and
+after the run. Ray shut down and its temporary environment was moved to Trash;
+no Docker service was started for that run. Both Doris runs used cached base
+images and cleaned their containers, networks, volumes and custom images;
+temporary Hadoop sources were moved to Trash, and shared build caches remain.
+The two targeted Doris fingerprints include the Hadoop source manifest and
+describe their respective code states. The full slow profile used the same
+repository source/test/config fingerprint above with `b637222` plus uncommitted worktree
+changes; its result manifest's commit field is not exact-commit evidence. A
+temporary Compose override removed duplicate build definitions; the original
+full-profile tests and fault injection were unchanged. Cached base images were
+used without pulls, and the test containers, networks, volumes and custom images
+were cleaned and independently checked. The prior dangling image and shared
+build cache were retained; temporary scripts were moved to Trash. The full slow
+profile covers ordinary Doris and does not replace Iceberg-specific tests.

@@ -16,24 +16,23 @@ from ray.data import Dataset
 
 from ray_doris._compat import ensure_iceberg_ray_version
 from ray_doris._errors import (
-    DorisAuthenticationError,
     DorisConfigurationError,
     DorisError,
-    DorisPermissionError,
     DorisPlanningError,
     _NativeReadNotApplicableError,
     _PinnedNativeFallbackError,
+    _UnsafeIcebergFallbackError,
 )
 from ray_doris._iceberg_metadata import (
     doris_main_snapshot,
     iceberg_catalog_defaults,
-    iceberg_http_access_error,
     iceberg_schema_fingerprint,
     rest_catalog_properties,
     verify_doris_policy,
     verify_legacy_snapshot_identity,
     verify_table_identity,
 )
+from ray_doris._iceberg_stream import stream_iceberg_with_fallback
 from ray_doris._metadata import ExternalMetadataReader, metadata_rows, named_row
 from ray_doris._models import DorisReadConfig, NativeReadOptions
 from ray_doris._native import _canonicalize_batch
@@ -67,25 +66,17 @@ def _load_table(
         return load_catalog(catalog, **rest).load_table(identifier)
 
 
-def _unsupported_v1_inline_manifests(error: Exception) -> bool:
-    """Recognize only PyIceberg's missing manifest-list validation for v1 snapshots."""
-    from pydantic import ValidationError
-
-    if not isinstance(error, ValidationError):
-        return False
-    errors = error.errors(include_url=False)
-    return bool(errors) and all(
-        item.get("type") == "missing"
-        and len(item.get("loc", ())) == 5
-        and item["loc"][:3] == ("metadata", 1, "snapshots")
-        and isinstance(item["loc"][3], int)
-        and item["loc"][4] == "manifest-list"
-        and isinstance(item.get("input"), dict)
-        and "manifest-list" not in item["input"]
-        and isinstance(item["input"].get("manifests"), list)
-        and all(isinstance(path, str) and path for path in item["input"]["manifests"])
-        for item in errors
-    )
+def _check_iceberg_identity(catalog_kwargs: dict[str, Any], identifier: str) -> None:
+    """Reload the REST table on the coordinator before consuming the pinned scan."""
+    load_catalog = import_module("pyiceberg.catalog").load_catalog
+    catalog = load_catalog(**catalog_kwargs)
+    try:
+        catalog.load_table(identifier)
+    finally:
+        try:
+            catalog.close()
+        except Exception:
+            logger.warning("Failed to close the Iceberg identity-check catalog")
 
 
 def read_iceberg(
@@ -100,6 +91,8 @@ def read_iceberg(
     """Select a snapshot only after source identity and policy checks succeed."""
     if concurrency is not None or options != NativeReadOptions():
         raise _NativeReadNotApplicableError("Iceberg reader cannot preserve these options")
+    if ray_remote_args is not None and ray_remote_args.get("label_selector") is not None:
+        raise _NativeReadNotApplicableError("Iceberg reader cannot preserve label selectors")
     ensure_iceberg_ray_version()
     try:
         load_catalog = import_module("pyiceberg.catalog").load_catalog
@@ -180,26 +173,13 @@ def read_iceberg(
                     configured,
                 )
             except Exception as error:
-                if _unsupported_v1_inline_manifests(error):
-                    raise _NativeReadNotApplicableError(
-                        "Iceberg v1 inline manifests are unsupported by the reader"
-                    ) from None
-                access_error = iceberg_http_access_error(error)
-                if access_error is not None:
-                    raise access_error from None
-                exceptions = import_module("pyiceberg.exceptions")
-                if isinstance(
-                    error,
-                    (
-                        exceptions.UnauthorizedError,
-                        exceptions.AuthorizationExpiredError,
-                        exceptions.OAuthError,
-                    ),
-                ):
-                    raise DorisAuthenticationError("Iceberg REST authentication failed") from None
-                if isinstance(error, exceptions.ForbiddenError):
-                    raise DorisPermissionError("Iceberg REST permission denied") from None
-                raise DorisPlanningError("Iceberg REST catalog discovery failed") from None
+                logger.warning(
+                    "Iceberg REST discovery failed; using Doris error_type=%s",
+                    type(error).__name__,
+                )
+                raise _NativeReadNotApplicableError(
+                    "Iceberg REST catalog discovery failed"
+                ) from None
             stage = "identity"
             try:
                 identity_verified = verify_table_identity(
@@ -207,8 +187,14 @@ def read_iceberg(
                 )
             except (DorisError, pymysql.MySQLError):
                 raise
-            except Exception:
-                raise DorisPlanningError("Iceberg table identity verification failed") from None
+            except Exception as error:
+                logger.warning(
+                    "Iceberg identity discovery failed; using Doris error_type=%s",
+                    type(error).__name__,
+                )
+                raise _NativeReadNotApplicableError(
+                    "Iceberg table identity discovery failed"
+                ) from None
             stage = "snapshot"
             snapshot_id = doris_main_snapshot(cursor, metadata_rows, catalog, config.table)
             if snapshot_id is None:
@@ -260,23 +246,22 @@ def read_iceberg(
                         getattr(item.content, "value", item.content) == 1 for item in manifests
                     )
                 except Exception:
-                    raise DorisPlanningError("Iceberg delete manifest inspection failed") from None
+                    logger.warning(
+                        "Iceberg delete manifest inspection failed; using pinned Doris snapshot"
+                    )
+                    raise _PinnedNativeFallbackError(snapshot_id, schema) from None
                 if has_deletes:
                     raise _PinnedNativeFallbackError(snapshot_id, schema)
             try:
                 tasks = list(scan.plan_files())
-            except (NotImplementedError, ValueError) as error:
-                if "does not yet support equality deletes" in str(error).lower():
-                    raise _PinnedNativeFallbackError(snapshot_id, schema) from None
-                raise DorisPlanningError("selected Iceberg snapshot is unsupported") from None
             except Exception:
-                raise DorisPlanningError("Iceberg snapshot planning failed") from None
+                logger.warning("Iceberg snapshot planning failed; using pinned Doris snapshot")
+                raise _PinnedNativeFallbackError(snapshot_id, schema) from None
             if len(tasks) > options.max_files:
                 raise _PinnedNativeFallbackError(snapshot_id, schema)
             for task in tasks:
-                path = task.file.file_path
                 files = [task.file, *task.delete_files]
-                if urlsplit(path).scheme not in ("s3", "s3a", "hdfs") or any(
+                if any(
                     getattr(file.file_format, "value", "") != "PARQUET"
                     or urlsplit(file.file_path).scheme not in ("s3", "s3a", "hdfs")
                     for file in files
@@ -303,8 +288,6 @@ def read_iceberg(
             legacy_identity,
             "; a snapshot-pinned Doris fallback may fail" if legacy_identity == "ancestor" else "",
         )
-    if not tasks:
-        return cast(Dataset, ray.data.from_arrow(pa.Table.from_batches([], schema=schema)))
     guarded: dict[str, Any] = {
         "name": "ray_doris_" + uuid4().hex,
         "py-catalog-impl": "ray_doris._iceberg_catalog.PinnedRestCatalog",
@@ -323,18 +306,41 @@ def read_iceberg(
         guarded[_DELEGATION] = rest[_DELEGATION]
     if rest.get("auth") == {"type": "noop"}:
         guarded["auth"] = rest["auth"]
-    dataset = ray.data.read_iceberg(
-        table_identifier=f"{config.table.database}.{config.table.table}",
-        snapshot_id=snapshot_id,
-        selected_fields=config.columns or ("*",),
-        catalog_kwargs=guarded,
-        override_num_blocks=override_num_blocks,
-        ray_remote_args=dict(ray_remote_args) if ray_remote_args is not None else {},
-    )
-    logger.info("Doris read path=native experimental=true reader=read_iceberg")
-    return dataset.map_batches(
-        partial(_canonicalize_batch, schema=schema),
-        batch_format="pyarrow",
-        batch_size=None,
-        **(dict(ray_remote_args) if ray_remote_args is not None else {}),
-    )
+    try:
+        identifier = f"{config.table.database}.{config.table.table}"
+        if tasks:
+            dataset = ray.data.read_iceberg(
+                table_identifier=identifier,
+                snapshot_id=snapshot_id,
+                selected_fields=config.columns or ("*",),
+                catalog_kwargs=dict(guarded),
+                override_num_blocks=override_num_blocks,
+                ray_remote_args=dict(ray_remote_args) if ray_remote_args is not None else {},
+            )
+            dataset = dataset.map_batches(
+                partial(_canonicalize_batch, schema=schema),
+                batch_format="pyarrow",
+                batch_size=None,
+                **(dict(ray_remote_args) if ray_remote_args is not None else {}),
+            )
+        else:
+            dataset = cast(Dataset, ray.data.from_arrow(pa.Table.from_batches([], schema=schema)))
+        result = stream_iceberg_with_fallback(
+            dataset,
+            config,
+            snapshot_id,
+            schema,
+            partial(_check_iceberg_identity, guarded, identifier),
+            ray_remote_args.get("runtime_env") if ray_remote_args is not None else None,
+            ray_remote_args.get("scheduling_strategy") if ray_remote_args is not None else None,
+        )
+        logger.info("Doris read path=native experimental=true reader=read_iceberg")
+        return result
+    except _UnsafeIcebergFallbackError:
+        raise
+    except Exception as error:
+        logger.warning(
+            "Iceberg native planning failed; using pinned Doris snapshot error_type=%s",
+            type(error).__name__,
+        )
+        raise _PinnedNativeFallbackError(snapshot_id, schema) from None

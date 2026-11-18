@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Literal, Mapping, Optional
@@ -20,6 +21,7 @@ _MAX_RAY_VERSION = (2, 60, 0)
 _RAY_VERSION = ray.__version__
 _FINAL_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$")
 _PROJECTION_RELEASES = {(2, 58, 0), (2, 59, 0)}
+logger = logging.getLogger(__name__)
 
 
 def supports_projection_pushdown() -> bool:
@@ -80,6 +82,7 @@ def ensure_native_ray_version() -> None:
 def ensure_iceberg_ray_version() -> None:
     """Require the public Iceberg reader and batch mapping contracts."""
     ensure_supported_ray_version()
+    ensure_iceberg_stream_context(ray.data.DataContext.get_current())
     reader = getattr(ray.data, "read_iceberg", None)
     required = {
         "table_identifier",
@@ -96,6 +99,17 @@ def ensure_iceberg_ray_version() -> None:
         <= inspect.signature(ray.data.Dataset.map_batches).parameters.keys()
     ):
         raise _NativeReadNotApplicableError("Ray lacks the required public batch mapper")
+
+
+def ensure_iceberg_stream_context(context: Any) -> None:
+    """Reject Ray settings that can replay or discard source blocks."""
+    if (
+        not hasattr(context, "raise_original_map_exception")
+        or getattr(context, "max_errored_blocks", 0) != 0
+        or getattr(context, "retried_map_errors", False)
+    ):
+        logger.warning("Iceberg native read is unavailable with this Ray error policy")
+        raise _NativeReadNotApplicableError("Ray error handling requires Doris execution")
 
 
 def native_uses_datasource_v2() -> bool:
