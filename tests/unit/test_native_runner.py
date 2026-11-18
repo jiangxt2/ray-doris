@@ -42,6 +42,7 @@ def test_cleanup_verification_detects_each_owned_resource(resource):
         "containers": "",
         "networks": "",
         "volumes": "unrelated-volume",
+        "labeled_volumes": "",
         "images": "shared:base",
     }
     responses[resource] += (
@@ -60,7 +61,7 @@ def test_cleanup_verification_detects_each_owned_resource(resource):
 
 def test_cleanup_accepts_already_absent_resources_and_preserves_shared_resources():
     verify = runpy.run_path(str(RUNNER))["verify_cleanup"]
-    run = Mock(side_effect=["", "", "shared-volume", "shared:base"])
+    run = Mock(side_effect=["", "", "shared-volume", "", "shared:base"])
     result = verify(run, {"owned-volume"}, ["owned:runtime"])
     assert json.loads(json.dumps(result)) == {
         "containers": [],
@@ -70,11 +71,56 @@ def test_cleanup_accepts_already_absent_resources_and_preserves_shared_resources
     }
 
 
+def test_cleanup_detects_labeled_volumes_after_partial_start():
+    verify = runpy.run_path(str(RUNNER))["verify_cleanup"]
+    run = Mock(side_effect=["", "", "anonymous", "anonymous", ""])
+    with pytest.raises(RuntimeError, match="volumes"):
+        verify(run, set(), [])
+
+
 def test_cleanup_verification_does_not_hide_docker_failure():
     verify = runpy.run_path(str(RUNNER))["verify_cleanup"]
     run = Mock(side_effect=RuntimeError("Docker is unavailable"))
     with pytest.raises(RuntimeError, match="Docker is unavailable"):
         verify(run, set(), [])
+
+
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        (
+            ["--iceberg", "--iceberg-cases", "../other", "--versions", "4.0.6"],
+            "valid test function names",
+        ),
+        (
+            [
+                "--iceberg",
+                "--iceberg-cases",
+                "test_version_compatibility[s3]",
+                "--versions",
+                "4.0.6",
+            ],
+            "prepare the pinned Hadoop JNI source context first",
+        ),
+    ],
+)
+def test_runner_validates_arguments_before_starting_docker(tmp_path, arguments, message):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            *arguments,
+            "--logs",
+            str(tmp_path / "logs"),
+            "--hadoop-source",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
 
 
 def test_streamed_command_redacts_and_closes_output():

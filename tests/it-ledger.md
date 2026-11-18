@@ -824,3 +824,79 @@ Publication preparation moves two unit-test dataclasses imports to module scope 
 test or production behavior. The local pre-push checks pass Ruff lint/format, strict mypy, public
 Ray API and Python safety rules, message/hygiene checks, and the three affected unit-test files.
 The database and distributed evidence above remains applicable; no additional Docker IT was run.
+
+## Iceberg delete and delegation review fixes
+
+The changes based on `7d9eeae` guard v2 delete manifests before PyIceberg file
+planning and preserve an explicitly configured REST delegation header. Reuse
+the earlier passing results for unaffected versions and storage cases. The
+runner records source fingerprints, image IDs, logs and cleanup for each run.
+
+| Suite | Coverage and reason | State |
+| --- | --- | --- |
+| Doris 4.1.5 Iceberg position delete | Real delete manifest, fixed-snapshot Doris fallback and results; the earlier passing case lacked path and manifest assertions | Passed: 1 case, `doris-4.1.5-release-917b20be838`; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-delete-review-20261106/` |
+| Doris 4.0.6 Iceberg projection and workers | S3/HDFS real native reader and worker affinity; earlier passing cases lacked native-path assertions | Passed: 2 cases, `doris-4.0.6-rc02-1663f25c16f`; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-projection-review-20261106/` |
+| Doris 4.0.6 integration | Required ordinary Doris regression after the Iceberg planning change; the earlier 64-case result used the prior code state | Passed: 64 cases, 8 warnings; cleanup passed. Evidence: `/private/tmp/ray-doris-pr25-doris-regression-20261106/` |
+
+All three runs used source fingerprint
+`f895d11ec362392ca2e2d9e1a87cad1827652b94af8d7b2232ac215dce495e7c` and cached
+base images. The position-delete case did not construct a delete file with the
+same sequence number as its data file. No full multi-version Iceberg matrix was run.
+
+## Iceberg streaming and authorization follow-up
+
+| Suite | Coverage and state | Result |
+| --- | --- | --- |
+| Ray 2.49.2 stream contracts | Python 3.9.25, PyArrow 21.0.0 and PyIceberg 0.10.0; current streaming and fallback code | 7 passed, none skipped. Offline dependencies; logs and XML: `/private/tmp/rd-iceberg-ray249-compat-20261118/`. |
+| Doris 4.0.6 Iceberg | HDFS projection/worker path and S3 append/retry after test reduction | 2 passed on `doris-4.0.6-rc02-1663f25c16f`; fingerprint `6a7a1c6b17b53cdaa7aa193981860d7355bdac6a78801da6aa8f5b9a75b54a95`. Logs: `/private/tmp/rd-iceberg-trim-406-20261118/`. |
+| Doris 4.0.6 storage denial | Real S3 denial and pre-snapshot Doris fallback with tightened error matching | 1 passed on `doris-4.0.6-rc02-1663f25c16f`; fingerprint `f6adbc7e23874505668ff402530a7aab9fcd7afea214d93556e142640ce2e1ba`. Logs: `/private/tmp/rd-iceberg-auth-match-406-20261118/`. |
+| Slow distributed full profile | Ordinary Doris worker and BE failure, retry, TLS and write-fault scenarios; Ray 2.59.0 / Python 3.12.14 | 15 passed, none skipped, on `doris-4.0.6-rc02-1663f25c16f`. Logs and cleanup: `/private/tmp/rd-iceberg-slow-full-20261118/`. |
+
+The Ray 2.49.2 source/test/config fingerprint was
+`ea2a8441bf206205204e00104ec5d06d0d390975dcbc9d3915ec48e541e96b54` before and
+after the run. Ray shut down and its temporary environment was moved to Trash;
+no Docker service was started for that run. Both Doris runs used cached base
+images and cleaned their containers, networks, volumes and custom images;
+temporary Hadoop sources were moved to Trash, and shared build caches remain.
+The two targeted Doris fingerprints include the Hadoop source manifest and
+describe their respective code states. The full slow profile used the same
+repository source/test/config fingerprint above with `b637222` plus uncommitted worktree
+changes; its result manifest's commit field is not exact-commit evidence. A
+temporary Compose override removed duplicate build definitions; the original
+full-profile tests and fault injection were unchanged. Cached base images were
+used without pulls, and the test containers, networks, volumes and custom images
+were cleaned and independently checked. The prior dangling image and shared
+build cache were retained; temporary scripts were moved to Trash. The full slow
+profile covers ordinary Doris and does not replace Iceberg-specific tests.
+
+## Iceberg test consolidation follow-up
+
+Against the PR base, non-Markdown files under `tests/` add 2,069 lines, down
+from 2,351 before the prior push. Production code is unchanged. The full unit
+suite passed 667 tests on Python 3.12.12 / Ray 2.59.0; streaming contracts
+passed 7 tests on that runtime and 7 on Python 3.9.25 / Ray 2.49.2. The first
+2.49.2 invocation reported 7 passes but exited 143 for an unknown reason; an
+isolated-process-group recheck passed all 7 with exit 0. Ruff, format, mypy and
+`git diff --check` passed. Source/test/config fingerprint before and after:
+`f87aaf070dee344be1acc20a75788a93d71abf7cca902c386885a77ce3173e60`.
+Logs and XML: `/private/tmp/rd-iceberg-prune2-20261118/`. No Docker resources
+were created; the temporary Python environment and removed test file were moved
+to Trash.
+
+Real integration cases for empty tables, historical schema mismatch, table
+replacement / snapshot expiry and HDFS missing files were removed; their
+relevant boundaries retain unit or Ray contract coverage and old results are
+historical only. After the S3 authorization case and its runner changed, the
+approved targeted recheck passed 1 test with no skips on Doris
+`4.0.6-rc02-1663f25c16f`, confirming real S3 authorization denial and Doris
+fallback before snapshot selection. The runner exited 0; source/test/config and
+Hadoop manifest fingerprint before and after was
+`2945947867c37eaebfc90abac3c7ec7f9e7ab3c74ec3a363d534fb3306de9898`.
+This result covers the uncommitted worktree, not an exact commit. Logs, XML and
+cleanup evidence: `/private/tmp/rd-iceberg-auth-inprocess-406-20261118/`.
+Only cached images were used; the run's containers, networks, volumes and custom
+images were cleaned and independently checked. Temporary source and wrapper
+files were moved to Trash; shared images and build cache were retained.
+
+The earlier slow full result remains applicable to its unchanged runtime inputs,
+not as evidence for the current whole-tree fingerprint or an exact commit.

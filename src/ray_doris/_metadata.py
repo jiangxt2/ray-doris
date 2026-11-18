@@ -6,7 +6,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import pymysql
 
-from ray_doris._errors import DorisPlanningError, _NativeReadNotApplicableError
+from ray_doris._errors import (
+    DorisPlanningError,
+    _NativeCatalogTypeMismatchError,
+    _NativeReadNotApplicableError,
+)
 from ray_doris._models import QualifiedTable
 from ray_doris._schema import DorisColumn, parse_information_schema_rows
 from ray_doris._sql import build_describe_sql, build_external_columns_sql, quote_identifier
@@ -86,9 +90,12 @@ class ExternalMetadataReader:
         self.origins: Dict[str, str] = {}
         self._columns: Dict[Tuple[str, QualifiedTable], Tuple[DorisColumn, ...]] = {}
         self._catalogs: Dict[str, Dict[str, str]] = {}
+        self._catalog_kinds: Dict[str, str] = {}
 
-    def catalog(self, catalog: str) -> Dict[str, str]:
+    def catalog(self, catalog: str, *, expected_kind: str = "hms") -> Dict[str, str]:
         if catalog in self._catalogs:
+            if self._catalog_kinds[catalog] != expected_kind:
+                raise _NativeCatalogTypeMismatchError("unsupported external catalog type")
             return dict(self._catalogs[catalog])
         try:
             rows = self.query(
@@ -129,8 +136,10 @@ class ExternalMetadataReader:
                 raise DorisPlanningError("the requested catalog identity is absent or invisible")
             kind = matches[0]["type"]
             origin = "show-catalog"
-        if not isinstance(kind, str) or kind.lower() != "hms":
-            raise _NativeReadNotApplicableError("native reads require a visible Hive catalog")
+        if not isinstance(kind, str) or not kind:
+            raise DorisPlanningError("Doris returned invalid catalog identity")
+        if kind.lower() != expected_kind:
+            raise _NativeCatalogTypeMismatchError("unsupported external catalog type")
         props: Dict[str, str] = {}
         for key, value in properties:
             if not isinstance(key, str) or not isinstance(value, str) or key in props:
@@ -142,6 +151,7 @@ class ExternalMetadataReader:
             raise DorisPlanningError("Doris catalog type and properties disagree")
         self.origins["catalog"] = origin
         self._catalogs[catalog] = props
+        self._catalog_kinds[catalog] = kind.lower()
         return dict(props)
 
     def columns(self, table: QualifiedTable, catalog: str) -> Tuple[DorisColumn, ...]:
