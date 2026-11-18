@@ -76,3 +76,6 @@ Hudi
 libhdfs
 HotSpot
 libjsig
+Kerberos
+keytab
+keytabs

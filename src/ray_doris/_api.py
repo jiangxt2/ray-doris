@@ -68,10 +68,10 @@ def read_doris(
 
     ``auto_native_read`` is disabled by default. When enabled, a compatible Hive
     table can use Ray's public Parquet reader with independent HMS/storage access
-    and immutable published files. Known unsupported cases retain Doris reading;
-    authentication, storage and inconsistent-metadata errors remain visible.
+    and immutable published files. Unsupported cases and native planning failures
+    retain Doris reading, which applies its own authentication and authorization.
     This API accepts a table identifier, not a complete SQL statement. A selected
-    native read never replays through Doris after execution begins.
+    native read does not replay through Doris once Ray's reader is called.
 
     See {doc}`the native Hive Parquet guide </user-guide/native-read>` for
     per-file footer overhead, version limits and independent source authorization.
@@ -108,6 +108,12 @@ def read_doris(
         flight_options=flight_options,
     )
     if auto_native_read:
+        native_read_started = False
+
+        def mark_native_read_started() -> None:
+            nonlocal native_read_started
+            native_read_started = True
+
         try:
             if catalog is None or catalog == "internal":
                 raise _NativeReadNotApplicableError("native reads require an external Hive catalog")
@@ -137,10 +143,23 @@ def read_doris(
                     concurrency=concurrency,
                     override_num_blocks=override_num_blocks,
                     ray_remote_args=ray_remote_args,
+                    on_read_start=mark_native_read_started,
                 ),
             )
-        except _NativeReadNotApplicableError:
-            logger.info("Doris read path=doris reason=native_profile_not_applicable")
+        except Exception as error:
+            if native_read_started:
+                logger.error(
+                    "Native read failed after starting Ray's reader; "
+                    "retry with auto_native_read=False to read through Doris"
+                )
+                raise
+            if isinstance(error, _NativeReadNotApplicableError):
+                logger.info("Doris read path=doris reason=native_profile_not_applicable")
+            else:
+                logger.warning(
+                    "Native read optimization failed during planning (%s); falling back to Doris",
+                    type(error).__name__,
+                )
     else:
         logger.info("Doris read path=doris reason=automatic native reads disabled")
     logger.debug(

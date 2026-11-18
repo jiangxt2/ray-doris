@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-native = ["pymetastore==0.4.2"]
+native = ["aiohttp>=3.8,<4", "pymetastore==0.4.2"]
 flight = ["adbc-driver-flightsql>=1.11.0,<2; python_version >= '3.10'"]
 test = [
   "pytest>=8.3,<10",
