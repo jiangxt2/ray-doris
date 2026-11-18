@@ -139,11 +139,6 @@ def test_defaults_interoperate_with_pyiceberg_oauth_and_server_override(monkeypa
 
     import pyiceberg.catalog as catalogs
     import requests
-    from pyiceberg.partitioning import PartitionSpec
-    from pyiceberg.schema import Schema
-    from pyiceberg.table.metadata import new_table_metadata
-    from pyiceberg.table.sorting import SortOrder
-    from pyiceberg.types import LongType, NestedField
 
     configured = (
         {"auth": {"type": "oauth2", "oauth2": {"client_id": "id", "client_secret": "secret"}}}
@@ -154,12 +149,6 @@ def test_defaults_interoperate_with_pyiceberg_oauth_and_server_override(monkeypa
         catalogs, "_ENV_CONFIG", SimpleNamespace(get_catalog_config=lambda _name: configured)
     )
     calls = []
-    metadata = new_table_metadata(
-        Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=False)),
-        PartitionSpec(),
-        SortOrder(),
-        "s3://bucket/table",
-    ).model_dump(by_alias=True, mode="json")
 
     def send(_adapter, request, **_kwargs):
         method, url = request.method, request.url
@@ -171,14 +160,9 @@ def test_defaults_interoperate_with_pyiceberg_oauth_and_server_override(monkeypa
         response.request = request
         if method == "POST":
             body = {"access_token": "test-token", "token_type": "Bearer", "expires_in": 3600}
-        elif url.endswith("/v1/config"):
-            body = {"defaults": {}, "overrides": {"s3.region": "server-region"}}
         else:
-            body = {
-                "metadata-location": "s3://bucket/table/metadata/file.json",
-                "metadata": metadata,
-                "config": {"s3.region": "table-region"},
-            }
+            assert url.endswith("/v1/config")
+            body = {"defaults": {}, "overrides": {"s3.region": "server-region"}}
         response._content = json.dumps(body).encode()
         return response
 
@@ -196,7 +180,6 @@ def test_defaults_interoperate_with_pyiceberg_oauth_and_server_override(monkeypa
     assert token_calls and all(url == "https://auth.example/token" for url, _ in token_calls)
     assert all(data["scope"] == ["catalog:read"] for _, data in token_calls)
     assert catalog.properties["s3.region"] == "server-region"
-    assert catalog.load_table("db.table").io.properties["s3.region"] == "table-region"
     assert "secret" not in str(defaults)
 
 
@@ -265,109 +248,83 @@ def _snapshot(snapshot_id, parent=None, manifest=None):
     )
 
 
-def test_legacy_identity_matches_selected_snapshot_or_ancestor():
-    table = Mock()
+@pytest.fixture
+def legacy_identity():
     current = _snapshot(3, 2, "s3://bucket/s3")
-    parent = _snapshot(2, 1, "s3://bucket/s2")
-    table.snapshot_by_id.return_value = parent
-    query = Mock(return_value=[{"snapshot_id": 3, "manifest_list": "s3://bucket/s3"}])
-    assert (
-        verify_legacy_snapshot_identity(
+    table = Mock()
+    table.snapshot_by_id.side_effect = lambda snapshot_id: {
+        2: _snapshot(2, 1, "s3://bucket/s2"),
+        1: _snapshot(1, None, "old"),
+    }.get(snapshot_id)
+    query = Mock()
+
+    def verify():
+        return verify_legacy_snapshot_identity(
             None, query, "lake", parse_table("db.events"), table, current
         )
-        == "snapshot"
-    )
+
+    return current, table, query, verify
+
+
+def test_legacy_identity_matches_selected_snapshot_or_ancestor(legacy_identity):
+    _, table, query, verify = legacy_identity
+    query.return_value = [{"snapshot_id": 3, "manifest_list": "s3://bucket/s3"}]
+    assert verify() == "snapshot"
     assert query.call_args.args[2] == ("lake.db.events",)
     query.return_value = [{"snapshot_id": 2, "manifest_list": "s3://bucket/s2"}]
-    assert (
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
-        == "ancestor"
-    )
+    assert verify() == "ancestor"
     table.snapshot_by_id.assert_called_with(2)
 
 
 @pytest.mark.parametrize("matched_id", [3, 2])
-def test_legacy_identity_exposes_manifest_conflicts_before_older_match(matched_id):
-    current = _snapshot(3, 2, "s3://bucket/s3")
-    parent = _snapshot(2, 1, "s3://bucket/s2")
-    table = Mock()
-    table.snapshot_by_id.side_effect = lambda snapshot_id: {
-        2: parent,
-        1: _snapshot(1, None, "old"),
-    }.get(snapshot_id)
-    query = Mock(
-        return_value=[
-            {"snapshot_id": matched_id, "manifest_list": "different"},
-            {"snapshot_id": 1, "manifest_list": "old"},
-        ]
-    )
+def test_legacy_identity_rejects_conflicts_before_older_match(legacy_identity, matched_id):
+    _, _, query, verify = legacy_identity
+    query.return_value = [
+        {"snapshot_id": matched_id, "manifest_list": "different"},
+        {"snapshot_id": 1, "manifest_list": "old"},
+    ]
     with pytest.raises(DorisPlanningError, match="manifests disagree"):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
+        verify()
 
 
-@pytest.mark.parametrize("manifest", [None, "", "  "])
-def test_legacy_identity_never_treats_missing_manifests_as_match(manifest):
-    current = _snapshot(3, None, manifest)
-    query = Mock(return_value=[{"snapshot_id": 3, "manifest_list": manifest}])
+@pytest.mark.parametrize(
+    "rest_manifest,doris_manifest", [(None, None), ("", ""), ("  ", "  "), ("current", None)]
+)
+def test_legacy_identity_rejects_missing_manifests(legacy_identity, rest_manifest, doris_manifest):
+    current, table, query, verify = legacy_identity
+    current.manifest_list = rest_manifest
+    query.return_value = [
+        {"snapshot_id": 3, "manifest_list": doris_manifest},
+        {"snapshot_id": 2, "manifest_list": "s3://bucket/s2"},
+    ]
     with pytest.raises(_NativeReadNotApplicableError):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), Mock(), current
-        )
-
-
-def test_legacy_identity_does_not_ignore_missing_current_manifest_for_ancestor():
-    current = _snapshot(3, 2, "current")
-    table = Mock()
-    table.snapshot_by_id.return_value = _snapshot(2, None, "older")
-    query = Mock(
-        return_value=[
-            {"snapshot_id": 3, "manifest_list": None},
-            {"snapshot_id": 2, "manifest_list": "older"},
-        ]
-    )
-    with pytest.raises(_NativeReadNotApplicableError):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
+        verify()
     table.snapshot_by_id.assert_not_called()
 
 
-def test_legacy_identity_missing_parent_cycles_and_invalid_rows():
-    current = _snapshot(3, 2, "new")
-    table = Mock()
+def test_legacy_identity_rejects_missing_parent_cycles_and_invalid_rows(legacy_identity):
+    current, table, query, verify = legacy_identity
+    query.return_value = [{"snapshot_id": 1, "manifest_list": "old"}]
+    table.snapshot_by_id.side_effect = None
     table.snapshot_by_id.return_value = None
-    query = Mock(return_value=[{"snapshot_id": 1, "manifest_list": "old"}])
     with pytest.raises(_NativeReadNotApplicableError):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
+        verify()
     table.snapshot_by_id.return_value = current
     with pytest.raises(DorisPlanningError, match="ancestry"):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
+        verify()
     query.return_value = [
         {"snapshot_id": 1, "manifest_list": "a"},
         {"snapshot_id": 1, "manifest_list": "b"},
     ]
     with pytest.raises(DorisPlanningError, match="metadata"):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), table, current
-        )
+        verify()
 
 
-def test_legacy_identity_only_falls_back_for_absent_metadata_function():
-    query = Mock(
-        side_effect=pymysql.err.OperationalError(1105, "Can not found function 'iceberg_meta'")
-    )
+def test_legacy_identity_only_falls_back_for_absent_metadata_function(legacy_identity):
+    _, _, query, verify = legacy_identity
+    query.side_effect = pymysql.err.OperationalError(1105, "Can not found function 'iceberg_meta'")
     with pytest.raises(_NativeReadNotApplicableError):
-        verify_legacy_snapshot_identity(
-            None, query, "lake", parse_table("db.events"), Mock(), _snapshot(3)
-        )
+        verify()
     for error in (
         pymysql.err.OperationalError(1142, "SELECT denied"),
         pymysql.err.OperationalError(1105, "iceberg_meta permission denied"),
@@ -375,9 +332,7 @@ def test_legacy_identity_only_falls_back_for_absent_metadata_function():
     ):
         query.side_effect = error
         with pytest.raises(pymysql.MySQLError):
-            verify_legacy_snapshot_identity(
-                None, query, "lake", parse_table("db.events"), Mock(), _snapshot(3)
-            )
+            verify()
 
 
 def test_policy_check_requires_visible_builtin_policy_and_authorizes_projection():

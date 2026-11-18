@@ -76,8 +76,8 @@ validate expiring credentials or Kerberos.
 
 For failure diagnosis and non-overlapping completion, `--iceberg-cases` accepts
 individual test function names, or a quoted parametrized case such as
-`test_version_compatibility[s3]`, for one version. The option
-`--doris-regression-only --versions 4.0.6` runs only the existing Doris suite;
-the runner checks that `.venv` uses Ray 2.59.0 before it starts containers.
+`test_version_compatibility[s3]`, for one version. The runner checks that `.venv`
+uses Ray 2.59.0 before it starts the existing Doris suite. Run that suite
+independently using the commands in `CONTRIBUTING.md` when needed.
 Reuse previously passing results where the code and relevant environment have
 not changed.

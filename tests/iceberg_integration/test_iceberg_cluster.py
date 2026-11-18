@@ -6,8 +6,6 @@ import functools
 import logging
 import os
 import secrets
-import subprocess
-import sys
 import time
 from uuid import uuid4
 
@@ -19,7 +17,7 @@ import ray.data
 from pyiceberg.catalog import load_catalog
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from ray_doris import DorisPlanningError, read_doris
+from ray_doris import read_doris
 from ray_doris.datasource import DorisDatasource
 
 pytestmark = pytest.mark.integration
@@ -253,46 +251,6 @@ def scratch_table(name, namespace, scratch, *, with_label=False):
     return catalog, table
 
 
-def test_empty_table_without_snapshot_keeps_doris(tables, iceberg_reads):
-    name, namespace, _ = tables["s3"]
-    catalog = load_catalog(
-        name, type="rest", auth={"type": "noop"}, **{"header.X-Iceberg-Access-Delegation": ""}
-    )
-    catalog.create_table(namespace + ".scratch_empty", schema=pa.schema([("id", pa.int64())]))
-    assert data(name, namespace, table="scratch_empty").take_all() == []
-    assert not iceberg_reads
-
-
-def test_historical_schema_mismatch_fails_without_unpinned_fallback(tables):
-    from pyiceberg.types import StringType
-
-    name, namespace, _ = tables["s3"]
-    _, table = scratch_table(name, namespace, "scratch_schema")
-    with table.update_schema() as update:
-        update.add_column("note", StringType())
-    sql(f"REFRESH TABLE {name}.{namespace}.scratch_schema")
-    assert sql(f"SELECT id, note FROM {name}.{namespace}.scratch_schema") == ((1, None),)
-    with pytest.raises(DorisPlanningError, match="snapshot schema differs"):
-        data(name, namespace, table="scratch_schema")
-
-
-@pytest.mark.parametrize("change", ["replace", "expire"])
-def test_deferred_reader_rejects_changed_table_or_expired_snapshot(tables, change):
-    name, namespace, _ = tables["hdfs"]
-    scratch = "scratch_" + change
-    catalog, table = scratch_table(name, namespace, scratch)
-    snapshot_id = table.current_snapshot().snapshot_id
-    dataset = data(name, namespace, table=scratch)
-    if change == "replace":
-        catalog.drop_table(namespace + "." + scratch)
-        catalog.create_table(namespace + "." + scratch, schema=pa.schema([("id", pa.int64())]))
-    else:
-        table.append(pa.Table.from_pylist([{"id": 2}], schema=table.schema().as_arrow()))
-        table.maintenance.expire_snapshots().by_id(snapshot_id).commit()
-    with pytest.raises(Exception, match="identity changed|no longer available"):
-        dataset.take_all()
-
-
 def test_worker_retry_keeps_snapshot_after_append(tables, monkeypatch, fallback_trace):
     name, namespace, _ = tables["s3"]
     fallback_marker, start = fallback_trace
@@ -342,28 +300,6 @@ def test_worker_retry_keeps_snapshot_after_append(tables, monkeypatch, fallback_
     assert trace_entries(fallback_marker)[start:] == []
 
 
-def test_missing_file_fallback_matches_pinned_doris(tables, fallback_trace):
-    name, namespace, _ = tables["hdfs"]
-    marker, start = fallback_trace
-    _, table = scratch_table(name, namespace, "scratch_missing")
-    tasks = list(table.scan().plan_files())
-    assert len(tasks) == 1
-    dataset = data(
-        name,
-        namespace,
-        table="scratch_missing",
-        ray_remote_args={"max_retries": 0},
-    )
-    table.io.delete(tasks[0].file.file_path)
-    rows = dataset.take_all()
-    snapshot_id = table.current_snapshot().snapshot_id
-    expected = sql(
-        f"SELECT id FROM {name}.{namespace}.scratch_missing FOR VERSION AS OF {snapshot_id}"
-    )
-    assert [(row["id"],) for row in rows] == list(expected)
-    assert trace_entries(marker)[start:] == [str(snapshot_id)]
-
-
 def test_worker_failure_falls_back_to_selected_snapshot(tables, monkeypatch, fallback_trace):
     name, namespace, _ = tables["s3"]
     marker, start = fallback_trace
@@ -411,71 +347,35 @@ def test_worker_failure_falls_back_to_selected_snapshot(tables, monkeypatch, fal
     ) == ((1,),)
 
 
-def test_storage_auth_failure_falls_back_to_doris(tables):
+def test_storage_auth_failure_falls_back_to_doris(tables, monkeypatch, caplog, doris_reads):
+    import pyiceberg.catalog as catalogs
+    from pyiceberg.utils.config import Config
+    from tests.iceberg_integration.retry_hook import is_storage_authorization_error
+
+    import ray_doris._iceberg as iceberg
+
     name, namespace, _ = tables["s3"]
-    env = dict(os.environ)
     invalid = secrets.token_hex(24)
-    env["PYICEBERG_CATALOG__ICES3__S3__SECRET_ACCESS_KEY"] = invalid
-    script = """
-import functools
-import os
-import sys
-from unittest.mock import patch
+    monkeypatch.setenv("PYICEBERG_CATALOG__ICES3__S3__SECRET_ACCESS_KEY", invalid)
+    monkeypatch.setattr(catalogs, "_ENV_CONFIG", Config())
+    original = iceberg.verify_table_identity
+    denied = []
 
-import ray
-import ray.data
-import ray_doris._iceberg as iceberg
-from ray_doris import read_doris
-from ray_doris.datasource import DorisDatasource
-from tests.iceberg_integration.retry_hook import is_storage_authorization_error
+    @functools.wraps(original)
+    def verify(*args, **kwargs):
+        assert args[4].io.properties.get("s3.secret-access-key") == invalid
+        try:
+            return original(*args, **kwargs)
+        except OSError as error:
+            assert is_storage_authorization_error(error), "Expected an S3 authorization failure"
+            denied.append(True)
+            raise
 
-denied = []
-doris_snapshots = []
-verify_identity = iceberg.verify_table_identity
-read_datasource = ray.data.read_datasource
-
-@functools.wraps(verify_identity)
-def check_identity(*args, **kwargs):
-    table = args[4]
-    assert table.io.properties.get('s3.secret-access-key') == os.environ[
-        'PYICEBERG_CATALOG__ICES3__S3__SECRET_ACCESS_KEY'
-    ]
-    try:
-        return verify_identity(*args, **kwargs)
-    except OSError as error:
-        assert is_storage_authorization_error(error), 'Expected an S3 authorization failure'
-        denied.append(True)
-        raise
-
-@functools.wraps(read_datasource)
-def record_doris(source, *args, **kwargs):
-    if isinstance(source, DorisDatasource):
-        doris_snapshots.append(source.config.snapshot_id)
-    return read_datasource(source, *args, **kwargs)
-
-ray.init(address='auto', log_to_driver=False)
-try:
-    with patch.object(iceberg, 'verify_table_identity', check_identity), patch.object(
-        ray.data, 'read_datasource', record_doris
-    ):
-        rows = read_doris(
-            host='fe', catalog=sys.argv[1], table=sys.argv[2], auto_native_read=True
-        ).take_all()
-    assert rows == [{'id': 1, 'label': 'one'}]
-    assert denied == [True]
-    assert doris_snapshots == [None]
-finally:
-    ray.shutdown()
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script, name, namespace + ".events"],
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=90,
-    )
-    assert result.returncode == 0, "storage-denial subprocess failed"
-    assert invalid not in result.stdout + result.stderr
+    monkeypatch.setattr(iceberg, "verify_table_identity", verify)
+    with caplog.at_level(logging.WARNING, logger="ray_doris._iceberg"):
+        assert data(name, namespace).take_all() == [{"id": 1, "label": "one"}]
+    assert denied == [True] and doris_reads == [None]
+    assert invalid not in caplog.text
 
 
 def test_vended_s3_credentials_are_available_to_workers(

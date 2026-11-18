@@ -809,3 +809,35 @@ used without pulls, and the test containers, networks, volumes and custom images
 were cleaned and independently checked. The prior dangling image and shared
 build cache were retained; temporary scripts were moved to Trash. The full slow
 profile covers ordinary Doris and does not replace Iceberg-specific tests.
+
+## Iceberg test consolidation follow-up
+
+Against the PR base, non-Markdown files under `tests/` add 2,069 lines, down
+from 2,351 before the prior push. Production code is unchanged. The full unit
+suite passed 667 tests on Python 3.12.12 / Ray 2.59.0; streaming contracts
+passed 7 tests on that runtime and 7 on Python 3.9.25 / Ray 2.49.2. The first
+2.49.2 invocation reported 7 passes but exited 143 for an unknown reason; an
+isolated-process-group recheck passed all 7 with exit 0. Ruff, format, mypy and
+`git diff --check` passed. Source/test/config fingerprint before and after:
+`f87aaf070dee344be1acc20a75788a93d71abf7cca902c386885a77ce3173e60`.
+Logs and XML: `/private/tmp/rd-iceberg-prune2-20261118/`. No Docker resources
+were created; the temporary Python environment and removed test file were moved
+to Trash.
+
+Real integration cases for empty tables, historical schema mismatch, table
+replacement / snapshot expiry and HDFS missing files were removed; their
+relevant boundaries retain unit or Ray contract coverage and old results are
+historical only. After the S3 authorization case and its runner changed, the
+approved targeted recheck passed 1 test with no skips on Doris
+`4.0.6-rc02-1663f25c16f`, confirming real S3 authorization denial and Doris
+fallback before snapshot selection. The runner exited 0; source/test/config and
+Hadoop manifest fingerprint before and after was
+`2945947867c37eaebfc90abac3c7ec7f9e7ab3c74ec3a363d534fb3306de9898`.
+This result covers the uncommitted worktree, not an exact commit. Logs, XML and
+cleanup evidence: `/private/tmp/rd-iceberg-auth-inprocess-406-20261118/`.
+Only cached images were used; the run's containers, networks, volumes and custom
+images were cleaned and independently checked. Temporary source and wrapper
+files were moved to Trash; shared images and build cache were retained.
+
+The earlier slow full result remains applicable to its unchanged runtime inputs,
+not as evidence for the current whole-tree fingerprint or an exact commit.

@@ -88,11 +88,6 @@ def test_cleanup_verification_does_not_hide_docker_failure():
 @pytest.mark.parametrize(
     "arguments,message",
     [
-        (["--doris-regression-only", "--versions", "4.1.5"], "requires only --versions 4.0.6"),
-        (
-            ["--doris-regression-only", "--skip-query-regression", "--versions", "4.0.6"],
-            "requires only --versions 4.0.6",
-        ),
         (
             ["--iceberg", "--iceberg-cases", "../other", "--versions", "4.0.6"],
             "valid test function names",

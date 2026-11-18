@@ -78,7 +78,7 @@ def fail_after(batch, gate):
         if time.monotonic() >= deadline:
             raise RuntimeError("timed out waiting for first output")
         time.sleep(0.05)
-    raise RuntimeError("native failure")
+    raise RuntimeError("sensitive native failure")
 
 
 def identity_ok():
@@ -115,7 +115,8 @@ def test_preoutput_failures_select_safe_path(config, failure, expected):
         wrap(native, config).take_all()
 
 
-def test_postoutput_failure_reports_disable_without_doris_replay(config):
+def test_postoutput_failure_reports_disable_without_doris_replay(config, local_ray):
+    before = local_ray.read_text().splitlines() if local_ray.exists() else []
     gate = OutputGate.remote()
     native = ray.data.range(2048, override_num_blocks=1).map_batches(
         fail_after, batch_size=2048, batch_format="pyarrow", fn_kwargs={"gate": gate}, max_retries=0
@@ -123,8 +124,10 @@ def test_postoutput_failure_reports_disable_without_doris_replay(config):
     batches = iter(wrap(native, config).iter_batches(batch_size=None, prefetch_batches=0))
     assert len(next(batches)["id"]) > 0
     ray.get(gate.release.remote())
-    with pytest.raises(Exception, match="disable auto_native_read"):
+    with pytest.raises(Exception, match="disable auto_native_read") as error:
         list(batches)
+    assert "sensitive native failure" not in str(error.value)
+    assert (local_ray.read_text().splitlines() if local_ray.exists() else []) == before
 
 
 def test_context_change_after_construction_uses_doris(config):
@@ -137,9 +140,11 @@ def test_context_change_after_construction_uses_doris(config):
         dataset.take_all()
 
 
-def test_coordinator_rechecks_identity_before_output(config):
+def test_coordinator_rechecks_identity_before_output(config, local_ray):
+    before = local_ray.read_text().splitlines() if local_ray.exists() else []
     with pytest.raises(Exception, match="table identity changed"):
         wrap(ray.data.range(1), config, identity_changed).take_all()
+    assert (local_ray.read_text().splitlines() if local_ray.exists() else []) == before
 
 
 def test_task_runtime_environment_reaches_doris_fallback(config, monkeypatch, local_ray):

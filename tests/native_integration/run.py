@@ -101,13 +101,8 @@ def main():
     parser.add_argument("--hadoop-source", required=True)
     parser.add_argument("--skip-query-regression", action="store_true")
     parser.add_argument("--iceberg", action="store_true")
-    parser.add_argument("--doris-regression-only", action="store_true")
     parser.add_argument("--iceberg-cases", nargs="+")
     args = parser.parse_args()
-    if args.doris_regression_only and (
-        args.iceberg or args.skip_query_regression or args.versions != ["4.0.6"]
-    ):
-        parser.error("Doris regression mode requires only --versions 4.0.6")
     if args.iceberg_cases and (
         not args.iceberg
         or len(args.versions) != 1
@@ -235,16 +230,12 @@ def main():
     (logs / "source-fingerprint.txt").write_text(fingerprints.hexdigest() + "\n")
     run(["docker", "image", "ls", "--filter", "dangling=true"])
     run(["docker", "system", "df"])
-    bases = (
-        []
-        if args.doris_regression_only
-        else [
-            "apache/gravitino-ci:hive-0.1.20",
-            "rayproject/ray:2.59.0-py312",
-            "apache/spark:3.5.8",
-            "minio/minio:RELEASE.2025-09-07T16-13-09Z",
-        ]
-    )
+    bases = [
+        "apache/gravitino-ci:hive-0.1.20",
+        "rayproject/ray:2.59.0-py312",
+        "apache/spark:3.5.8",
+        "minio/minio:RELEASE.2025-09-07T16-13-09Z",
+    ]
     if args.iceberg:
         bases += ["apache/gravitino:1.3.1", "postgres:16.14"]
     bases += [
@@ -284,22 +275,21 @@ def main():
             raise
 
     with cleanup_on_termination(cleanup):
-        if not args.doris_regression_only:
-            images.append(env["NATIVE_RAY_IMAGE"])
-            run(
-                [
-                    "docker",
-                    "build",
-                    "--build-context",
-                    "hadoop-native-source=" + str(hadoop_source),
-                    "--pull=false",
-                    "-t",
-                    images[-1],
-                    "-f",
-                    "tests/native_integration/ray.Dockerfile",
-                    ".",
-                ]
-            )
+        images.append(env["NATIVE_RAY_IMAGE"])
+        run(
+            [
+                "docker",
+                "build",
+                "--build-context",
+                "hadoop-native-source=" + str(hadoop_source),
+                "--pull=false",
+                "-t",
+                images[-1],
+                "-f",
+                "tests/native_integration/ray.Dockerfile",
+                ".",
+            ]
+        )
         for version in args.versions:
             env["NATIVE_DORIS_VERSION"] = version
             repo = "docker.m.daocloud.io/apache/doris" if version == "4.1.5" else "apache/doris"
@@ -324,8 +314,7 @@ def main():
                     ]
                 )
             services = ["fe", "be"]
-            if not args.doris_regression_only:
-                services += ["hms", "minio", "ray-head"]
+            services += ["hms", "minio", "ray-head"]
             if args.iceberg:
                 services += ["postgres", "iceberg-s3", "iceberg-hdfs"]
                 if (
@@ -364,9 +353,6 @@ def main():
                 if running.strip() != "true":
                     raise RuntimeError(f"{service} exited during startup; inspect service logs")
             run(["docker", "image", "inspect", "--format", "{{.RepoTags}} {{.Id}}", *images])
-            if args.doris_regression_only:
-                run_doris_regression(version)
-                continue
             compose(
                 "exec",
                 "-T",

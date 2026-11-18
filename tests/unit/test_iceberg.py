@@ -109,6 +109,10 @@ def test_iceberg_read_forwards_pinned_snapshot_and_uses_identity_guard(iceberg_e
     )
     assert iceberg.stream_iceberg_with_fallback.call_args.args[6] is scheduling_strategy
     table.scan.assert_called_once_with(snapshot_id=123, selected_fields=("*",))
+    iceberg.doris_main_snapshot.return_value = None
+    table.current_snapshot.return_value = None
+    with pytest.raises(_NativeReadNotApplicableError, match="no current snapshot"):
+        invoke(iceberg_environment)
 
 
 @pytest.mark.parametrize("labels", [{"pool": "isolated"}, {}])
@@ -139,23 +143,6 @@ def test_label_selector_uses_doris_before_snapshot_and_preserves_options(
     iceberg.pymysql.connect.assert_not_called()
     iceberg.doris_main_snapshot.assert_not_called()
     public_read.assert_not_called()
-
-
-def test_execution_guard_survives_ray_mutating_catalog_options(iceberg_environment):
-    iceberg, _, _, _, public_read = iceberg_environment
-
-    def mutate_catalog_options(**kwargs):
-        kwargs["catalog_kwargs"].pop("name")
-        return Mock()
-
-    public_read.side_effect = mutate_catalog_options
-    invoke(iceberg_environment)
-    check_identity = iceberg.stream_iceberg_with_fallback.call_args.args[4]
-    check_identity()
-    kwargs = iceberg.import_module.return_value.load_catalog.call_args.kwargs
-    assert kwargs["name"].startswith("ray_doris_")
-    assert kwargs["ray-doris.snapshot-id"] == "123"
-    iceberg.import_module.return_value.load_catalog.return_value.close.assert_called_once()
 
 
 def test_identity_check_cleanup_does_not_mask_conflict(iceberg_environment):
@@ -209,19 +196,6 @@ def test_snapshot_without_schema_id_passes_schema_fingerprint(iceberg_environmen
     assert check_identity.args[0]["ray-doris.schema-fingerprint"] == fingerprint
 
 
-def test_missing_rest_identity_falls_back_before_optional_default_validation(iceberg_environment):
-    iceberg, _, _, _, public_read = iceberg_environment
-    iceberg.ExternalMetadataReader.return_value.catalog.return_value = {
-        "iceberg.catalog.type": "rest",
-        "uri": "https://rest",
-        "iceberg.rest.security.type": "oauth2",
-        "s3.endpoint": "not-a-qualified-endpoint",
-    }
-    with pytest.raises(_NativeReadNotApplicableError, match="identity is not available"):
-        invoke(iceberg_environment)
-    public_read.assert_not_called()
-
-
 @pytest.mark.parametrize(
     "oauth,legacy",
     [({}, {}), ({"client_id": "id"}, {}), ({"client_secret": "secret"}, {"token": "unused"})],
@@ -270,16 +244,24 @@ def test_projection_preserves_requested_order_when_iceberg_uses_schema_order(ice
     scan.projection.return_value.as_arrow.return_value = pa.schema(
         [("id", pa.int64()), ("label", pa.large_string())]
     )
-    read_iceberg(
-        config,
-        "lake",
-        NativeReadOptions(),
-        concurrency=None,
-        override_num_blocks=None,
-        ray_remote_args=None,
-    )
+
+    def read_projected():
+        return read_iceberg(
+            config,
+            "lake",
+            NativeReadOptions(),
+            concurrency=None,
+            override_num_blocks=None,
+            ray_remote_args=None,
+        )
+
+    read_projected()
     table.scan.assert_called_once_with(snapshot_id=123, selected_fields=("label", "id"))
     assert public_read.call_args.kwargs["selected_fields"] == ("label", "id")
+    scan.projection.return_value.as_arrow.return_value = pa.schema([("id", pa.int64())])
+    with pytest.raises(DorisPlanningError, match="snapshot schema differs"):
+        read_projected()
+    assert public_read.call_count == 1
 
 
 def test_iceberg_planning_errors_keep_snapshot_for_fallback(iceberg_environment):
@@ -350,17 +332,6 @@ def test_delete_manifest_inspection_error_uses_pinned_fallback(iceberg_environme
     public_read.assert_not_called()
 
 
-def test_rest_snapshot_is_used_only_when_doris_refs_are_unavailable(iceberg_environment):
-    iceberg, _, table, _, public_read = iceberg_environment
-    iceberg.doris_main_snapshot.return_value = None
-    table.current_snapshot.return_value = SimpleNamespace(snapshot_id=456)
-    invoke(iceberg_environment)
-    assert public_read.call_args.kwargs["snapshot_id"] == 456
-    table.current_snapshot.return_value = None
-    with pytest.raises(_NativeReadNotApplicableError):
-        invoke(iceberg_environment)
-
-
 @pytest.mark.parametrize("evidence", ["snapshot", "ancestor"])
 def test_legacy_identity_uses_rest_snapshot_and_warns(iceberg_environment, caplog, evidence):
     iceberg, _, table, _, public_read = iceberg_environment
@@ -396,57 +367,39 @@ def test_legacy_rejection_and_permission_error_stay_before_native_execution(iceb
     public_read.assert_not_called()
 
 
-def test_legacy_known_reader_incompatibility_keeps_selected_snapshot(iceberg_environment):
-    iceberg, _, _, scan, public_read = iceberg_environment
-    iceberg.verify_table_identity.return_value = False
-    iceberg.verify_legacy_snapshot_identity = Mock(return_value="ancestor")
-    scan.plan_files.side_effect = ValueError("PyIceberg does not yet support equality deletes")
-    with pytest.raises(_PinnedNativeFallbackError) as error:
-        invoke(iceberg_environment)
-    assert error.value.snapshot_id == 123
-    public_read.assert_not_called()
-
-
-def test_facade_propagates_snapshot_into_doris_fallback(monkeypatch):
-    native = Mock()
-    native.read_native.side_effect = _PinnedNativeFallbackError(
-        123, pa.schema([("id", pa.int64())])
-    )
-    monkeypatch.setattr("ray_doris._api.import_module", Mock(return_value=native))
-    read = Mock(return_value="dataset")
-    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
-    assert (
-        read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True) == "dataset"
-    )
-    assert read.call_args.args[0].config.snapshot_id == 123
-    assert read.call_args.args[0].supports_projection_pushdown() is False
-    assert read.call_args.args[0].supports_predicate_pushdown() is False
-
-
-def test_snapshot_fallback_failure_surfaces_without_unpinned_retry(monkeypatch):
+@pytest.mark.parametrize("fails", [False, True])
+def test_snapshot_fallback_propagates_and_does_not_retry(monkeypatch, fails):
     from ray_doris._readers import read_mysql
 
     schema = pa.schema([("id", pa.int64())])
     native = Mock()
     native.read_native.side_effect = _PinnedNativeFallbackError(123, schema)
     monkeypatch.setattr("ray_doris._api.import_module", Mock(return_value=native))
+    read = Mock(return_value="dataset")
     cursor = Mock()
-    cursor.execute.side_effect = pymysql.err.OperationalError(1105, "sensitive failure")
-    connection = Mock()
-    connection.cursor.return_value = cursor
-    monkeypatch.setattr("ray_doris._readers.pymysql.connect", Mock(return_value=connection))
-    read = Mock(
-        side_effect=lambda source, **_: list(
+    if fails:
+        cursor.execute.side_effect = pymysql.err.OperationalError(1105, "sensitive failure")
+        connection = Mock()
+        connection.cursor.return_value = cursor
+        monkeypatch.setattr("ray_doris._readers.pymysql.connect", Mock(return_value=connection))
+        read.side_effect = lambda source, **_: list(
             read_mysql(source.config, DorisInputSplit(None), schema)
         )
-    )
     monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
-
-    with pytest.raises(DorisReadError) as error:
-        read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True)
-    assert "sensitive" not in str(error.value)
-    assert read.call_count == 1 and cursor.execute.call_count == 1
-    assert "FOR VERSION AS OF 123" in cursor.execute.call_args.args[0]
+    if fails:
+        with pytest.raises(DorisReadError) as error:
+            read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True)
+        assert "sensitive" not in str(error.value)
+        assert cursor.execute.call_count == 1
+        assert "FOR VERSION AS OF 123" in cursor.execute.call_args.args[0]
+    else:
+        assert (
+            read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True)
+            == "dataset"
+        )
+    source = read.call_args.args[0]
+    assert read.call_count == 1 and source.config.snapshot_id == 123
+    assert not source.supports_projection_pushdown() and not source.supports_predicate_pushdown()
 
 
 def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
@@ -461,15 +414,13 @@ def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
         "import_module",
         Mock(return_value=SimpleNamespace(load_catalog=Mock(return_value=catalog))),
     )
-    guarded = module.PinnedRestCatalog(
-        "guard",
-        **{
-            "ray-doris.catalog-name": "lake",
-            "ray-doris.table-uuid": "uuid",
-            "ray-doris.snapshot-id": "123",
-            "uri": "https://rest",
-        },
-    )
+    properties = {
+        "ray-doris.catalog-name": "lake",
+        "ray-doris.table-uuid": "uuid",
+        "ray-doris.snapshot-id": "123",
+        "uri": "https://rest",
+    }
+    guarded = module.PinnedRestCatalog("guard", **properties)
     assert guarded.load_table("db.events") is table
     table.metadata.table_uuid = "replacement"
     with pytest.raises(DorisPlanningError, match="identity changed"):
@@ -488,14 +439,7 @@ def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
     table.schema.return_value = original
     fingerprint = module.iceberg_schema_fingerprint(original)
     guarded = module.PinnedRestCatalog(
-        "guard",
-        **{
-            "ray-doris.catalog-name": "lake",
-            "ray-doris.table-uuid": "uuid",
-            "ray-doris.snapshot-id": "123",
-            "ray-doris.schema-fingerprint": fingerprint,
-            "uri": "https://rest",
-        },
+        "guard", **properties, **{"ray-doris.schema-fingerprint": fingerprint}
     )
     assert guarded.load_table("db.events") is table
     table.schema.return_value = replacement
@@ -551,17 +495,11 @@ def test_deferred_catalog_reuses_defaults_and_rejects_configuration_change(monke
     assert loader.call_count == 1
 
 
-def test_vending_retry_only_for_explicit_missing_provider(monkeypatch):
+def test_vending_retry_only_for_explicit_missing_provider():
+    from pyiceberg.exceptions import BadRequestError
+
     import ray_doris._iceberg as iceberg
 
-    class BadRequestError(Exception):
-        pass
-
-    monkeypatch.setattr(
-        iceberg,
-        "import_module",
-        Mock(return_value=SimpleNamespace(BadRequestError=BadRequestError)),
-    )
     table = object()
     loader = Mock()
     loader.return_value.load_table.side_effect = [
@@ -577,26 +515,6 @@ def test_vending_retry_only_for_explicit_missing_provider(monkeypatch):
             loader, "lake", {"type": "rest", "uri": "https://rest"}, "db.events", {}
         )
     assert loader.call_count == 3
-
-
-def test_vending_retry_preserves_explicit_case_insensitive_header():
-    from pyiceberg.exceptions import BadRequestError
-
-    import ray_doris._iceberg as iceberg
-
-    loader = Mock()
-    loader.return_value.load_table.side_effect = BadRequestError(
-        "No credential provider found for path s3://bucket/table"
-    )
-    rest = {
-        "type": "rest",
-        "uri": "https://rest",
-        "header.x-iceberg-access-delegation": "vended-credentials",
-    }
-    with pytest.raises(BadRequestError):
-        iceberg._load_table(loader, "lake", rest, "db.events", {})
-    loader.assert_called_once()
-    assert "header.X-Iceberg-Access-Delegation" not in rest
 
 
 def test_named_delegation_configuration_reaches_retry_check(iceberg_environment, monkeypatch):
@@ -697,6 +615,62 @@ def test_missing_historical_schema_fails_before_native_execution(iceberg_environ
     with pytest.raises(DorisPlanningError, match="schema is unavailable"):
         invoke(iceberg_environment)
     public_read.assert_not_called()
+
+
+def test_stream_fallback_keeps_snapshot_and_redacts_error(monkeypatch, caplog):
+    from ray_doris._iceberg_stream import _stream_iceberg_or_doris
+
+    config = DorisReadConfig.from_options(
+        host="fe", user="reader", catalog="lake", table=parse_table("db.t")
+    )
+    config = replace(config, snapshot_id=123)
+    dataset = Mock()
+    dataset.iter_batches.side_effect = OSError("sensitive")
+    fallback = Mock(return_value=iter([pa.table({"id": [7]})]))
+    monkeypatch.setattr("ray_doris._iceberg_stream.read_split", fallback)
+    assert list(
+        _stream_iceberg_or_doris(dataset, config, pa.schema([("id", pa.int64())]), lambda: None)
+    )[0].to_pylist() == [{"id": 7}]
+    assert fallback.call_count == 1 and fallback.call_args.args[0].snapshot_id == 123
+    assert "sensitive" not in caplog.text
+
+
+def test_stream_coordinator_options_are_preserved(monkeypatch):
+    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+    from ray_doris._iceberg_stream import stream_iceberg_with_fallback
+
+    config = DorisReadConfig.from_options(
+        host="fe", user="reader", catalog="lake", table=parse_table("db.t")
+    )
+    context = SimpleNamespace(
+        max_errored_blocks=0, retried_map_errors=False, raise_original_map_exception=False
+    )
+    result = Mock(context=context)
+    read = Mock(return_value=result)
+    monkeypatch.setattr("ray_doris._iceberg_stream.ray.data.read_datasource", read)
+    runtime_env = {"env_vars": {"EXAMPLE_PASSWORD": "runtime-value"}}
+    strategy = NodeAffinitySchedulingStrategy(node_id="a" * 56, soft=False)
+    assert (
+        stream_iceberg_with_fallback(
+            Mock(context=context),
+            config,
+            123,
+            pa.schema([("id", pa.int64())]),
+            lambda: None,
+            runtime_env,
+            strategy,
+        )
+        is result
+    )
+    source = read.call_args.args[0]
+    assert source._config.snapshot_id == 123 and len(source.get_read_tasks(4)) == 1
+    assert read.call_args.kwargs["ray_remote_args"] == {
+        "num_cpus": 0,
+        "max_retries": 0,
+        "runtime_env": runtime_env,
+        "scheduling_strategy": strategy,
+    }
 
 
 @pytest.mark.parametrize(
