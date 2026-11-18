@@ -75,13 +75,12 @@ export RD_KERBEROS_EVIDENCE="$(mktemp -d /tmp/rd-kerberos-evidence.XXXXXX)"
 The fixture uses a simple HMS and a Kerberos-protected HDFS. It checks the Doris
 reference rows, reads on both Ray workers, renews or reacquires short-lived
 tickets, and tests the driver fallback and deferred worker failure boundaries.
-It does not test Kerberos-authenticated HMS. The runner keeps logs in the evidence
+It also checks two Hadoop identities in one JVM: one is allowed, the other is
+denied, and the first remains allowed. This is not a PyArrow identity-isolation
+test and does not test Kerberos-authenticated HMS. The runner keeps logs in the evidence
 directory and cleans only its own Docker resources. Its temporary directory,
 including synthetic test credentials, is moved to the Trash on normal exit or
 SIGTERM; an uncatchable process termination requires manual cleanup.
-The separate `kerberos_identity_probe.py` uses a caller-provided empty
-`RD_HDFS_IDENTITY_DIR` and leaves its fixture files, including synthetic
-credentials, there; the caller must clean that directory after the probe.
 
 When an unchanged query/write regression result is explicitly reused, pass
 `--skip-query-regression` and record the reason and prior evidence in the ledger.

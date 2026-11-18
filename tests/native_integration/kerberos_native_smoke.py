@@ -1,6 +1,7 @@
 """Exercise automatic Doris Hive authentication on two isolated Ray workers."""
 
 import importlib
+import inspect
 import os
 import shutil
 import time
@@ -90,15 +91,9 @@ def main():
         f"'hadoop.kerberos.principal'='{principal}', "
         "'hadoop.kerberos.keytab'='/fixture/reader.keytab')"
     )
-    reference_error = None
-    try:
-        assert sql("SELECT id FROM krb_hive.krb_it.data ORDER BY id") == tuple(
-            (value,) for value in range(40)
-        )
-    except Exception as error:
-        # Preserve this failure while allowing independent Ray checks to run.
-        reference_error = error
-        print("Doris reference read failed; continuing independent Ray checks", flush=True)
+    assert sql("SELECT id FROM krb_hive.krb_it.data ORDER BY id") == tuple(
+        (value,) for value in range(40)
+    )
     ray.init(address="ray-head:6379", log_to_driver=True)
     try:
         deadline = time.monotonic() + 90
@@ -130,22 +125,46 @@ def main():
             print("driver keytab rejection fell back to Doris", flush=True)
         finally:
             os.environ[root_env] = original_root
+        audit = Path("/fixture/state/namenode.log")
         for node in workers:
             affinity = NodeAffinitySchedulingStrategy(node_id=node["NodeID"], soft=False)
-            dataset = read_doris(
-                host="fe",
-                table="krb_it.data",
-                user="root",
-                catalog="krb_hive",
-                auto_native_read=True,
-                override_num_blocks=2,
-                ray_remote_args={"scheduling_strategy": affinity},
-            )
+            offset = audit.stat().st_size
+            parquet_reader = ray.data.read_parquet
+            with patch(
+                "ray_doris._native.ray.data.read_parquet",
+                wraps=parquet_reader,
+                __signature__=inspect.signature(parquet_reader),
+            ) as native_reader:
+                dataset = read_doris(
+                    host="fe",
+                    table="krb_it.data",
+                    user="root",
+                    catalog="krb_hive",
+                    auto_native_read=True,
+                    override_num_blocks=2,
+                    ray_remote_args={"scheduling_strategy": affinity},
+                )
+                native_reader.assert_called_once()
+                options = native_reader.call_args.kwargs["ray_remote_args"]
+                assert options["scheduling_strategy"] is affinity
             rows = dataset.map_batches(
                 mark_worker, batch_format="pyarrow", scheduling_strategy=affinity
             ).take_all()
             assert sorted(row["id"] for row in rows) == list(range(40))
             assert {row["_worker"] for row in rows} == {node["NodeID"]}
+            needle = (
+                f"ugi={principal} (auth:KERBEROS)\tip=/{node['NodeManagerAddress']}"
+                "\tcmd=open\tsrc=/lake/data/"
+            )
+            deadline = time.monotonic() + 10
+            while True:
+                with audit.open(errors="replace") as log:
+                    log.seek(offset)
+                    if needle in log.read():
+                        break
+                if time.monotonic() > deadline:
+                    raise AssertionError("worker HDFS open was not recorded")
+                time.sleep(0.2)
             print("native read passed on worker", node["NodeID"], flush=True)
 
         @ray.remote(num_cpus=1)
@@ -240,8 +259,6 @@ def main():
             withheld.rename(keytab)
     finally:
         ray.shutdown()
-    if reference_error is not None:
-        raise AssertionError("Doris reference read failed") from reference_error
 
 
 if __name__ == "__main__":

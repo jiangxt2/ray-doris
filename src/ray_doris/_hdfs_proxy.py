@@ -345,8 +345,6 @@ class HdfsKerberosHandler(fs.FileSystemHandler):
         return _hdfs_io_with_hint(lambda: self._filesystem().normalize_path(path))
 
     def get_file_info(self, paths: Union[str, List[str]]) -> Union[fs.FileInfo, List[fs.FileInfo]]:
-        if isinstance(paths, str):
-            return _hdfs_io_with_hint(lambda: self._filesystem().get_file_info(paths))
         return _hdfs_io_with_hint(lambda: self._filesystem().get_file_info(paths))
 
     def get_file_info_selector(self, selector: fs.FileSelector) -> List[fs.FileInfo]:

@@ -36,6 +36,16 @@ def successful_command(args):
     return SimpleNamespace(returncode=0, stdout=ticket_listing())
 
 
+@pytest.fixture
+def trusted_ticket_config(tmp_path, monkeypatch):
+    root = tmp_path / "trusted"
+    root.mkdir()
+    keytab = root / "reader.keytab"
+    keytab.write_bytes(b"synthetic")
+    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
+    return HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab))
+
+
 def test_keytab_must_be_in_authorized_root(tmp_path, monkeypatch):
     root = tmp_path / "trusted"
     root.mkdir()
@@ -246,17 +256,12 @@ def test_open_stream_retains_old_backend_until_stream_closes(tmp_path, monkeypat
     assert first_backend() is None
 
 
-def test_lease_close_removes_private_cache(tmp_path, monkeypatch):
-    root = tmp_path / "trusted"
-    root.mkdir()
-    keytab = root / "reader.keytab"
-    keytab.write_bytes(b"synthetic")
-    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
+def test_lease_close_removes_private_cache(trusted_ticket_config, monkeypatch):
     monkeypatch.setattr(
         "ray_doris._hdfs_proxy._command",
         successful_command,
     )
-    lease = _TicketLease(HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab)))
+    lease = _TicketLease(trusted_ticket_config)
     directory = os.path.dirname(lease.path)
     assert os.stat(directory).st_mode & 0o777 == 0o700
     assert os.stat(lease.path).st_mode & 0o777 == 0o600
@@ -286,12 +291,7 @@ def test_guard_start_failure_removes_cache_directory(tmp_path, monkeypatch):
     assert not directory.exists()
 
 
-def test_renewal_reauthenticates_if_ticket_is_not_renewable(tmp_path, monkeypatch):
-    root = tmp_path / "trusted"
-    root.mkdir()
-    keytab = root / "reader.keytab"
-    keytab.write_bytes(b"synthetic")
-    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
+def test_renewal_reauthenticates_if_ticket_is_not_renewable(trusted_ticket_config, monkeypatch):
     calls = []
 
     def command(args):
@@ -301,7 +301,7 @@ def test_renewal_reauthenticates_if_ticket_is_not_renewable(tmp_path, monkeypatc
         return successful_command(args)
 
     monkeypatch.setattr("ray_doris._hdfs_proxy._command", command)
-    lease = _TicketLease(HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab)))
+    lease = _TicketLease(trusted_ticket_config)
     try:
         initial = lease.version
         lease.renew()
@@ -312,17 +312,14 @@ def test_renewal_reauthenticates_if_ticket_is_not_renewable(tmp_path, monkeypatc
         lease.close()
 
 
-def test_failed_reauthentication_does_not_report_expired_ticket_as_valid(tmp_path, monkeypatch):
-    root = tmp_path / "trusted"
-    root.mkdir()
-    keytab = root / "reader.keytab"
-    keytab.write_bytes(b"synthetic")
-    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
+def test_failed_reauthentication_does_not_report_expired_ticket_as_valid(
+    trusted_ticket_config, monkeypatch
+):
     monkeypatch.setattr(
         "ray_doris._hdfs_proxy._command",
         successful_command,
     )
-    lease = _TicketLease(HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab)))
+    lease = _TicketLease(trusted_ticket_config)
     try:
         lease.expiry = time.time() - 1
         monkeypatch.setattr(
@@ -334,12 +331,7 @@ def test_failed_reauthentication_does_not_report_expired_ticket_as_valid(tmp_pat
         lease.close()
 
 
-def test_close_waits_for_inflight_renewal_before_removing_cache(tmp_path, monkeypatch):
-    root = tmp_path / "trusted"
-    root.mkdir()
-    keytab = root / "reader.keytab"
-    keytab.write_bytes(b"synthetic")
-    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
+def test_close_waits_for_inflight_renewal_before_removing_cache(trusted_ticket_config, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
@@ -351,7 +343,7 @@ def test_close_waits_for_inflight_renewal_before_removing_cache(tmp_path, monkey
         return successful_command(args)
 
     monkeypatch.setattr("ray_doris._hdfs_proxy._command", command)
-    lease = _TicketLease(HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab)))
+    lease = _TicketLease(trusted_ticket_config)
     directory = pathlib.Path(lease.path).parent
     renewing = threading.Thread(target=lease.renew)
     closing = threading.Thread(target=lease.close)

@@ -44,6 +44,8 @@ image = "ray-doris-kerberos-it:" + tag
 realm = "RD" + secrets.token_hex(4).upper() + ".TEST"
 server = "hdfs/hdfs-probe@" + realm
 reader = "reader@" + realm
+alice = "alice@" + realm
+bob = "bob@" + realm
 web = "HTTP/hdfs-probe@" + realm
 password = secrets.token_urlsafe(20)
 sock = socket.socket()
@@ -197,6 +199,7 @@ conf = fixture / "conf"
             "dfs.datanode.https.address": "0.0.0.0:9865",
             "dfs.data.transfer.protection": "authentication",
             "dfs.namenode.safemode.threshold-pct": "0",
+            "dfs.permissions.enabled": "true",
         }
     )
 )
@@ -237,6 +240,10 @@ awk '
 grep -q -- '--service metastore' /tmp/rd-hms-only.sh
 exec bash /tmp/rd-hms-only.sh
 """)
+(fixture / "identity.txt").write_text("isolation-check")
+(fixture / "KerberosIdentityProbe.java").write_bytes(
+    (repo / "tests/native_integration/KerberosIdentityProbe.java").read_bytes()
+)
 for number in range(4):
     pq.write_table(
         pa.table({"id": pa.array(range(number * 10, number * 10 + 10), type=pa.int32())}),
@@ -462,10 +469,11 @@ try:
         [krb + "sbin/kdb5_util", "create", "-s", "-r", realm, "-P", secrets.token_urlsafe(20)],
         env=kdc_env,
     )
-    for principal in (server, web, reader):
+    for principal in (server, web, reader, alice, bob):
         args = "addprinc -randkey " + ("-maxlife 60s " if principal == reader else "") + principal
         run([krb + "sbin/kadmin.local", "-r", realm, "-q", args], env=kdc_env)
-        target = fixture / ("reader.keytab" if principal == reader else "server.keytab")
+        name = principal.split("@", 1)[0]
+        target = fixture / ("server.keytab" if "/" in name else name + ".keytab")
         run(
             [krb + "sbin/kadmin.local", "-r", realm, "-q", f"ktadd -k {target} {principal}"],
             env=kdc_env,
@@ -476,22 +484,28 @@ try:
     time.sleep(0.5)
     if kdc.poll() is not None:
         raise RuntimeError("KDC failed to start")
-    run(
-        [
-            krb + "bin/kinit",
-            "-k",
-            "-t",
-            str(fixture / "server.keytab"),
-            "-c",
-            str(fixture / "admin.cache"),
-            server,
-        ],
-        env=kdc_env,
-    )
+    for principal, keytab, cache in (
+        (server, "server.keytab", "admin.cache"),
+        (alice, "alice.keytab", "alice.cache"),
+        (bob, "bob.keytab", "bob.cache"),
+    ):
+        run(
+            [
+                krb + "bin/kinit",
+                "-k",
+                "-t",
+                str(fixture / keytab),
+                "-c",
+                str(fixture / cache),
+                principal,
+            ],
+            env=kdc_env,
+        )
     fingerprint = hashlib.sha256()
     for path in sorted((repo / "src/ray_doris").glob("*.py")):
         fingerprint.update(path.read_bytes())
     fingerprint.update((repo / "tests/native_integration/kerberos_native_smoke.py").read_bytes())
+    fingerprint.update((repo / "tests/native_integration/KerberosIdentityProbe.java").read_bytes())
     fingerprint.update(pathlib.Path(__file__).read_bytes())
     fingerprint.update((repo / "tests/native_integration/ray.Dockerfile").read_bytes())
     fingerprint.update((repo / "pyproject.toml").read_bytes())
@@ -527,6 +541,29 @@ try:
         time.sleep(3)
     for command in (["-mkdir", "-p", "/lake/data"], ["-chown", "reader", "/lake/data"]):
         run(compose + ["exec", "-T", "hdfs", "/opt/hadoop-3.3.0/bin/hdfs", "dfs", *command])
+    for command in (
+        ["-mkdir", "/alice"],
+        ["-chown", "alice", "/alice"],
+        ["-chmod", "700", "/alice"],
+        ["-put", "/fixture/identity.txt", "/alice/input.txt"],
+    ):
+        run(compose + ["exec", "-T", "hdfs", "/opt/hadoop-3.3.0/bin/hdfs", "dfs", *command])
+    identity_check = (
+        "set -e; cp=$(/opt/hadoop-3.3.0/bin/hadoop classpath --glob); "
+        '/usr/local/jdk/bin/javac -cp "$cp" /fixture/KerberosIdentityProbe.java; '
+        'exec /usr/local/jdk/bin/java -cp "/fixture:$cp" KerberosIdentityProbe "$1" "$2"'
+    )
+    result = run(
+        compose + ["exec", "-T", "hdfs", "bash", "-c", identity_check, "identity", alice, bob],
+        capture=True,
+        timeout=90,
+    )
+    marker = "same-JVM HDFS: alice allowed, bob denied, alice still allowed"
+    if marker not in result.stdout:
+        raise RuntimeError("HDFS identity isolation check did not complete")
+    log.write(marker + "\n")
+    log.flush()
+    print(marker, flush=True)
     for number in range(4):
         run(
             compose

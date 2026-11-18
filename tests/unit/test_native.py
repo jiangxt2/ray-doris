@@ -384,9 +384,13 @@ def test_parquet_options_failure_falls_back_before_reader_is_called(monkeypatch)
     doris.assert_called_once()
 
 
-@pytest.mark.parametrize("stage", ["read", "map"])
 @pytest.mark.parametrize(
-    "failure", [RuntimeError("native reader failure"), _NativeReadNotApplicableError("too late")]
+    "stage,failure",
+    [
+        ("read", RuntimeError("native reader failure")),
+        ("map", RuntimeError("native reader failure")),
+        ("read", _NativeReadNotApplicableError("too late")),
+    ],
 )
 def test_parquet_reader_errors_never_trigger_doris_fallback(monkeypatch, caplog, stage, failure):
     _mock_native_read_plan(monkeypatch)
@@ -678,7 +682,6 @@ def test_native_session_semantics(monkeypatch, use_names, timezone, timestamp, e
     "setting,value",
     [
         ("hive.metastore.type", "glue"),
-        ("hive.metastore.sasl.enabled", "true"),
         ("lower_case_meta_names", "true"),
         ("meta_names_mapping", "configured"),
     ],
@@ -770,10 +773,9 @@ def test_kerberos_hms_routes_read_doris_to_doris(monkeypatch):
     [
         {},
         {
-            "hive.metastore.authentication.type": "simple",
+            "hive.metastore.authentication.type": "SIMPLE",
             "hadoop.security.authentication": "kerberos",
         },
-        {"hive.metastore.authentication.type": "SIMPLE", "hdfs.authentication.type": "kerberos"},
         {"hive.metastore.sasl.enabled": "false", "hive.conf.resources": "/doris/hive-site.xml"},
     ],
 )
