@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("signal_parent", [False, True])
+@pytest.mark.parametrize(
+    "signal_parent", [pytest.param(False, id="command-failure"), pytest.param(True, id="signal")]
+)
 def test_early_kerberos_fixture_failure_cleans_temporary_directory(tmp_path, signal_parent):
     source = tmp_path / "source"
     evidence = tmp_path / "evidence"

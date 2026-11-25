@@ -392,6 +392,12 @@ compose_file.write_text(
     )
 )
 compose = ["docker", "compose", "-p", project, "-f", str(compose_file)]
+
+
+def hdfs(*args):
+    run(compose + ["exec", "-T", "hdfs", "/opt/hadoop-3.3.0/bin/hdfs", "dfs", *args])
+
+
 kdc = None
 try:
     run(["docker", "image", "ls", "--filter", "dangling=true"])
@@ -540,14 +546,14 @@ try:
             raise RuntimeError("HDFS readiness timed out")
         time.sleep(3)
     for command in (["-mkdir", "-p", "/lake/data"], ["-chown", "reader", "/lake/data"]):
-        run(compose + ["exec", "-T", "hdfs", "/opt/hadoop-3.3.0/bin/hdfs", "dfs", *command])
+        hdfs(*command)
     for command in (
         ["-mkdir", "/alice"],
         ["-chown", "alice", "/alice"],
         ["-chmod", "700", "/alice"],
         ["-put", "/fixture/identity.txt", "/alice/input.txt"],
     ):
-        run(compose + ["exec", "-T", "hdfs", "/opt/hadoop-3.3.0/bin/hdfs", "dfs", *command])
+        hdfs(*command)
     identity_check = (
         "set -e; cp=$(/opt/hadoop-3.3.0/bin/hadoop classpath --glob); "
         '/usr/local/jdk/bin/javac -cp "$cp" /fixture/KerberosIdentityProbe.java; '
@@ -565,19 +571,7 @@ try:
     log.flush()
     print(marker, flush=True)
     for number in range(4):
-        run(
-            compose
-            + [
-                "exec",
-                "-T",
-                "hdfs",
-                "/opt/hadoop-3.3.0/bin/hdfs",
-                "dfs",
-                "-put",
-                f"/fixture/part-{number}.parquet",
-                "/lake/data/",
-            ]
-        )
+        hdfs("-put", f"/fixture/part-{number}.parquet", "/lake/data/")
     print("Waiting for the dedicated FE before starting BE", flush=True)
     deadline = time.monotonic() + 240
     check_fe = (

@@ -9,16 +9,22 @@ from ray_doris._hdfs_auth import HdfsKerberosConfig, catalog_hdfs_kerberos
 @pytest.mark.parametrize(
     "properties",
     [
-        {
-            "hdfs.authentication.type": "kerberos",
-            "hdfs.authentication.kerberos.principal": "reader@EXAMPLE.COM",
-            "hdfs.authentication.kerberos.keytab": "/secure/reader.keytab",
-        },
-        {
-            "hadoop.security.authentication": "kerberos",
-            "hadoop.kerberos.principal": "reader@EXAMPLE.COM",
-            "hadoop.kerberos.keytab": "/secure/reader.keytab",
-        },
+        pytest.param(
+            {
+                "hdfs.authentication.type": "kerberos",
+                "hdfs.authentication.kerberos.principal": "reader@EXAMPLE.COM",
+                "hdfs.authentication.kerberos.keytab": "/secure/reader.keytab",
+            },
+            id="hdfs-properties",
+        ),
+        pytest.param(
+            {
+                "hadoop.security.authentication": "kerberos",
+                "hadoop.kerberos.principal": "reader@EXAMPLE.COM",
+                "hadoop.kerberos.keytab": "/secure/reader.keytab",
+            },
+            id="hadoop-properties",
+        ),
     ],
 )
 def test_extract_catalog_kerberos(properties):
@@ -35,15 +41,24 @@ def test_simple_or_absent_auth_has_no_kerberos_identity():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"hadoop.security.authentication": "simple"},
-        {"hdfs.authentication.kerberos.principal": "*XXX"},
-        {"hdfs.authentication.kerberos.principal": "******"},
-        {"hdfs.authentication.kerberos.keytab": "relative.keytab"},
-        {"hdfs.authentication.kerberos.keytab": "/secure/../other.keytab"},
-        {"hdfs.authentication.kerberos.keytab": "/secure/invalid\x00.keytab"},
-        {"hdfs.authentication.kerberos.principal": ""},
-        {"hdfs.authentication.kerberos.principal": "-bad"},
-        {"hadoop.kerberos.principal": "other@EXAMPLE.COM"},
+        pytest.param({"hadoop.security.authentication": "simple"}, id="conflicting-auth"),
+        pytest.param({"hdfs.authentication.kerberos.principal": "*XXX"}, id="masked-value"),
+        pytest.param({"hdfs.authentication.kerberos.principal": "******"}, id="masked-stars"),
+        pytest.param(
+            {"hdfs.authentication.kerberos.keytab": "relative.keytab"}, id="relative-path"
+        ),
+        pytest.param(
+            {"hdfs.authentication.kerberos.keytab": "/secure/../other.keytab"}, id="path-traversal"
+        ),
+        pytest.param(
+            {"hdfs.authentication.kerberos.keytab": "/secure/invalid\x00.keytab"},
+            id="control-character",
+        ),
+        pytest.param({"hdfs.authentication.kerberos.principal": ""}, id="empty-principal"),
+        pytest.param({"hdfs.authentication.kerberos.principal": "-bad"}, id="option-principal"),
+        pytest.param(
+            {"hadoop.kerberos.principal": "other@EXAMPLE.COM"}, id="conflicting-principal"
+        ),
     ],
 )
 def test_reject_ambiguous_or_invalid_catalog_auth(overrides):

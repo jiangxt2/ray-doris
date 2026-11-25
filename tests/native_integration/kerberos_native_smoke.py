@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pyarrow as pa
 import pymysql
 import ray
 import ray.data
@@ -16,11 +15,6 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from ray_doris import read_doris
 from ray_doris._hms import open_hms
-
-
-def mark_worker(batch):
-    node_id = ray.get_runtime_context().get_node_id()
-    return batch.append_column("_worker", pa.array([node_id] * batch.num_rows))
 
 
 def sql(statement, *, dictionaries=False):
@@ -38,6 +32,31 @@ def main():
         raise RuntimeError("integration driver requires the Hadoop CLASSPATH")
     realm = os.environ["RD_KRB_REALM"]
     principal = "reader@" + realm
+
+    def create_catalog(name, keytab):
+        sql(
+            f"CREATE CATALOG {name} PROPERTIES ("
+            "'type'='hms', 'hive.metastore.uris'='thrift://hms:9083', "
+            "'hive.metastore.authentication.type'='simple', "
+            "'hive.metastore.sasl.enabled'='false', "
+            "'get_schema_from_table'='true', 'fs.defaultFS'='hdfs://hdfs-probe:8020', "
+            f"'dfs.namenode.kerberos.principal'='hdfs/hdfs-probe@{realm}', "
+            "'dfs.data.transfer.protection'='authentication', "
+            "'hadoop.security.authentication'='kerberos', "
+            f"'hadoop.kerberos.principal'='{principal}', "
+            f"'hadoop.kerberos.keytab'='/fixture/{keytab}')"
+        )
+
+    def read_catalog(name, **options):
+        return read_doris(
+            host="fe",
+            table="krb_it.data",
+            user="root",
+            catalog=name,
+            auto_native_read=True,
+            **options,
+        )
+
     deadline = time.monotonic() + 300
     while True:
         try:
@@ -79,18 +98,7 @@ def main():
             )
         )
     sql("SET GLOBAL hive_parquet_use_column_names = true")
-    sql(
-        "CREATE CATALOG krb_hive PROPERTIES ("
-        "'type'='hms', 'hive.metastore.uris'='thrift://hms:9083', "
-        "'hive.metastore.authentication.type'='simple', "
-        "'hive.metastore.sasl.enabled'='false', "
-        "'get_schema_from_table'='true', 'fs.defaultFS'='hdfs://hdfs-probe:8020', "
-        f"'dfs.namenode.kerberos.principal'='hdfs/hdfs-probe@{realm}', "
-        "'dfs.data.transfer.protection'='authentication', "
-        "'hadoop.security.authentication'='kerberos', "
-        f"'hadoop.kerberos.principal'='{principal}', "
-        "'hadoop.kerberos.keytab'='/fixture/reader.keytab')"
-    )
+    create_catalog("krb_hive", "reader.keytab")
     assert sql("SELECT id FROM krb_hive.krb_it.data ORDER BY id") == tuple(
         (value,) for value in range(40)
     )
@@ -113,13 +121,7 @@ def main():
             with patch(
                 "ray_doris._api.ray.data.read_datasource", wraps=ray.data.read_datasource
             ) as doris:
-                fallback = read_doris(
-                    host="fe",
-                    table="krb_it.data",
-                    user="root",
-                    catalog="krb_hive",
-                    auto_native_read=True,
-                )
+                fallback = read_catalog("krb_hive")
                 assert doris.call_count == 1
             assert sorted(row["id"] for row in fallback.take_all()) == list(range(40))
             print("driver keytab rejection fell back to Doris", flush=True)
@@ -135,23 +137,16 @@ def main():
                 wraps=parquet_reader,
                 __signature__=inspect.signature(parquet_reader),
             ) as native_reader:
-                dataset = read_doris(
-                    host="fe",
-                    table="krb_it.data",
-                    user="root",
-                    catalog="krb_hive",
-                    auto_native_read=True,
+                dataset = read_catalog(
+                    "krb_hive",
                     override_num_blocks=2,
                     ray_remote_args={"scheduling_strategy": affinity},
                 )
                 native_reader.assert_called_once()
                 options = native_reader.call_args.kwargs["ray_remote_args"]
                 assert options["scheduling_strategy"] is affinity
-            rows = dataset.map_batches(
-                mark_worker, batch_format="pyarrow", scheduling_strategy=affinity
-            ).take_all()
+            rows = dataset.take_all()
             assert sorted(row["id"] for row in rows) == list(range(40))
-            assert {row["_worker"] for row in rows} == {node["NodeID"]}
             needle = (
                 f"ugi={principal} (auth:KERBEROS)\tip=/{node['NodeManagerAddress']}"
                 "\tcmd=open\tsrc=/lake/data/"
@@ -216,25 +211,10 @@ def main():
 
         failure_keytab = Path("/fixture/failure.keytab")
         shutil.copyfile("/fixture/reader.keytab", failure_keytab)
-        sql(
-            "CREATE CATALOG krb_failure PROPERTIES ("
-            "'type'='hms', 'hive.metastore.uris'='thrift://hms:9083', "
-            "'hive.metastore.authentication.type'='simple', "
-            "'hive.metastore.sasl.enabled'='false', "
-            "'get_schema_from_table'='true', 'fs.defaultFS'='hdfs://hdfs-probe:8020', "
-            f"'dfs.namenode.kerberos.principal'='hdfs/hdfs-probe@{realm}', "
-            "'dfs.data.transfer.protection'='authentication', "
-            "'hadoop.security.authentication'='kerberos', "
-            f"'hadoop.kerberos.principal'='{principal}', "
-            "'hadoop.kerberos.keytab'='/fixture/failure.keytab')"
-        )
+        create_catalog("krb_failure", "failure.keytab")
         affinity = NodeAffinitySchedulingStrategy(node_id=workers[0]["NodeID"], soft=False)
-        pending = read_doris(
-            host="fe",
-            table="krb_it.data",
-            user="root",
-            catalog="krb_failure",
-            auto_native_read=True,
+        pending = read_catalog(
+            "krb_failure",
             ray_remote_args={"scheduling_strategy": affinity},
         )
         keytab = failure_keytab

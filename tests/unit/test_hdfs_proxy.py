@@ -46,14 +46,26 @@ def trusted_ticket_config(tmp_path, monkeypatch):
     return HdfsKerberosConfig("reader@EXAMPLE.COM", str(keytab))
 
 
-def test_keytab_must_be_in_authorized_root(tmp_path, monkeypatch):
-    root = tmp_path / "trusted"
-    root.mkdir()
-    keytab = root / "reader.keytab"
-    keytab.write_bytes(b"synthetic")
+@pytest.fixture
+def fake_lease(monkeypatch):
+    class Lease:
+        version = 1
+
+        def __init__(self, config):
+            self._lock = threading.RLock()
+
+        def snapshot(self):
+            return "/private/cache", self.version
+
+    monkeypatch.setattr("ray_doris._hdfs_proxy._TicketLease", Lease)
+    return Lease
+
+
+def test_keytab_must_be_in_authorized_root(tmp_path, monkeypatch, trusted_ticket_config):
+    keytab = pathlib.Path(trusted_ticket_config.keytab)
+    root = keytab.parent
     other = tmp_path / "other.keytab"
     other.write_bytes(b"synthetic")
-    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", str(root))
     _check_keytab(str(keytab))
     with pytest.raises(DorisConfigurationError):
         _check_keytab(str(other))
@@ -77,7 +89,10 @@ def test_keytab_failure_includes_doris_retry_hint(tmp_path, monkeypatch):
     assert str(root) not in str(error.value)
 
 
-@pytest.mark.parametrize("serializer", [pickle, ray.cloudpickle])
+@pytest.mark.parametrize(
+    "serializer",
+    [pytest.param(pickle, id="pickle"), pytest.param(ray.cloudpickle, id="cloudpickle")],
+)
 def test_arrow_proxy_serialization_does_not_serialize_live_state(serializer):
     config = HdfsKerberosConfig("reader@EXAMPLE.COM", "/secure/reader.keytab")
     handler = HdfsKerberosHandler("hdfs", 8020, config, {})
@@ -89,24 +104,13 @@ def test_arrow_proxy_serialization_does_not_serialize_live_state(serializer):
     assert restored.handler == handler
 
 
-def test_proxy_reopens_backend_after_ticket_refresh(tmp_path, monkeypatch):
-    class Lease:
-        version = 1
-
-        def __init__(self, config):
-            self.config = config
-            self._lock = threading.RLock()
-
-        def snapshot(self):
-            return "/private/cache", self.version
-
+def test_proxy_reopens_backend_after_ticket_refresh(tmp_path, monkeypatch, fake_lease):
     calls = []
 
     def new_filesystem(host, port, **kwargs):
         calls.append((host, port, kwargs))
         return fs.LocalFileSystem()
 
-    monkeypatch.setattr("ray_doris._hdfs_proxy._TicketLease", Lease)
     monkeypatch.setattr("ray_doris._hdfs_proxy.fs.HadoopFileSystem", new_filesystem)
     config = HdfsKerberosConfig("reader@EXAMPLE.COM", "/trusted/reader.keytab")
     handler = HdfsKerberosHandler("namenode", 8020, config, {})
@@ -172,14 +176,7 @@ def test_hdfs_stream_error_keeps_original_and_logs_retry_hint(caplog):
         retained.close()
 
 
-def test_backend_connect_holds_ticket_lock(monkeypatch):
-    class Lease:
-        def __init__(self, config):
-            self._lock = threading.RLock()
-
-        def snapshot(self):
-            return "/private/cache", 1
-
+def test_backend_connect_holds_ticket_lock(monkeypatch, fake_lease):
     connecting = threading.Event()
     release = threading.Event()
     renewed = threading.Event()
@@ -189,7 +186,6 @@ def test_backend_connect_holds_ticket_lock(monkeypatch):
         assert release.wait(5)
         return fs.LocalFileSystem()
 
-    monkeypatch.setattr("ray_doris._hdfs_proxy._TicketLease", Lease)
     monkeypatch.setattr("ray_doris._hdfs_proxy.fs.HadoopFileSystem", connect)
     handler = HdfsKerberosHandler(
         "namenode", 8020, HdfsKerberosConfig("reader@EXAMPLE.COM", "/trusted/keytab"), {}
@@ -215,16 +211,7 @@ def test_backend_connect_holds_ticket_lock(monkeypatch):
     assert not connector.is_alive() and not renewer.is_alive()
 
 
-def test_open_stream_retains_old_backend_until_stream_closes(tmp_path, monkeypatch):
-    class Lease:
-        version = 1
-
-        def __init__(self, config):
-            self._lock = threading.RLock()
-
-        def snapshot(self):
-            return "/private/cache", self.version
-
+def test_open_stream_retains_old_backend_until_stream_closes(tmp_path, monkeypatch, fake_lease):
     class Backend:
         def __init__(self, *args, **kwargs):
             self.local = fs.LocalFileSystem()
@@ -235,7 +222,6 @@ def test_open_stream_retains_old_backend_until_stream_closes(tmp_path, monkeypat
         def get_file_info(self, paths):
             return self.local.get_file_info(paths)
 
-    monkeypatch.setattr("ray_doris._hdfs_proxy._TicketLease", Lease)
     monkeypatch.setattr("ray_doris._hdfs_proxy.fs.HadoopFileSystem", Backend)
     config = HdfsKerberosConfig("reader@EXAMPLE.COM", "/trusted/reader.keytab")
     handler = HdfsKerberosHandler("namenode", 8020, config, {})
