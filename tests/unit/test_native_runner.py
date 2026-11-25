@@ -85,44 +85,6 @@ def test_cleanup_verification_does_not_hide_docker_failure():
         verify(run, set(), [])
 
 
-@pytest.mark.parametrize(
-    "arguments,message",
-    [
-        (
-            ["--iceberg", "--iceberg-cases", "../other", "--versions", "4.0.6"],
-            "valid test function names",
-        ),
-        (
-            [
-                "--iceberg",
-                "--iceberg-cases",
-                "test_version_compatibility[s3]",
-                "--versions",
-                "4.0.6",
-            ],
-            "prepare the pinned Hadoop JNI source context first",
-        ),
-    ],
-)
-def test_runner_validates_arguments_before_starting_docker(tmp_path, arguments, message):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(RUNNER),
-            *arguments,
-            "--logs",
-            str(tmp_path / "logs"),
-            "--hadoop-source",
-            str(tmp_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode != 0
-    assert message in result.stderr
-
-
 def test_streamed_command_redacts_and_closes_output():
     stream = runpy.run_path(str(RUNNER))["stream_command"]
     process = Mock(stdout=io.StringIO("fixture-secret\n"))

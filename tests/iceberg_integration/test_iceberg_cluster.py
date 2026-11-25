@@ -16,6 +16,7 @@ import ray
 import ray.data
 from pyiceberg.catalog import load_catalog
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+from tests.native_integration.helpers import s3, sql
 
 from ray_doris import read_doris
 from ray_doris.datasource import DorisDatasource
@@ -37,34 +38,10 @@ def trace_entries(marker):
         return [line.split(" ", 1)[0] for line in trace.read().splitlines()]
 
 
-def sql(statement, parameters=None):
-    __tracebackhide__ = True
-    try:
-        with pymysql.connect(host="fe", port=9030, user="root", autocommit=True) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(statement, parameters)
-                return cursor.fetchall()
-    except pymysql.MySQLError as error:
-        message = str(error)
-        for key in ("NATIVE_S3_USER", "NATIVE_S3_PASSWORD"):
-            message = message.replace(os.environ[key], "<redacted>")
-        raise RuntimeError("Iceberg fixture SQL failed: " + message) from None
-
-
 @pytest.fixture(scope="module")
 def tables(record_testsuite_property):
-    import pyarrow.fs as fs
-
     record_testsuite_property("doris_build", str(sql("SELECT @@version_comment")[0][0]))
-    store = fs.S3FileSystem(
-        access_key=os.environ["NATIVE_S3_USER"],
-        secret_key=os.environ["NATIVE_S3_PASSWORD"],
-        endpoint_override="minio:9000",
-        scheme="http",
-        region="us-east-1",
-        allow_bucket_creation=True,
-    )
-    store.create_dir("native-bucket")
+    s3().create_dir("native-bucket")
     result = {}
     for medium in ("s3", "hdfs"):
         name = "ice" + medium

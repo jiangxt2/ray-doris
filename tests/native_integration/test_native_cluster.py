@@ -20,6 +20,7 @@ import pymysql
 import pytest
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+from tests.native_integration.helpers import s3, sql
 
 from ray_doris import (
     DorisPermissionError,
@@ -49,28 +50,6 @@ DATA_COLUMNS = [
     ("score", "double"),
     ("maybe", "string"),
 ]
-
-
-def sql(query, params=None):
-    __tracebackhide__ = True
-    try:
-        with pymysql.connect(host="fe", port=9030, user="root", autocommit=True) as con:
-            with con.cursor() as cursor:
-                cursor.execute(query, params)
-                return cursor.fetchall()
-    except pymysql.MySQLError:
-        raise RuntimeError("integration SQL failed; inspect sanitized service logs") from None
-
-
-def s3():
-    return fs.S3FileSystem(
-        access_key=os.environ["NATIVE_S3_USER"],
-        secret_key=os.environ["NATIVE_S3_PASSWORD"],
-        endpoint_override="minio:9000",
-        scheme="http",
-        region="us-east-1",
-        allow_bucket_creation=True,
-    )
 
 
 def hms_fixture_call(client, method, *args):

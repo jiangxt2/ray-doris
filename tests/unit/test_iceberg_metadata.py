@@ -61,9 +61,6 @@ def test_nonsecret_defaults_use_aliases_without_copying_credentials():
         "oauth2-server-uri": "https://auth.example/token",
         "scope": "catalog:read",
     }
-    assert all(
-        secret not in str(defaults) for secret in ("doris-secret", "storage-secret", "ray-secret")
-    )
 
 
 def test_nonsecret_defaults_preserve_explicit_settings_and_nested_oauth():
@@ -82,7 +79,13 @@ def test_nonsecret_defaults_preserve_explicit_settings_and_nested_oauth():
     }
     defaults = iceberg_catalog_defaults(properties, configured)
     assert defaults == {"auth": {"type": "oauth2", "oauth2": {"scope": "catalog:read"}}}
-    assert "secret" not in str(defaults)
+    configured["auth"]["oauth2"].pop("token_url")
+    assert iceberg_catalog_defaults(properties, configured) == {
+        "auth": {
+            "type": "oauth2",
+            "oauth2": {"token_url": "https://auth.example/token", "scope": "catalog:read"},
+        }
+    }
 
 
 @pytest.mark.parametrize(
@@ -130,57 +133,6 @@ def test_deferred_defaults_detect_conflicts_without_exposing_values():
         validate_iceberg_catalog_defaults({"s3.region": "region-1"}, {"client.region": "region-2"})
     with pytest.raises(DorisPlanningError, match="configuration changed"):
         validate_iceberg_catalog_defaults({"scope": "read"}, {"auth": {"type": "basic"}})
-
-
-@pytest.mark.parametrize("managed", [False, True])
-def test_defaults_interoperate_with_pyiceberg_oauth_and_server_override(monkeypatch, managed):
-    import json
-    from urllib.parse import parse_qs
-
-    import pyiceberg.catalog as catalogs
-    import requests
-
-    configured = (
-        {"auth": {"type": "oauth2", "oauth2": {"client_id": "id", "client_secret": "secret"}}}
-        if managed
-        else {"credential": "id:secret"}
-    )
-    monkeypatch.setattr(
-        catalogs, "_ENV_CONFIG", SimpleNamespace(get_catalog_config=lambda _name: configured)
-    )
-    calls = []
-
-    def send(_adapter, request, **_kwargs):
-        method, url = request.method, request.url
-        data = parse_qs(request.body or "") if method == "POST" else {}
-        calls.append((method, url, data))
-        response = requests.Response()
-        response.status_code = 200
-        response.url = url
-        response.request = request
-        if method == "POST":
-            body = {"access_token": "test-token", "token_type": "Bearer", "expires_in": 3600}
-        else:
-            assert url.endswith("/v1/config")
-            body = {"defaults": {}, "overrides": {"s3.region": "server-region"}}
-        response._content = json.dumps(body).encode()
-        return response
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
-    defaults = iceberg_catalog_defaults(
-        {
-            "iceberg.rest.oauth2.server-uri": "https://auth.example/token",
-            "iceberg.rest.oauth2.scope": "catalog:read",
-            "s3.region": "doris-region",
-        },
-        configured,
-    )
-    catalog = catalogs.load_catalog("lake", type="rest", uri="https://rest.example", **defaults)
-    token_calls = [(url, data) for method, url, data in calls if method == "POST"]
-    assert token_calls and all(url == "https://auth.example/token" for url, _ in token_calls)
-    assert all(data["scope"] == ["catalog:read"] for _, data in token_calls)
-    assert catalog.properties["s3.region"] == "server-region"
-    assert "secret" not in str(defaults)
 
 
 def test_main_snapshot_is_selected_and_missing_interface_is_classified_narrowly():

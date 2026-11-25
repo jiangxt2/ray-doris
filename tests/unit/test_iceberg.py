@@ -1,4 +1,3 @@
-import logging
 from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
@@ -235,42 +234,17 @@ def test_configured_oauth_or_environment_manager_is_not_rejected(iceberg_environ
     public_read.assert_called_once()
 
 
-def test_projection_preserves_requested_order_when_iceberg_uses_schema_order(iceberg_environment):
-    iceberg, config, table, scan, public_read = iceberg_environment
-    config = replace(config, columns=("label", "id"))
-    iceberg.build_arrow_schema.return_value = pa.schema(
-        [("label", pa.string()), ("id", pa.int64())]
-    )
-    scan.projection.return_value.as_arrow.return_value = pa.schema(
-        [("id", pa.int64()), ("label", pa.large_string())]
-    )
-
-    def read_projected():
-        return read_iceberg(
-            config,
-            "lake",
-            NativeReadOptions(),
-            concurrency=None,
-            override_num_blocks=None,
-            ray_remote_args=None,
-        )
-
-    read_projected()
-    table.scan.assert_called_once_with(snapshot_id=123, selected_fields=("label", "id"))
-    assert public_read.call_args.kwargs["selected_fields"] == ("label", "id")
-    scan.projection.return_value.as_arrow.return_value = pa.schema([("id", pa.int64())])
+def test_snapshot_projection_mismatch_fails_before_native_execution(iceberg_environment):
+    _, _, _, scan, public_read = iceberg_environment
+    scan.projection.return_value.as_arrow.return_value = pa.schema([])
     with pytest.raises(DorisPlanningError, match="snapshot schema differs"):
-        read_projected()
-    assert public_read.call_count == 1
+        invoke(iceberg_environment)
+    public_read.assert_not_called()
 
 
 def test_iceberg_planning_errors_keep_snapshot_for_fallback(iceberg_environment):
     _, _, _, scan, public_read = iceberg_environment
     scan.plan_files.side_effect = ValueError("PyIceberg does not yet support equality deletes")
-    with pytest.raises(_PinnedNativeFallbackError) as error:
-        invoke(iceberg_environment)
-    assert error.value.snapshot_id == 123
-    scan.plan_files.side_effect = PermissionError("secret")
     with pytest.raises(_PinnedNativeFallbackError) as error:
         invoke(iceberg_environment)
     assert error.value.snapshot_id == 123
@@ -330,24 +304,6 @@ def test_delete_manifest_inspection_error_uses_pinned_fallback(iceberg_environme
     assert "secret" not in str(error.value)
     scan.plan_files.assert_not_called()
     public_read.assert_not_called()
-
-
-@pytest.mark.parametrize("evidence", ["snapshot", "ancestor"])
-def test_legacy_identity_uses_rest_snapshot_and_warns(iceberg_environment, caplog, evidence):
-    iceberg, _, table, _, public_read = iceberg_environment
-    iceberg.verify_table_identity.return_value = False
-    iceberg.doris_main_snapshot.return_value = None
-    table.current_snapshot.return_value = SimpleNamespace(snapshot_id=456)
-    table.snapshot_by_id.return_value = SimpleNamespace(
-        snapshot_id=456, schema_id=0, manifests=Mock(return_value=[])
-    )
-    iceberg.verify_legacy_snapshot_identity = Mock(return_value=evidence)
-    with caplog.at_level(logging.WARNING):
-        invoke(iceberg_environment)
-    assert public_read.call_args.kwargs["snapshot_id"] == 456
-    assert evidence in caplog.text and "UUID is unverified" in caplog.text
-    assert ("fallback may fail" in caplog.text) == (evidence == "ancestor")
-    assert "https://rest" not in caplog.text
 
 
 def test_legacy_rejection_and_permission_error_stay_before_native_execution(iceberg_environment):

@@ -101,7 +101,7 @@ def wrap(dataset, config, check_identity=identity_ok, runtime_env=None, scheduli
     )
 
 
-def test_nested_dataset_remains_lazy_and_streams(config):
+def test_nested_dataset_returns_all_rows(config):
     dataset = wrap(ray.data.range(20, override_num_blocks=2), config)
     assert sorted(row["id"] for row in dataset.take_all()) == list(range(20))
 
