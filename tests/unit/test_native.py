@@ -267,9 +267,14 @@ def test_native_ray_capabilities_are_independent_of_patch_whitelist(monkeypatch,
     monkeypatch.setattr("ray_doris._compat._RAY_VERSION", version)
     discover = Mock(side_effect=RuntimeError("metadata reached"))
     monkeypatch.setattr("ray_doris._native.discover_external", discover)
-    with pytest.raises(RuntimeError, match="metadata reached"):
+    read = Mock(return_value="doris dataset")
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    assert (
         read_doris(host="unused", table="db.t", catalog="hive", auto_native_read=True)
+        == "doris dataset"
+    )
     discover.assert_called_once()
+    read.assert_called_once()
 
 
 def test_disabled_flag_does_not_import_or_probe_native(monkeypatch):
@@ -322,21 +327,84 @@ def test_not_applicable_retains_same_doris_source_and_logs_reason(monkeypatch, c
 @pytest.mark.parametrize(
     "error",
     [
-        DorisPlanningError("metadata broken"),
-        DorisSchemaError("contradictory schema"),
-        DorisPermissionError("denied"),
-        DorisAuthenticationError("bad credential"),
-        DorisConfigurationError("bad source options"),
+        pytest.param(DorisPermissionError("metadata access denied"), id="permission"),
+        pytest.param(DorisAuthenticationError("metadata credential rejected"), id="authentication"),
+        pytest.param(RuntimeError("secret from native implementation"), id="other-error"),
     ],
 )
-def test_real_native_errors_never_start_doris_fallback(monkeypatch, error):
+def test_native_planning_errors_fall_back_to_doris(monkeypatch, caplog, error):
     monkeypatch.setattr("ray_doris._native.read_native", Mock(side_effect=error))
-    read = Mock(side_effect=AssertionError("Doris retry used"))
+    read = Mock(return_value="doris")
     monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
-    with pytest.raises(type(error)) as captured:
+    assert read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True) == "doris"
+    read.assert_called_once()
+    assert "falling back to Doris" in caplog.text
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(DorisAuthenticationError("bad"), id="authentication"),
+        pytest.param(DorisPermissionError("denied"), id="permission"),
+    ],
+)
+def test_native_planning_fallback_propagates_doris_failure(monkeypatch, failure):
+    monkeypatch.setattr(
+        "ray_doris._native.read_native", Mock(side_effect=DorisPlanningError("native unavailable"))
+    )
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", Mock(side_effect=failure))
+    with pytest.raises(type(failure)) as captured:
         read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
-    assert captured.value is error
-    read.assert_not_called()
+    assert captured.value is failure
+
+
+def _mock_native_read_plan(monkeypatch):
+    schema = pa.schema([("id", pa.int32())])
+    metadata = SimpleNamespace(schema=schema, version=(4, 0, 6), partitions=())
+    plan = NativeReadPlan(schema, ("data.parquet",), pa.fs.LocalFileSystem(), "/data", ())
+    monkeypatch.setattr("ray_doris._native.ensure_native_ray_version", Mock())
+    monkeypatch.setattr("ray_doris._native.discover_external", Mock(return_value=metadata))
+    monkeypatch.setattr("ray_doris._native.plan_files", Mock(return_value=plan))
+    monkeypatch.setattr("ray_doris._native.native_uses_datasource_v2", Mock(return_value=False))
+    monkeypatch.setattr("ray_doris._native._validate_file_schemas", Mock(return_value=1))
+
+
+def test_parquet_options_failure_falls_back_before_reader_is_called(monkeypatch):
+    _mock_native_read_plan(monkeypatch)
+    monkeypatch.setattr(
+        "ray_doris._native.native_parquet_options", Mock(side_effect=RuntimeError("options"))
+    )
+    parquet = Mock(side_effect=AssertionError("Parquet reader must not run"))
+    doris = Mock(return_value="doris dataset")
+    monkeypatch.setattr("ray_doris._native.ray.data.read_parquet", parquet)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", doris)
+    result = read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
+    assert result == "doris dataset"
+    parquet.assert_not_called()
+    doris.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(RuntimeError("native reader failure"), id="reader-error"),
+        pytest.param(_NativeReadNotApplicableError("too late"), id="not-applicable-too-late"),
+    ],
+)
+def test_parquet_reader_errors_never_trigger_doris_fallback(monkeypatch, caplog, failure):
+    _mock_native_read_plan(monkeypatch)
+    monkeypatch.setattr("ray_doris._native.native_parquet_options", Mock(return_value={}))
+    parquet = Mock(side_effect=failure)
+    doris = Mock(side_effect=AssertionError("Doris fallback must not run"))
+    monkeypatch.setattr("ray_doris._native.ray.data.read_parquet", parquet)
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", doris)
+    with pytest.raises(type(failure)) as captured:
+        read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True)
+    assert captured.value is failure
+    parquet.assert_called_once()
+    doris.assert_not_called()
+    assert "auto_native_read=False" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -427,6 +495,55 @@ def metadata_connection(monkeypatch, responses):
     monkeypatch.setattr("ray_doris._external_metadata._rows", Mock(side_effect=responses))
     monkeypatch.setattr("ray_doris._external_metadata.validate_native_session", Mock())
     return connection
+
+
+def catalog_connection(monkeypatch, props):
+    return metadata_connection(
+        monkeypatch,
+        [
+            [{"build": "Doris version 4.0.6"}],
+            [
+                {"CatalogType": "hms", "Property": key, "Value": value}
+                for key, value in props.items()
+            ],
+            [{"COLUMN_NAME": "id", "COLUMN_TYPE": "INT", "IS_NULLABLE": "YES"}],
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "explicit_filesystem", [pytest.param(False, id="catalog"), pytest.param(True, id="explicit")]
+)
+def test_hdfs_catalog_auth_is_discovered_only_without_explicit_filesystem(
+    monkeypatch, explicit_filesystem
+):
+    monkeypatch.setenv("RAY_DORIS_HDFS_KEYTAB_ROOT", "/trusted")
+    props = {
+        "hive.metastore.uris": "thrift://hms:9083",
+        "hive.metastore.authentication.type": "simple",
+        "hadoop.security.authentication": "kerberos",
+        "hadoop.kerberos.principal": "reader@EXAMPLE.COM",
+        "hadoop.kerberos.keytab": "/trusted/reader.keytab",
+        "dfs.nameservices": "cluster",
+    }
+    catalog_connection(monkeypatch, props)
+    client = Mock()
+    client.table.return_value = HiveTable(
+        replace(storage(), location="hdfs://nn:8020/table"), (), (), "EXTERNAL_TABLE"
+    )
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", lambda *args: nullcontext(client))
+    options = NativeReadOptions(filesystem=pa.fs.LocalFileSystem() if explicit_filesystem else None)
+    result = discover_external(
+        DorisReadConfig(host="fe", table=parse_table("db.t"), user="u"), "hive", options
+    )
+    if explicit_filesystem:
+        assert result.hdfs_auth is None
+        assert not result.hdfs_conf
+    else:
+        assert result.hdfs_auth is not None
+        assert result.hdfs_auth.principal == "reader@EXAMPLE.COM"
+        assert result.hdfs_auth.keytab == "/trusted/reader.keytab"
+        assert result.hdfs_conf == (("dfs.nameservices", "cluster"),)
 
 
 @pytest.mark.parametrize("version", ["Doris version 3.1.4", "Doris version 4.0.7", "vendor build"])
@@ -554,7 +671,6 @@ def test_native_session_semantics(monkeypatch, use_names, timezone, timestamp, e
     "setting,value",
     [
         ("hive.metastore.type", "glue"),
-        ("hive.metastore.sasl.enabled", "true"),
         ("lower_case_meta_names", "true"),
         ("meta_names_mapping", "configured"),
     ],
@@ -576,6 +692,76 @@ def test_unsupported_catalog_configuration_rejected_before_hms(monkeypatch, sett
             NativeReadOptions(),
         )
     hms.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "props",
+    [
+        pytest.param({"hive.metastore.sasl.enabled": "true"}, id="explicit-sasl"),
+        pytest.param({"hive.metastore.authentication.type": "kerberos"}, id="explicit-kerberos"),
+        pytest.param(
+            {
+                "hive.metastore.authentication.type": "KERBEROS",
+                "hive.metastore.sasl.enabled": "false",
+            },
+            id="kerberos-sasl-false",
+        ),
+        pytest.param({"hadoop.security.authentication": "kerberos"}, id="hadoop-inheritance"),
+        pytest.param(
+            {
+                "hive.metastore.authentication.type": "none",
+                "hadoop.security.authentication": "kerberos",
+            },
+            id="none-inherits-hadoop",
+        ),
+        pytest.param({"hdfs.authentication.type": "kerberos"}, id="hdfs-inheritance"),
+        pytest.param({"hive.metastore.authentication.type": "unknown"}, id="unknown"),
+        pytest.param({"hive.conf.resources": "/doris/hive-site.xml"}, id="unavailable-config"),
+    ],
+)
+def test_hms_authentication_rejected_before_hms_connection(monkeypatch, props):
+    catalog_connection(monkeypatch, props)
+    hms = Mock(side_effect=AssertionError("unexpected HMS access"))
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", hms)
+    with pytest.raises(_NativeReadNotApplicableError, match="authentication or remote-name"):
+        discover_external(
+            DorisReadConfig(host="fe", table=parse_table("db.t"), user="u"),
+            "hive",
+            NativeReadOptions(),
+        )
+    hms.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "props",
+    [
+        pytest.param({}, id="default"),
+        pytest.param(
+            {
+                "hive.metastore.authentication.type": "SIMPLE",
+                "hadoop.security.authentication": "kerberos",
+            },
+            id="simple-hms-kerberos-hdfs",
+        ),
+        pytest.param(
+            {"hive.metastore.sasl.enabled": "false", "hive.conf.resources": "/doris/hive-site.xml"},
+            id="explicit-no-sasl",
+        ),
+    ],
+)
+def test_plain_hms_authentication_can_reach_hms(monkeypatch, props):
+    props = {"hive.metastore.uris": "thrift://hms:9083", **props}
+    catalog_connection(monkeypatch, props)
+    client = Mock()
+    client.table.return_value = HiveTable(storage(), (), (), "EXTERNAL_TABLE")
+    hms = Mock(return_value=nullcontext(client))
+    monkeypatch.setattr("ray_doris._external_metadata.open_hms", hms)
+    discover_external(
+        DorisReadConfig(host="fe", table=parse_table("db.t"), user="u"),
+        "hive",
+        NativeReadOptions(),
+    )
+    hms.assert_called_once()
 
 
 def test_stale_doris_partition_values_do_not_select_a_different_hms_scope(monkeypatch):
