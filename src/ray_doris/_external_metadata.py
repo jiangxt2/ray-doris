@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+from urllib.parse import urlparse
 
 import pyarrow as pa
 import pymysql
@@ -17,6 +19,7 @@ from ray_doris._errors import (
     DorisSchemaError,
     _NativeReadNotApplicableError,
 )
+from ray_doris._hdfs_auth import KEYTAB_ROOT_ENV, HdfsKerberosConfig, catalog_hdfs_kerberos
 from ray_doris._hms import HivePartition, HiveStorage, HiveTable, open_hms
 from ray_doris._metadata import ExternalMetadataReader, capability_missing, named_row
 from ray_doris._models import DorisReadConfig, NativeReadOptions
@@ -28,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _PARQUET_INPUT = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
 _PARQUET_SERDE = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+_HDFS_HA_PROVIDERS = {
+    "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider",
+    "org.apache.hadoop.hdfs.server.namenode.ha.RequestHedgingProxyProvider",
+    "org.apache.hadoop.hdfs.server.namenode.ha.IPFailoverProxyProvider",
+}
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,8 @@ class ExternalMetadata:
     partitions: Tuple[HivePartition, ...] = field(repr=False)
     partition_keys: Tuple[Tuple[str, str], ...]
     version: Tuple[int, ...]
+    hdfs_auth: Optional[HdfsKerberosConfig] = field(default=None, repr=False)
+    hdfs_conf: Tuple[Tuple[str, str], ...] = field(default=(), repr=False)
 
 
 def doris_build_version(comment: str) -> Tuple[int, ...]:
@@ -45,6 +55,26 @@ def doris_build_version(comment: str) -> Tuple[int, ...]:
     )
     # Diagnostic only: the actual metadata contracts determine eligibility.
     return tuple(int(part) for part in match.group(1).split(".")) if match else ()
+
+
+def _plain_hms_supported(props: Mapping[str, str]) -> bool:
+    """Check visible HMS settings before connecting without SASL."""
+    sasl = props.get("hive.metastore.sasl.enabled")
+    if sasl is not None and sasl.lower() != "false":
+        return False
+    # A Doris-side hive-site.xml can enable SASL without exposing its contents.
+    if sasl is None and props.get("hive.conf.resources", "").strip():
+        return False
+    auth = props.get("hive.metastore.authentication.type", "").strip().lower()
+    if auth == "simple":
+        return True
+    if auth not in ("", "none"):
+        return False
+    # Doris may inherit HMS authentication from its HDFS configuration.
+    return not any(
+        props.get(key, "").strip().lower() == "kerberos"
+        for key in ("hadoop.security.authentication", "hdfs.authentication.type")
+    )
 
 
 def _hive_type(value: str, name: str) -> pa.DataType:
@@ -182,7 +212,7 @@ def discover_external(
                 )
             if (
                 props.get("hive.metastore.type", "hms").lower() != "hms"
-                or props.get("hive.metastore.sasl.enabled", "false").lower() != "false"
+                or not _plain_hms_supported(props)
                 or props.get("lower_case_meta_names", "false").lower() != "false"
                 or props.get("meta_names_mapping", "")
             ):
@@ -289,8 +319,49 @@ def discover_external(
                 len(reader.origins),
                 ",".join(sorted(set(reader.origins.values()))),
             )
+            hdfs_auth = None
+            hdfs_conf: Tuple[Tuple[str, str], ...] = ()
+            if (
+                options.filesystem is None
+                and urlparse(table.storage.location).scheme == "hdfs"
+                and os.environ.get(KEYTAB_ROOT_ENV)
+            ):
+                hdfs_auth = catalog_hdfs_kerberos(props)
+                if hdfs_auth is not None:
+                    providers = {
+                        key: value
+                        for key, value in props.items()
+                        if key.startswith("dfs.client.failover.proxy.provider.")
+                    }
+                    if any(value not in _HDFS_HA_PROVIDERS for value in providers.values()):
+                        raise DorisPlanningError("unsupported HDFS failover provider")
+                    hdfs_conf = tuple(
+                        (key, value)
+                        for key, value in props.items()
+                        if key
+                        in (
+                            "dfs.nameservices",
+                            "dfs.namenode.kerberos.principal",
+                            "dfs.namenode.kerberos.principal.pattern",
+                            "dfs.data.transfer.protection",
+                            "hadoop.rpc.protection",
+                        )
+                        or key.startswith(
+                            (
+                                "dfs.ha.namenodes.",
+                                "dfs.namenode.rpc-address.",
+                                "dfs.client.failover.proxy.provider.",
+                            )
+                        )
+                    )
             return ExternalMetadata(
-                schema, table.storage, partitions, table.partition_keys, version
+                schema,
+                table.storage,
+                partitions,
+                table.partition_keys,
+                version,
+                hdfs_auth,
+                hdfs_conf,
             )
     except pymysql.MySQLError as exc:
         access_error = _mysql_access_error(

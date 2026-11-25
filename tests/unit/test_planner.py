@@ -16,6 +16,7 @@ from ray_doris._errors import (
     DorisConfigurationError,
     DorisPermissionError,
     DorisPlanningError,
+    DorisSchemaError,
 )
 from ray_doris._models import DorisInputSplit, DorisReadConfig
 from ray_doris._planner import DorisPlanner, QueryPlanClient, group_tablets
@@ -422,6 +423,35 @@ def test_describe_schema_uses_managed_connection_and_fetchmany(monkeypatch) -> N
     assert connect.call_args.kwargs["database"] == "db"
     assert connect.call_args.kwargs["connect_timeout"] == 2.5
     assert connect.call_args.kwargs["read_timeout"] == 30
+
+
+@pytest.mark.parametrize("display_type", ["text", "TEXT", " Text "])
+def test_internal_describe_text_alias_preserves_projection_and_nullability(
+    monkeypatch, display_type
+) -> None:
+    cursor = DescribeCursor()
+    cursor.batches = [[("id", "BIGINT", "NO"), ("event", display_type, "YES")], []]
+    connection = DescribeConnection(cursor)
+    monkeypatch.setattr(_planner.pymysql, "connect", Mock(return_value=connection))
+
+    schema = DorisPlanner(make_config(columns=("event", "id")))._describe_schema()
+
+    assert schema == pa.schema(
+        [pa.field("event", pa.string(), nullable=True), pa.field("id", pa.int64(), nullable=False)]
+    )
+    assert cursor.closed and connection.closed
+
+
+@pytest.mark.parametrize("display_type", ["TEXT(20)", "BITMAP"])
+def test_internal_describe_rejects_other_unsupported_types(monkeypatch, display_type) -> None:
+    cursor = DescribeCursor()
+    cursor.batches = [[("event", display_type, "YES")], []]
+    connection = DescribeConnection(cursor)
+    monkeypatch.setattr(_planner.pymysql, "connect", Mock(return_value=connection))
+
+    with pytest.raises(DorisSchemaError, match="unsupported Doris type"):
+        DorisPlanner(make_config())._describe_schema()
+    assert cursor.closed and connection.closed
 
 
 def test_describe_schema_resolves_environment_password(monkeypatch) -> None:

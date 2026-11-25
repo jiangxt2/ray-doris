@@ -62,7 +62,9 @@ The separate `ray-doris[iceberg]` extra enables the experimental Iceberg REST
 profile described in the same guide, including its tested versions and limits.
 Selection probes structured metadata and public reader capabilities instead of exact
 Doris/Ray patch versions; the documented test baselines describe validation coverage.
-Authentication, source-access and inconsistent-metadata errors remain errors.
+Native planning failures before invoking Ray's reader fall back to Doris, which
+still applies its own authentication and authorization. Errors after invoking
+Ray's reader propagate without fallback.
 The API accepts a table identifier; complete SQL statements are unsupported.
 Native reads do not guarantee a performance improvement.
 

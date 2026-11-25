@@ -55,9 +55,6 @@ on:
         required: true
         default: "3g"
         type: string
-  schedule:
-    - cron: "17 3 * * 0"
-
 permissions:
   contents: read
 

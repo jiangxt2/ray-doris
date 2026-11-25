@@ -38,7 +38,7 @@ def test_doris_scalar_type_mapping(doris_type: str, expected: pa.DataType) -> No
 
 @pytest.mark.parametrize(
     "doris_type",
-    ["ARRAY<INT>", "MAP<STRING,INT>", "STRUCT<a:INT>", "BITMAP", "DECIMALV3(77,0)"],
+    ["ARRAY<INT>", "MAP<STRING,INT>", "STRUCT<a:INT>", "BITMAP", "TEXT", "DECIMALV3(77,0)"],
 )
 def test_unsupported_or_invalid_types_fail_closed(doris_type: str) -> None:
     with pytest.raises(DorisSchemaError, match="value"):

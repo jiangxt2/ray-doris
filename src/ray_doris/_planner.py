@@ -389,7 +389,16 @@ class DorisPlanner:
                             if not batch:
                                 break
                             rows.extend(batch)
-                        columns: Sequence[DorisColumn] = parse_describe_rows(rows)
+                        columns: Sequence[DorisColumn] = tuple(
+                            DorisColumn(
+                                column.name,
+                                "STRING"
+                                if column.doris_type.strip().upper() == "TEXT"
+                                else column.doris_type,
+                                column.nullable,
+                            )
+                            for column in parse_describe_rows(rows)
+                        )
                     else:
                         columns = ExternalMetadataReader(cursor).columns(
                             self._config.table, self._config.catalog

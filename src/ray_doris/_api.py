@@ -11,6 +11,7 @@ from ray.data import Dataset
 
 from ray_doris._errors import (
     DorisConfigurationError,
+    _NativeCatalogTypeMismatchError,
     _NativeReadNotApplicableError,
     _PinnedNativeFallbackError,
 )
@@ -72,9 +73,10 @@ def read_doris(
 
     ``auto_native_read`` is disabled by default. When enabled, a compatible Hive
     table can use Ray's public Parquet reader with independent HMS/storage access
-    and immutable published files. Known unsupported cases retain Doris reading;
-    Hive authentication, storage and inconsistent-metadata errors remain visible.
-    This API accepts a table identifier, not a complete SQL statement.
+    and immutable published files. Unsupported cases and native planning failures
+    retain Doris reading, which applies its own authentication and authorization.
+    This API accepts a table identifier, not a complete SQL statement. A selected
+    native read does not replay through Doris once Ray's reader is called.
 
     The separate Iceberg REST profile fixes a snapshot for native reading and
     any eligible Doris fallback. Before its first block is yielded to Ray, an
@@ -122,6 +124,12 @@ def read_doris(
         flight_options=flight_options,
     )
     if auto_native_read:
+        native_read_started = False
+
+        def mark_native_read_started() -> None:
+            nonlocal native_read_started
+            native_read_started = True
+
         try:
             if catalog is None or catalog == "internal":
                 raise _NativeReadNotApplicableError("native reads require an external Hive catalog")
@@ -151,13 +159,48 @@ def read_doris(
                     concurrency=concurrency,
                     override_num_blocks=override_num_blocks,
                     ray_remote_args=ray_remote_args,
+                    on_read_start=mark_native_read_started,
                 ),
             )
-        except _PinnedNativeFallbackError as fallback:
-            datasource = datasource._with_snapshot(fallback.snapshot_id, fallback.schema)
-            logger.info("Doris read path=doris reason=iceberg_snapshot_pinned")
-        except _NativeReadNotApplicableError:
-            logger.info("Doris read path=doris reason=native_profile_not_applicable")
+        except _NativeCatalogTypeMismatchError:
+            if native_read_started:
+                logger.error(
+                    "Native read failed after starting Ray's reader; "
+                    "retry with auto_native_read=False to read through Doris"
+                )
+                raise
+            try:
+                iceberg = import_module("ray_doris._iceberg")
+                return cast(
+                    Dataset,
+                    iceberg.read_iceberg(
+                        datasource.config,
+                        catalog,
+                        native_options or NativeReadOptions(),
+                        concurrency=concurrency,
+                        override_num_blocks=override_num_blocks,
+                        ray_remote_args=ray_remote_args,
+                    ),
+                )
+            except _PinnedNativeFallbackError as fallback:
+                datasource = datasource._with_snapshot(fallback.snapshot_id, fallback.schema)
+                logger.info("Doris read path=doris reason=iceberg_snapshot_pinned")
+            except _NativeReadNotApplicableError:
+                logger.info("Doris read path=doris reason=native_profile_not_applicable")
+        except Exception as error:
+            if native_read_started:
+                logger.error(
+                    "Native read failed after starting Ray's reader; "
+                    "retry with auto_native_read=False to read through Doris"
+                )
+                raise
+            if isinstance(error, _NativeReadNotApplicableError):
+                logger.info("Doris read path=doris reason=native_profile_not_applicable")
+            else:
+                logger.warning(
+                    "Native read optimization failed during planning (%s); falling back to Doris",
+                    type(error).__name__,
+                )
     else:
         logger.info("Doris read path=doris reason=automatic native reads disabled")
     logger.debug(

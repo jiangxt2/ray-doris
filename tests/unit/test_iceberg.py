@@ -14,8 +14,10 @@ from ray_doris._errors import (
     DorisPermissionError,
     DorisPlanningError,
     DorisReadError,
+    _NativeCatalogTypeMismatchError,
     _NativeReadNotApplicableError,
     _PinnedNativeFallbackError,
+    _UnsafeIcebergFallbackError,
 )
 from ray_doris._iceberg import read_iceberg
 from ray_doris._models import DorisInputSplit, DorisReadConfig, NativeReadOptions
@@ -91,6 +93,23 @@ def invoke(env, **kwargs):
     )
 
 
+def test_catalog_mismatch_routes_from_hive_to_iceberg(monkeypatch):
+    monkeypatch.setattr("ray_doris._native.ensure_native_ray_version", Mock())
+    monkeypatch.setattr(
+        "ray_doris._native.discover_external",
+        Mock(side_effect=_NativeCatalogTypeMismatchError("Iceberg catalog")),
+    )
+    iceberg = Mock(return_value="iceberg dataset")
+    monkeypatch.setattr("ray_doris._iceberg.read_iceberg", iceberg)
+    fallback = Mock()
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", fallback)
+    assert read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True) == (
+        "iceberg dataset"
+    )
+    assert iceberg.call_args.args[1] == "lake"
+    fallback.assert_not_called()
+
+
 def test_iceberg_read_forwards_pinned_snapshot_and_uses_identity_guard(iceberg_environment):
     iceberg, _, table, _, public_read = iceberg_environment
     iceberg.ExternalMetadataReader.return_value.catalog.return_value["s3.region"] = "region-1"
@@ -119,8 +138,11 @@ def test_label_selector_uses_doris_before_snapshot_and_preserves_options(
     iceberg_environment, monkeypatch, labels
 ):
     iceberg, _, _, _, public_read = iceberg_environment
-    native = SimpleNamespace(read_native=read_iceberg)
-    monkeypatch.setattr("ray_doris._api.import_module", Mock(return_value=native))
+    native = SimpleNamespace(
+        read_native=Mock(side_effect=_NativeCatalogTypeMismatchError("Iceberg catalog"))
+    )
+    modules = {"ray_doris._native": native, "ray_doris._iceberg": iceberg}
+    monkeypatch.setattr("ray_doris._api.import_module", Mock(side_effect=modules.__getitem__))
     read = Mock(return_value="dataset")
     monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
     remote_args = {"label_selector": labels, "resources": {"storage_access": 1}}
@@ -329,8 +351,11 @@ def test_snapshot_fallback_propagates_and_does_not_retry(monkeypatch, fails):
 
     schema = pa.schema([("id", pa.int64())])
     native = Mock()
-    native.read_native.side_effect = _PinnedNativeFallbackError(123, schema)
-    monkeypatch.setattr("ray_doris._api.import_module", Mock(return_value=native))
+    native.read_native.side_effect = _NativeCatalogTypeMismatchError("Iceberg catalog")
+    iceberg = Mock()
+    iceberg.read_iceberg.side_effect = _PinnedNativeFallbackError(123, schema)
+    modules = {"ray_doris._native": native, "ray_doris._iceberg": iceberg}
+    monkeypatch.setattr("ray_doris._api.import_module", Mock(side_effect=modules.__getitem__))
     read = Mock(return_value="dataset")
     cursor = Mock()
     if fails:
@@ -356,6 +381,29 @@ def test_snapshot_fallback_propagates_and_does_not_retry(monkeypatch, fails):
     source = read.call_args.args[0]
     assert read.call_count == 1 and source.config.snapshot_id == 123
     assert not source.supports_projection_pushdown() and not source.supports_predicate_pushdown()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(_UnsafeIcebergFallbackError("identity changed"), id="identity"),
+        pytest.param(DorisPlanningError("snapshot schema differs"), id="schema"),
+        pytest.param(DorisPermissionError("metadata permission denied"), id="permission"),
+    ],
+)
+def test_iceberg_conflicts_do_not_use_hive_planning_fallback(monkeypatch, error):
+    native = SimpleNamespace(
+        read_native=Mock(side_effect=_NativeCatalogTypeMismatchError("Iceberg catalog"))
+    )
+    iceberg = SimpleNamespace(read_iceberg=Mock(side_effect=error))
+    modules = {"ray_doris._native": native, "ray_doris._iceberg": iceberg}
+    monkeypatch.setattr("ray_doris._api.import_module", Mock(side_effect=modules.__getitem__))
+    fallback = Mock()
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", fallback)
+    with pytest.raises(type(error)) as captured:
+        read_doris(host="fe", table="db.events", catalog="lake", auto_native_read=True)
+    assert captured.value is error
+    fallback.assert_not_called()
 
 
 def test_deferred_catalog_checks_table_identity_and_snapshot(monkeypatch):
