@@ -1,0 +1,305 @@
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pymysql
+import pytest
+
+from ray_doris._errors import DorisPlanningError, _NativeReadNotApplicableError
+from ray_doris._iceberg_metadata import (
+    doris_main_snapshot,
+    iceberg_catalog_defaults,
+    rest_catalog_properties,
+    validate_iceberg_catalog_defaults,
+    verify_doris_policy,
+    verify_legacy_snapshot_identity,
+    verify_table_identity,
+)
+from ray_doris._sql import parse_table
+
+
+@pytest.mark.parametrize("key", ["uri", "iceberg.rest.uri"])
+def test_rest_catalog_properties_accepts_versioned_uri_names(key):
+    assert rest_catalog_properties(
+        {"iceberg.catalog.type": "REST", key: "https://catalog/iceberg", "warehouse": "prod"}
+    ) == {"type": "rest", "uri": "https://catalog/iceberg", "warehouse": "prod"}
+
+
+@pytest.mark.parametrize(
+    "uri", ["https://user:secret@catalog", "file:///tmp", "http://x:bad", "https://x/?a=b"]
+)
+def test_rest_uri_rejects_malformed_or_secret_bearing_values(uri):
+    with pytest.raises(DorisPlanningError):
+        rest_catalog_properties({"iceberg.catalog.type": "rest", "uri": uri})
+
+
+def test_rest_metadata_distinguishes_nonapplicability_and_contradiction():
+    with pytest.raises(_NativeReadNotApplicableError):
+        rest_catalog_properties({"iceberg.catalog.type": "hms", "uri": "https://a"})
+    with pytest.raises(_NativeReadNotApplicableError):
+        rest_catalog_properties({"iceberg.catalog.type": "rest"})
+    with pytest.raises(DorisPlanningError):
+        rest_catalog_properties(
+            {"iceberg.catalog.type": "rest", "uri": "https://a", "iceberg.rest.uri": "https://b"}
+        )
+
+
+def test_nonsecret_defaults_use_aliases_without_copying_credentials():
+    properties = {
+        "AWS_ENDPOINT": "https://s3.example",
+        "s3.endpoint": "https://s3.example",
+        "AWS_REGION": "region-1",
+        "iceberg.rest.oauth2.server-uri": "https://auth.example/token",
+        "iceberg.rest.oauth2.scope": "catalog:read",
+        "iceberg.rest.oauth2.credential": "doris-secret",
+        "s3.secret_key": "storage-secret",
+        "use_path_style": "true",
+    }
+    defaults = iceberg_catalog_defaults(properties, {"credential": "ray-secret"})
+    assert defaults == {
+        "s3.endpoint": "https://s3.example",
+        "s3.region": "region-1",
+        "oauth2-server-uri": "https://auth.example/token",
+        "scope": "catalog:read",
+    }
+
+
+def test_nonsecret_defaults_preserve_explicit_settings_and_nested_oauth():
+    properties = {
+        "s3.endpoint": "https://different.example",
+        "AWS_ENDPOINT": "https://also-different.example",
+        "iceberg.rest.oauth2.server-uri": "https://auth.example/token",
+        "iceberg.rest.oauth2.scope": "catalog:read",
+    }
+    configured = {
+        "s3.endpoint": "https://explicit.example",
+        "auth": {
+            "type": "oauth2",
+            "oauth2": {"token_url": "https://explicit.example/token", "client_secret": "secret"},
+        },
+    }
+    defaults = iceberg_catalog_defaults(properties, configured)
+    assert defaults == {"auth": {"type": "oauth2", "oauth2": {"scope": "catalog:read"}}}
+    configured["auth"]["oauth2"].pop("token_url")
+    assert iceberg_catalog_defaults(properties, configured) == {
+        "auth": {
+            "type": "oauth2",
+            "oauth2": {"token_url": "https://auth.example/token", "scope": "catalog:read"},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "properties,configured",
+    [
+        ({"s3.endpoint": "https://a", "AWS_ENDPOINT": "https://b"}, {}),
+        ({"s3.endpoint": "https://user:secret@s3.example"}, {}),
+        ({"s3.endpoint": "https://s3.example/?token=secret"}, {}),
+        ({"s3.region": "region\nsecret"}, {}),
+        ({"iceberg.rest.oauth2.scope": "a\nsecret"}, {"credential": "x"}),
+    ],
+)
+def test_invalid_or_conflicting_defaults_are_rejected_without_values(properties, configured):
+    with pytest.raises(DorisPlanningError) as error:
+        iceberg_catalog_defaults(properties, configured)
+    assert "secret" not in str(error.value)
+
+
+def test_missing_and_masked_defaults_are_not_forwarded():
+    assert iceberg_catalog_defaults({"s3.endpoint": "*XXX", "s3.region": ""}, {}) == {}
+    assert iceberg_catalog_defaults({"iceberg.rest.oauth2.scope": "x"}, {"token": "token"}) == {}
+    assert (
+        iceberg_catalog_defaults({"s3.region": "doris-region"}, {"client.region": "explicit"}) == {}
+    )
+
+
+def test_deferred_defaults_detect_conflicts_without_exposing_values():
+    defaults = {
+        "s3.endpoint": "https://s3.example",
+        "auth": {"type": "oauth2", "oauth2": {"scope": "catalog:read"}},
+    }
+    validate_iceberg_catalog_defaults(
+        defaults, {"auth": {"type": "oauth2", "oauth2": {"client_secret": "secret"}}}
+    )
+    validate_iceberg_catalog_defaults(defaults, {"s3.endpoint": "https://s3.example"})
+    for configured in (
+        {"s3.endpoint": "https://secret.example"},
+        {"auth": {"type": "basic"}},
+        {"auth": {"type": "oauth2", "oauth2": {"scope": "different-secret"}}},
+    ):
+        with pytest.raises(DorisPlanningError) as error:
+            validate_iceberg_catalog_defaults(defaults, configured)
+        assert "secret" not in str(error.value)
+    with pytest.raises(DorisPlanningError, match="configuration changed"):
+        validate_iceberg_catalog_defaults({"s3.region": "region-1"}, {"client.region": "region-2"})
+    with pytest.raises(DorisPlanningError, match="configuration changed"):
+        validate_iceberg_catalog_defaults({"scope": "read"}, {"auth": {"type": "basic"}})
+
+
+def test_main_snapshot_is_selected_and_missing_interface_is_classified_narrowly():
+    query = Mock(
+        return_value=[
+            {"name": "tag", "type": "TAG", "snapshot_id": 1},
+            {"name": "main", "type": "BRANCH", "snapshot_id": 2},
+        ]
+    )
+    assert doris_main_snapshot(None, query, "lake", parse_table("db.events")) == 2
+    query.side_effect = pymysql.err.OperationalError(1105, "Table [events$refs] does not exist")
+    assert doris_main_snapshot(None, query, "lake", parse_table("db.events")) is None
+    for message in ("Table [events] does not exist", "permission denied for events$refs"):
+        query.side_effect = pymysql.err.OperationalError(1105, message)
+        with pytest.raises(pymysql.MySQLError):
+            doris_main_snapshot(None, query, "lake", parse_table("db.events"))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"name": "tag", "type": "TAG", "snapshot_id": 1}],
+        [{"name": "main", "type": "TAG", "snapshot_id": 2}],
+        [{"name": "main", "type": "BRANCH", "snapshot_id": True}],
+    ],
+)
+def test_invalid_ref_metadata_is_never_treated_as_absent(rows):
+    with pytest.raises(DorisPlanningError):
+        doris_main_snapshot(None, Mock(return_value=rows), "lake", parse_table("db.events"))
+
+
+def test_empty_refs_retains_doris():
+    with pytest.raises(_NativeReadNotApplicableError):
+        doris_main_snapshot(None, Mock(return_value=[]), "lake", parse_table("db.events"))
+
+
+def test_table_identity_requires_shared_metadata_and_matching_uuid(monkeypatch):
+    serializer = Mock()
+    serializer.FromInputFile.table_metadata.return_value.table_uuid = "uuid"
+    monkeypatch.setattr("ray_doris._iceberg_metadata.import_module", Mock(return_value=serializer))
+    table = Mock()
+    table.metadata_location = "new.json"
+    table.metadata.table_uuid = "uuid"
+    table.metadata.metadata_log = [SimpleNamespace(metadata_file="old.json")]
+    query = Mock(return_value=[{"file": "old.json"}])
+    assert verify_table_identity(None, query, "lake", parse_table("db.events"), table) is True
+    serializer.FromInputFile.table_metadata.return_value.table_uuid = "different"
+    with pytest.raises(DorisPlanningError):
+        verify_table_identity(None, query, "lake", parse_table("db.events"), table)
+    query.return_value = [{"file": "unrelated.json"}]
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify_table_identity(None, query, "lake", parse_table("db.events"), table)
+    query.side_effect = pymysql.err.OperationalError(
+        1105, "Table [events$metadata_log_entries] does not exist"
+    )
+    assert verify_table_identity(None, query, "lake", parse_table("db.events"), table) is False
+    query.side_effect = pymysql.err.OperationalError(1142, "access denied")
+    with pytest.raises(pymysql.MySQLError):
+        verify_table_identity(None, query, "lake", parse_table("db.events"), table)
+
+
+def _snapshot(snapshot_id, parent=None, manifest=None):
+    return SimpleNamespace(
+        snapshot_id=snapshot_id, parent_snapshot_id=parent, manifest_list=manifest
+    )
+
+
+@pytest.fixture
+def legacy_identity():
+    current = _snapshot(3, 2, "s3://bucket/s3")
+    table = Mock()
+    table.snapshot_by_id.side_effect = lambda snapshot_id: {
+        2: _snapshot(2, 1, "s3://bucket/s2"),
+        1: _snapshot(1, None, "old"),
+    }.get(snapshot_id)
+    query = Mock()
+
+    def verify():
+        return verify_legacy_snapshot_identity(
+            None, query, "lake", parse_table("db.events"), table, current
+        )
+
+    return current, table, query, verify
+
+
+def test_legacy_identity_matches_selected_snapshot_or_ancestor(legacy_identity):
+    _, table, query, verify = legacy_identity
+    query.return_value = [{"snapshot_id": 3, "manifest_list": "s3://bucket/s3"}]
+    assert verify() == "snapshot"
+    assert query.call_args.args[2] == ("lake.db.events",)
+    query.return_value = [{"snapshot_id": 2, "manifest_list": "s3://bucket/s2"}]
+    assert verify() == "ancestor"
+    table.snapshot_by_id.assert_called_with(2)
+
+
+@pytest.mark.parametrize("matched_id", [3, 2])
+def test_legacy_identity_rejects_conflicts_before_older_match(legacy_identity, matched_id):
+    _, _, query, verify = legacy_identity
+    query.return_value = [
+        {"snapshot_id": matched_id, "manifest_list": "different"},
+        {"snapshot_id": 1, "manifest_list": "old"},
+    ]
+    with pytest.raises(DorisPlanningError, match="manifests disagree"):
+        verify()
+
+
+@pytest.mark.parametrize(
+    "rest_manifest,doris_manifest", [(None, None), ("", ""), ("  ", "  "), ("current", None)]
+)
+def test_legacy_identity_rejects_missing_manifests(legacy_identity, rest_manifest, doris_manifest):
+    current, table, query, verify = legacy_identity
+    current.manifest_list = rest_manifest
+    query.return_value = [
+        {"snapshot_id": 3, "manifest_list": doris_manifest},
+        {"snapshot_id": 2, "manifest_list": "s3://bucket/s2"},
+    ]
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify()
+    table.snapshot_by_id.assert_not_called()
+
+
+def test_legacy_identity_rejects_missing_parent_cycles_and_invalid_rows(legacy_identity):
+    current, table, query, verify = legacy_identity
+    query.return_value = [{"snapshot_id": 1, "manifest_list": "old"}]
+    table.snapshot_by_id.side_effect = None
+    table.snapshot_by_id.return_value = None
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify()
+    table.snapshot_by_id.return_value = current
+    with pytest.raises(DorisPlanningError, match="ancestry"):
+        verify()
+    query.return_value = [
+        {"snapshot_id": 1, "manifest_list": "a"},
+        {"snapshot_id": 1, "manifest_list": "b"},
+    ]
+    with pytest.raises(DorisPlanningError, match="metadata"):
+        verify()
+
+
+def test_legacy_identity_only_falls_back_for_absent_metadata_function(legacy_identity):
+    _, _, query, verify = legacy_identity
+    query.side_effect = pymysql.err.OperationalError(1105, "Can not found function 'iceberg_meta'")
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify()
+    for error in (
+        pymysql.err.OperationalError(1142, "SELECT denied"),
+        pymysql.err.OperationalError(1105, "iceberg_meta permission denied"),
+        pymysql.err.OperationalError(2003, "connection failure"),
+    ):
+        query.side_effect = error
+        with pytest.raises(pymysql.MySQLError):
+            verify()
+
+
+def test_policy_check_requires_visible_builtin_policy_and_authorizes_projection():
+    settings = [{"Key": "access_controller_type", "Value": "default"}]
+    query = Mock(side_effect=[settings, [], []])
+    verify_doris_policy(None, query, {}, "lake", parse_table("db.events"), ("id",))
+    assert query.call_args_list[2].args[1] == "SELECT `id` FROM `lake`.`db`.`events` LIMIT 0"
+    query = Mock(
+        side_effect=[settings, [{"CatalogName": "lake", "DbName": "db", "TableName": "events"}]]
+    )
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify_doris_policy(None, query, {}, "lake", parse_table("db.events"), None)
+    query = Mock(side_effect=pymysql.err.OperationalError(1227, "access denied"))
+    with pytest.raises(_NativeReadNotApplicableError):
+        verify_doris_policy(None, query, {}, "lake", parse_table("db.events"), None)
+    query = Mock(side_effect=pymysql.err.OperationalError(2003, "connection failure"))
+    with pytest.raises(pymysql.MySQLError):
+        verify_doris_policy(None, query, {}, "lake", parse_table("db.events"), None)

@@ -16,7 +16,7 @@ from ray_doris import (
     NativeReadOptions,
     read_doris,
 )
-from ray_doris._errors import _NativeReadNotApplicableError
+from ray_doris._errors import _NativeCatalogTypeMismatchError, _NativeReadNotApplicableError
 from ray_doris._external_metadata import (
     discover_external,
     doris_build_version,
@@ -390,6 +390,7 @@ def test_parquet_options_failure_falls_back_before_reader_is_called(monkeypatch)
     [
         pytest.param(RuntimeError("native reader failure"), id="reader-error"),
         pytest.param(_NativeReadNotApplicableError("too late"), id="not-applicable-too-late"),
+        pytest.param(_NativeCatalogTypeMismatchError("too late"), id="catalog-mismatch-too-late"),
     ],
 )
 def test_parquet_reader_errors_never_trigger_doris_fallback(monkeypatch, caplog, failure):

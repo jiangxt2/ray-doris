@@ -99,10 +99,20 @@ def build_select_sql(
     predicate: Optional[str],
     tablet_ids: Optional[Sequence[int]],
     catalog: Optional[str] = None,
+    snapshot_id: Optional[int] = None,
 ) -> str:
     """Build a Doris SELECT with TABLET placed before WHERE."""
     projection = "*" if columns is None else ", ".join(quote_identifier(c) for c in columns)
     sql = f"SELECT {projection} FROM {render_table(table, catalog)}"
+    if snapshot_id is not None:
+        if (
+            catalog is None
+            or tablet_ids is not None
+            or isinstance(snapshot_id, bool)
+            or not (isinstance(snapshot_id, int) and 0 < snapshot_id <= _MAX_DORIS_ROW_LIMIT)
+        ):
+            raise DorisConfigurationError("invalid external table snapshot")
+        sql += f" FOR VERSION AS OF {snapshot_id}"
     if tablet_ids is not None:
         if catalog is not None:
             raise DorisConfigurationError("external catalog reads do not support tablet hints")
@@ -146,10 +156,17 @@ def build_read_sql(
     parameters: Tuple[object, ...] = ()
     if predicate is None:
         sql = build_select_sql(
-            config.table, config.columns, config.filter, tablet_ids, config.catalog
+            config.table,
+            config.columns,
+            config.filter,
+            tablet_ids,
+            config.catalog,
+            config.snapshot_id,
         )
     else:
-        sql = build_select_sql(config.table, config.columns, None, tablet_ids, config.catalog)
+        sql = build_select_sql(
+            config.table, config.columns, None, tablet_ids, config.catalog, config.snapshot_id
+        )
         native = predicate.mysql_sql if bind else predicate.literal_sql
         if config.filter is not None:
             trusted = normalize_filter(config.filter)

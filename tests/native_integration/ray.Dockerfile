@@ -20,7 +20,7 @@ RUN mkdir -p /opt/native-hdfs && \
     python -c "import ctypes; ctypes.CDLL('/opt/native-hdfs/libhdfs.so')"
 WORKDIR /workspace
 COPY pyproject.toml ./
-RUN python -c "import tomllib; p=tomllib.load(open('pyproject.toml','rb')); print('\n'.join(p['project']['dependencies'] + sum((p['project']['optional-dependencies'][g] for g in ['native','test','flight']), []) + p['build-system']['requires']))" > /tmp/native-requirements.txt && \
+RUN python -c "import tomllib; p=tomllib.load(open('pyproject.toml','rb')); print('\n'.join(p['project']['dependencies'] + sum((p['project']['optional-dependencies'][g] for g in ['native','test','flight','iceberg']), []) + p['build-system']['requires']))" > /tmp/native-requirements.txt && \
     pip install -r /tmp/native-requirements.txt 'ray[data]==2.59.0' 'pyarrow==26.0.0'
 COPY README.md LICENSE NOTICE ./
 COPY src ./src

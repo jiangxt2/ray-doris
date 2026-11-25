@@ -56,6 +56,12 @@ The native Parquet local-file contracts additionally pass on Ray 2.49.2 V1 and
 2.58.0 V1/V2. This verifies public reader adaptation, projection and partition
 synthesis; HDFS/S3 distributed integration remains on Ray 2.59.0.
 
+The separately installed `iceberg` extra is an experimental REST catalog profile.
+Its tested Doris builds, storage cases and unverified boundaries are listed in
+the native read guide; the Hive integration matrix above does not certify other
+Iceberg deployments. PyIceberg 0.10 has a narrower Python 3.9 patch-level
+requirement than the base package.
+
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
 
 - Internal-catalog table reads through MySQL and explicit Flight SQL.

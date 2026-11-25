@@ -9,7 +9,12 @@ from typing import Any, Mapping, Optional, Sequence, cast
 import ray.data
 from ray.data import Dataset
 
-from ray_doris._errors import DorisConfigurationError, _NativeReadNotApplicableError
+from ray_doris._errors import (
+    DorisConfigurationError,
+    _NativeCatalogTypeMismatchError,
+    _NativeReadNotApplicableError,
+    _PinnedNativeFallbackError,
+)
 from ray_doris._models import (
     FlightScheme,
     HttpScheme,
@@ -64,7 +69,7 @@ def read_doris(
     override_num_blocks: Optional[int] = None,
     ray_remote_args: Optional[Mapping[str, Any]] = None,
 ) -> Dataset:
-    """Read a table through Doris, optionally selecting native Hive Parquet reads.
+    """Read a table through Doris, optionally selecting native shared-storage reads.
 
     ``auto_native_read`` is disabled by default. When enabled, a compatible Hive
     table can use Ray's public Parquet reader with independent HMS/storage access
@@ -73,9 +78,20 @@ def read_doris(
     This API accepts a table identifier, not a complete SQL statement. A selected
     native read does not replay through Doris once Ray's reader is called.
 
-    See {doc}`the native Hive Parquet guide </user-guide/native-read>` for
-    per-file footer overhead, version limits and independent source authorization.
+    The separate Iceberg REST profile fixes a snapshot for native reading and
+    any eligible Doris fallback. Before its first block is yielded to Ray, an
+    Iceberg native read failure can select Doris; after that block it fails
+    without replay. A coordinator failure itself may still fail the task.
+    See {doc}`the native read guide
+    </user-guide/native-read>` for version limits and independent source authorization.
     Native reads do not execute Doris row filters or column masking.
+
+    On Doris versions without table identity metadata, Iceberg snapshot or ancestor
+    manifest evidence can enable native reading but does not verify Doris' table UUID.
+    The deployment must ensure both identities resolve to the same authorized table.
+    A warning reports the weaker evidence and possible cache differences. Once a
+    snapshot is selected, Doris fallback must read it or fail; an unpinned Doris
+    query may return different data.
     """
     if not isinstance(auto_native_read, bool):
         raise DorisConfigurationError("auto_native_read must be a boolean")
@@ -146,6 +162,31 @@ def read_doris(
                     on_read_start=mark_native_read_started,
                 ),
             )
+        except _NativeCatalogTypeMismatchError:
+            if native_read_started:
+                logger.error(
+                    "Native read failed after starting Ray's reader; "
+                    "retry with auto_native_read=False to read through Doris"
+                )
+                raise
+            try:
+                iceberg = import_module("ray_doris._iceberg")
+                return cast(
+                    Dataset,
+                    iceberg.read_iceberg(
+                        datasource.config,
+                        catalog,
+                        native_options or NativeReadOptions(),
+                        concurrency=concurrency,
+                        override_num_blocks=override_num_blocks,
+                        ray_remote_args=ray_remote_args,
+                    ),
+                )
+            except _PinnedNativeFallbackError as fallback:
+                datasource = datasource._with_snapshot(fallback.snapshot_id, fallback.schema)
+                logger.info("Doris read path=doris reason=iceberg_snapshot_pinned")
+            except _NativeReadNotApplicableError:
+                logger.info("Doris read path=doris reason=native_profile_not_applicable")
         except Exception as error:
             if native_read_started:
                 logger.error(
