@@ -102,7 +102,7 @@ Size the dedicated host for the requested container limits; the functional profi
 at 3 GiB by default; the 2 GiB profile can leave insufficient allocator headroom after BE
 startup. The Ray head has a 4 GiB limit and each Ray node uses a 128 MiB object store.
 
-The slow workflow supports manual, reusable, and scheduled full runs. It is not a required check in
+The slow workflow supports manual and reusable runs. It is not a required check in
 the default CI workflow. A successful full run emits a schema-versioned `slow-result.json`; the
 enterprise release profile requires exactly one non-expired artifact from a successful workflow run
 on the exact release SHA and revalidates its workflow run ID. The standard release profile may defer
