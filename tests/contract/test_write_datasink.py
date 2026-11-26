@@ -18,7 +18,6 @@ from ray_doris import (  # noqa: E402
     DorisTable,
     DorisWriteOptions,
 )
-from ray_doris._compat import datasink_compatibility  # noqa: E402
 
 pytestmark = pytest.mark.contract
 
@@ -88,9 +87,8 @@ def test_public_write_datasink_preserves_single_task_summary_and_ray_accounting(
     sink = _RecordingSink(min_rows=2)
     dataset = ray.data.from_arrow(pa.table({"id": pa.array([1, 2, 3, 4, 5])}))
     dataset.write_datasink(sink, ray_remote_args={"max_retries": 0})
-    compatibility = datasink_compatibility()
     assert len(sink.starts) == 1
-    assert (sink.starts[0] is not None) == compatibility.on_write_start_has_schema
+    assert sink.starts[0] is not None
     assert sink.completed is not None
     assert sink.completed.num_rows == 5
     assert sink.completed.size_bytes >= 0
@@ -103,10 +101,6 @@ def test_public_write_datasink_empty_dataset_skips_non_file_start_on_new_ray() -
     sink = _RecordingSink(min_rows=2)
     empty = ray.data.range(0)
     empty.write_datasink(sink, ray_remote_args={"max_retries": 0})
-    compatibility = datasink_compatibility()
-    if compatibility.on_write_start_on_empty_dataset:
-        assert sink.starts == [None]
-    else:
-        assert sink.starts == []
+    assert sink.starts == []
     assert sink.completed is not None
     assert sink.completed.write_returns == []

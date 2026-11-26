@@ -5,8 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Literal, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import pyarrow as pa
 import ray
@@ -185,15 +184,6 @@ def make_read_task(
     return ReadTask(**kwargs)
 
 
-@dataclass(frozen=True)
-class DatasinkCompatibility:
-    """Public Ray Datasink lifecycle facts for one supported Ray generation."""
-
-    on_write_start_has_schema: bool
-    on_write_start_on_empty_dataset: bool
-    schema_source: Literal["first_input_bundle", "worker_blocks"]
-
-
 def _parse_final_release(version: str) -> tuple[int, int, int]:
     match = _FINAL_RELEASE.fullmatch(version)
     if match is None:
@@ -207,26 +197,15 @@ def supports_native_predicates() -> bool:
     return (2, 57, 0) <= _parse_final_release(_RAY_VERSION) < (2, 60, 0)
 
 
-def datasink_compatibility(version: Optional[str] = None) -> DatasinkCompatibility:
-    """Return the explicit Datasink callback contract for a supported Ray release."""
-    ensure_supported_ray_version()
-    release = _parse_final_release(_RAY_VERSION if version is None else version)
-    if release < (2, 53, 0):
-        return DatasinkCompatibility(False, True, "worker_blocks")
-    return DatasinkCompatibility(True, False, "first_input_bundle")
-
-
-def validate_datasink_signature() -> DatasinkCompatibility:
+def validate_datasink_signature() -> None:
     """Validate the installed public Datasink signature against the release matrix."""
-    contract = datasink_compatibility()
+    ensure_supported_ray_version()
     parameters = inspect.signature(Datasink.on_write_start).parameters
-    has_schema = "schema" in parameters
-    if has_schema != contract.on_write_start_has_schema:
+    if "schema" not in parameters:
         raise DorisConfigurationError(
             "installed Ray Datasink.on_write_start signature does not match the supported "
             f"Ray {_RAY_VERSION} compatibility contract"
         )
-    return contract
 
 
 def prepare_write_remote_args(
