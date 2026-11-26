@@ -7,14 +7,12 @@ name = "ray-doris"
 version = "1.3"
 description = "Community-maintained Apache Doris connector for Ray Data"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "jiangxt2" }]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -22,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
   "PyMySQL>=1.1.1,<2",
-  "ray[data]>=2.49.2,<2.60",
+  "ray[data]>=2.57.0,<2.60",
   "typing-extensions>=4.12,<5",
 ]
 

@@ -62,12 +62,12 @@ their existing planning behavior. Ray output blocks do not multiply that externa
 
 Eligibility is determined by metadata and reader capabilities, without an exact
 Doris or Ray patch-version whitelist. The package's Ray installation window
-remains `>=2.49.2,<2.60`. The real Doris integration targets are 4.0.6 and
+remains `>=2.57.0,<2.60`. The real Doris integration targets are 4.0.6 and
 3.0.6.2 with Python 3.12 and Ray 2.59.0. These are test baselines, not minimum
 Doris releases. A different Doris release can qualify when the same contracts
 are available; this does not certify every deployment or authentication provider.
 See `tests/it-ledger.md` for actual validation results.
-Real local-file reader contracts also cover Ray 2.49.2 V1 and Ray 2.58.0 V1/V2;
+Real local-file reader contracts also cover Ray 2.58.0 V1/V2;
 these checks do not extend the HDFS/S3 cluster matrix to those Ray releases.
 
 - Native selection requires Hive Parquet without transactions, with standard
@@ -195,8 +195,7 @@ also covers delete manifests that might not affect the requested data. Manifest
 inspection failures use the pinned Doris query. Other unsupported file formats retain a
 snapshot-pinned Doris query when possible; this feature does not write or delete
 Iceberg data.
-Earlier real-service checks, before the streaming coordinator change, covered S3 and HDFS on Doris `4.0.6-rc02`, S3 on
-`4.1.5-release`, and S3 snapshot and cached-ancestor native reads on
+Earlier real-service checks, before the streaming coordinator change, covered S3 and HDFS on Doris `4.0.6-rc02`, and S3 snapshot and cached-ancestor native reads on
 `3.0.6.2-rc01`. The 3.0.6.2 native path has not been verified with HDFS or
 schema evolution.
 A 4.0.6 check also
@@ -204,9 +203,7 @@ covered static S3 credential vending, table replacement, snapshot expiration
 and a failed native read. Targeted checks cover worker retry at a pinned snapshot,
 row-policy fallback, an empty table, a simulated unsupported delete falling back
 to Doris at the same snapshot, and an explicit error on incompatible historical
-schema. A 4.1.5 position-delete check verified the delete manifest, pinned Doris
-fallback and results. It did not test a position delete with the same sequence
-number as its data file. These checks do not establish equality-delete or
+schema. These checks do not establish real position-delete, equality-delete, or
 deletion-vector coverage, STS credential refresh, or Kerberos support.
 
 Native timestamps require an effective UTC Doris session; other session time zones

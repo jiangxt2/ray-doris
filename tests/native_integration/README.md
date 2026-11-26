@@ -93,7 +93,7 @@ native matrix is functional evidence, not a performance or release certification
 ## Iceberg REST checks
 
 The `--iceberg` option adds the isolated REST catalog, PostgreSQL and Iceberg
-cases. Use `--versions 4.0.6 3.0.6.2 4.1.5` for the planned matrix. The runner
+cases. Use `--versions 4.0.6 3.0.6.2` for the planned matrix. The runner
 records the image IDs, build versions and cleanup outcome; it does not pull base
 images. The static S3 credential provider is a separate test service. It does not
 validate expiring credentials or Kerberos.
