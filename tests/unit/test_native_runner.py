@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import runpy
 import signal
 import subprocess
@@ -12,6 +13,30 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 RUNNER = Path(__file__).resolve().parents[1] / "native_integration/run.py"
+
+
+def test_removed_doris_version_is_rejected_before_docker(tmp_path):
+    (tmp_path / "SOURCE.json").write_text("{}")
+    logs = tmp_path / "logs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--versions",
+            "4.1.5",
+            "--hadoop-source",
+            str(tmp_path),
+            "--logs",
+            str(logs),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PATH": ""},
+    )
+    assert result.returncode == 2
+    assert "only the approved cached versions are accepted" in result.stderr
+    assert not logs.exists()
 
 
 @pytest.mark.parametrize("outcome", ["success", "exception", "sigterm"])

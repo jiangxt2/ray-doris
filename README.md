@@ -10,9 +10,7 @@ The tested compatibility window is:
 
 | Python | Ray | Verification |
 |---|---|---|
-| 3.9 | 2.49.2 | Legacy compatibility; documented ReadTask and public Datasink contracts |
-| 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
-| 3.11 | 2.59.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
+| 3.11 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
 | 3.12 | 2.58.0 | Unit and documented/public contracts for the previous minor |
 | 3.12 | 2.59.0 | Unit, documented/public contracts, and Doris 4.0.6 required IT |
 | 3.13 | 2.59.0 | Unit, documented/public contracts, package installation, and import tests |
@@ -68,11 +66,9 @@ Ray's reader propagate without fallback.
 The API accepts a table identifier; complete SQL statements are unsupported.
 Native reads do not guarantee a performance improvement.
 
-Flight SQL requires Python 3.10 or newer because current ADBC Flight SQL releases no longer support
-Python 3.9. Python 3.9 reached end of life on October 31, 2025. It remains a legacy
-compatibility target for the default MySQL transport, not a stable or production profile.
+The package requires Python 3.11 or newer. Flight SQL requires the optional Flight extra.
 
-The package accepts `ray[data]>=2.49.2,<2.60`. The runtime guard supports final releases in that
+The package accepts `ray[data]>=2.57.0,<2.60`. The runtime guard supports final releases in that
 window and local rebuild suffixes such as `2.59.0+vendor.1`; release candidates, development
 builds, and post-release builds aren't supported. Flight SQL and `transport="auto"` are
 experimental; the MySQL protocol is the only production-candidate transport. Datasource
@@ -426,7 +422,7 @@ targeted profile without the worker/BE failure scenarios:
 RAY_DORIS_SLOW_PROFILE=core tests/slow_integration/run.sh
 ```
 
-The script reuses the digest-pinned Ray 2.59.0 base or pulls it through the domestic mirror,
+The script reuses the digest-pinned Ray 2.59.0 base or pulls it from Docker Hub,
 then verifies and creates the local base tag used by the Dockerfile. You can select another
 trusted local image with `RAY_BASE_IMAGE`; the build verifies `ray.__version__` before installing
 this project:

@@ -31,7 +31,7 @@ be_image="ray-doris-it-be:${RAY_DORIS_SLOW_IMAGE_TAG}"
 export RAY_DORIS_RAY_IMAGE=${ray_image}
 export RAY_DORIS_FE_IMAGE=${fe_image}
 export RAY_DORIS_BE_IMAGE=${be_image}
-flight_proxy_image=${RAY_DORIS_FLIGHT_PROXY_IMAGE:-docker.m.daocloud.io/library/haproxy:3.4.7-alpine}
+flight_proxy_image=${RAY_DORIS_FLIGHT_PROXY_IMAGE:-haproxy:3.4.7-alpine}
 export RAY_DORIS_FLIGHT_PROXY_IMAGE=${flight_proxy_image}
 
 compose=(
@@ -58,7 +58,7 @@ fi
 mkdir -p "${log_dir}"
 
 if [[ -z "${RAY_BASE_IMAGE:-}" ]]; then
-  ray_base_source="docker.m.daocloud.io/rayproject/ray@sha256:0ffca209fb4c984d648db550b8dbe7879bdba3bbb5d96ee5894843cf6ac12eb5"
+  ray_base_source="rayproject/ray@sha256:0ffca209fb4c984d648db550b8dbe7879bdba3bbb5d96ee5894843cf6ac12eb5"
   if ! docker_cmd image inspect "${ray_base_source}" >/dev/null 2>&1; then
     docker_cmd pull "${ray_base_source}" 2>&1 | tee -a "${compose_log}"
   fi
@@ -79,9 +79,7 @@ for component in fe be; do
   cached_base="apache/doris:${component}-4.0.6"
   local_base="ray-doris-${component}-base:4.0.6"
   if ! docker_cmd image inspect "${cached_base}" >/dev/null 2>&1; then
-    mirror_base="docker.m.daocloud.io/${cached_base}"
-    docker_cmd pull "${mirror_base}" 2>&1 | tee -a "${compose_log}"
-    docker_cmd tag "${mirror_base}" "${cached_base}"
+    docker_cmd pull "${cached_base}" 2>&1 | tee -a "${compose_log}"
   fi
   source_id=$(docker_cmd image inspect --format '{{.Id}}' "${cached_base}")
   if cached_id=$(docker_cmd image inspect --format '{{.Id}}' "${local_base}" 2>/dev/null); then

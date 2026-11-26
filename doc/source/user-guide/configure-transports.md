@@ -28,7 +28,7 @@ From a source checkout, install the Flight dependency in every execution environ
 uv pip install -e ".[flight]"
 ```
 
-Flight SQL requires Python 3.10 or newer. Explicit Flight on Python 3.9 raises `ImportError` with an installation or version hint.
+Flight SQL requires the optional Flight extra. The package requires Python 3.11 or newer.
 
 ## Stream with MySQL
 

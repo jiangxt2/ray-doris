@@ -1,8 +1,9 @@
-from importlib.metadata import requires, version
+from importlib.metadata import metadata, requires, version
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from packaging.specifiers import SpecifierSet
 
 from ray_doris import __version__, read_doris
 
@@ -68,9 +69,16 @@ def test_package_version_matches_distribution_metadata() -> None:
     assert __version__ == version("ray-doris")
 
 
+def test_distribution_metadata_enforces_python_minimum() -> None:
+    supported = SpecifierSet(metadata("ray-doris")["Requires-Python"])
+    assert "3.10" not in supported
+    assert "3.11" in supported
+    assert "3.13" in supported
+
+
 def test_distribution_metadata_bounds_supported_ray_window() -> None:
     package_requirements = requires("ray-doris") or []
-    assert "ray[data]<2.60,>=2.49.2" in package_requirements
+    assert "ray[data]<2.60,>=2.57.0" in package_requirements
 
 
 def test_distribution_metadata_declares_typing_extensions() -> None:
