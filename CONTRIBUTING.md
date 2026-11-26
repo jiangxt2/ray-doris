@@ -86,7 +86,7 @@ one Ray head, three Ray workers, one Doris 4.0.6 FE, three Doris 4.0.6 BEs, and 
 TLS and Flight ingress that exposes per-BE traffic counters. The functional profile loads 10,000
 rows, executes a bounded Stream Load write across the three Ray workers with Doris readback, and
 runs repeated Flight reads for at least five seconds. The script pulls the digest-pinned
-Ray 2.59.0 base through the domestic mirror when it is not cached, verifies the cached local
+Ray 2.59.0 base from Docker Hub when it is not cached, verifies the cached local
 image identity, and builds from a local base tag.
 Select a different trusted local image with
 `RAY_BASE_IMAGE`. Run high-pressure profiles only on a dedicated host, for example:
@@ -134,13 +134,12 @@ not describe an untested configuration or extension point as supported behavior.
 
 ## Compatibility
 
-Code must remain compatible with the declared `ray[data]>=2.49.2,<2.60` range. Python 3.9 is a
-legacy compatibility target because it no longer receives upstream security fixes; it isn't
-a stable production baseline. Do not import modules below `ray.data._internal`. Add a unit test for
+Code must remain compatible with the declared `ray[data]>=2.57.0,<2.60` range and Python 3.11 or
+newer. Do not import modules below `ray.data._internal`. Add a unit test for
 every independently verifiable behavior, including error paths and cleanup. Unsupported Doris types
-must fail closed. Datasink callback signatures and timing differ between Ray 2.49.2–2.52.x and
-Ray >=2.53.0; keep that adaptation in `_compat.py`, and test empty Dataset behavior for both
-generations. `Datasink.min_rows_per_write` is a batching target, not a strict physical request limit.
+must fail closed. Validate Datasink callback signatures and empty Dataset behavior against the
+supported Ray versions. `Datasink.min_rows_per_write` is a batching target, not a strict physical
+request limit.
 
 Source, comments, documentation, commit messages, and public GitHub content are written in English.
 Every commit must include:

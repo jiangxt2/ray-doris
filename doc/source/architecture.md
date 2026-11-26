@@ -62,9 +62,8 @@ their own state. Compilation validates the visible schema before Ray can remove 
 
 `DorisDatasink` subclasses Ray's public `Datasink`. `write_doris()` calls only
 `Dataset.write_datasink()` and obtains its return value from `on_write_complete(WriteResult)`; it
-does not inspect Ray's private write operator. `_compat.py` records the two supported callback
-generations: Ray 2.49.2–2.52.x calls `on_write_start()` unconditionally, while Ray 2.53.0 and later
-may pass the first bundle schema and skip the callback for an empty Dataset. `min_rows_per_write`
+does not inspect Ray's private write operator. In the supported Ray window, `on_write_start()`
+may receive the first bundle schema and be skipped for an empty Dataset. `min_rows_per_write`
 is the connector's row bundling target, not a strict request-size guarantee.
 
 ## Plan on the driver

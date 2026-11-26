@@ -117,7 +117,7 @@ def main():
     hadoop_source = Path(args.hadoop_source).resolve()
     if not (hadoop_source / "SOURCE.json").is_file():
         parser.error("prepare the pinned Hadoop JNI source context first")
-    if any(v not in ("4.0.6", "3.0.6.2", "4.1.5") for v in args.versions):
+    if any(v not in ("4.0.6", "3.0.6.2") for v in args.versions):
         parser.error("only the approved cached versions are accepted")
     logs = Path(args.logs).resolve()
     logs.mkdir(parents=True, exist_ok=False)
@@ -238,11 +238,7 @@ def main():
     ]
     if args.iceberg:
         bases += ["apache/gravitino:1.3.1", "postgres:16.14"]
-    bases += [
-        f"{'docker.m.daocloud.io/apache/doris' if v == '4.1.5' else 'apache/doris'}:{role}-{v}"
-        for v in args.versions
-        for role in ["fe", "be"]
-    ]
+    bases += [f"apache/doris:{role}-{v}" for v in args.versions for role in ["fe", "be"]]
     metadata = run(["docker", "image", "inspect", *bases], capture=True)
     inspected = json.loads(metadata)
     (logs / "base-images.json").write_text(
@@ -292,7 +288,7 @@ def main():
         )
         for version in args.versions:
             env["NATIVE_DORIS_VERSION"] = version
-            repo = "docker.m.daocloud.io/apache/doris" if version == "4.1.5" else "apache/doris"
+            repo = "apache/doris"
             for role in ["fe", "be"]:
                 name = f"ray-doris-it-{role}:{tag}-{version}"
                 images.append(name)
@@ -374,8 +370,6 @@ def main():
             elif args.iceberg and version != args.versions[0]:
                 target = "tests/iceberg_integration/test_iceberg_cluster.py::"
                 version_tests = [target + "test_version_compatibility[s3]"]
-                if version == "4.1.5":
-                    version_tests.append(target + "test_doris_position_delete")
             result = compose(
                 "exec",
                 "-T",

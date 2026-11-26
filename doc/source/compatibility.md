@@ -8,7 +8,7 @@ myst:
 
 # Compatibility
 
-The package dependency accepts `ray[data]>=2.49.2,<2.60`. Ray marks `ReadTask` as DeveloperAPI, so each new Ray minor must pass the compatibility matrix before the upper bound advances.
+The package dependency accepts `ray[data]>=2.57.0,<2.60`. Ray marks `ReadTask` as DeveloperAPI, so each new Ray minor must pass the compatibility matrix before the upper bound advances.
 
 ## Review the tested matrix
 
@@ -16,9 +16,7 @@ Continuous integration covers these combinations:
 
 | Python | Ray | Verification |
 | --- | --- | --- |
-| 3.9 | 2.49.2 | Legacy compatibility; documented ReadTask and public Datasink contract tests |
-| 3.10 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
-| 3.11 | 2.59.0 | Unit, documented/public contracts, base and Flight package installation, dependency checks, and import tests |
+| 3.11 | 2.57.0 | Unit, documented ReadTask, and public Datasink contract tests |
 | 3.12 | 2.58.0 | Unit, documented/public contracts, and previous-minor public contract regression |
 | 3.12 | 2.59.0 | Unit, documented/public contracts, and required Doris 4.0.6 read/write integration tests |
 | 3.13 | 2.59.0 | Unit, documented/public contracts, package installation, and import tests |
@@ -31,8 +29,7 @@ that distributed evidence or stable/production readiness.
 The enterprise-candidate profile uses the minimum-privilege MySQL reader; Flight remains an
 experimental regression path.
 
-Native V1 predicate filtering is enabled on Ray 2.57, 2.58, and 2.59. Earlier releases in the
-dependency window keep their existing read behavior. Public Dataset contract tests cover accepted
+Native V1 predicate filtering is enabled on Ray 2.57, 2.58, and 2.59. Public Dataset contract tests cover accepted
 predicates, rejected residuals, source branches, projections, and limits. The expression classes
 are DeveloperAPI alpha despite their public import path. The
 [reading guide](user-guide/read-data.md#use-native-dataset-predicates) lists the supported subset.
@@ -41,7 +38,7 @@ are DeveloperAPI alpha despite their public import path. The
 
 The experimental `auto_native_read=True` optimization is a separate opt-in profile whose
 eligibility uses structured metadata and public reader capabilities, without an exact
-Doris/Ray patch whitelist. The Ray package window remains `>=2.49.2,<2.60`.
+Doris/Ray patch whitelist. The Ray package window remains `>=2.57.0,<2.60`.
 Its real Doris integration baselines are 4.0.6 and 3.0.6.2 with Ray 2.59.0;
 these are tested targets, not minimum Doris versions. It uses structured Doris metadata,
 independent plain-Thrift HMS access and native Ray Parquet reads from HDFS/S3.
@@ -52,15 +49,14 @@ authorization, connection and contradictory-result errors do not trigger that fa
 External Catalog reads use one fully qualified Doris query
 without internal tablet planning. These additional profiles require their own
 validation; the default internal-table matrix does not certify them.
-The native Parquet local-file contracts additionally pass on Ray 2.49.2 V1 and
-2.58.0 V1/V2. This verifies public reader adaptation, projection and partition
+The native Parquet local-file contracts additionally pass on Ray 2.58.0 V1/V2.
+This verifies public reader adaptation, projection and partition
 synthesis; HDFS/S3 distributed integration remains on Ray 2.59.0.
 
 The separately installed `iceberg` extra is an experimental REST catalog profile.
 Its tested Doris builds, storage cases and unverified boundaries are listed in
 the native read guide; the Hive integration matrix above does not certify other
-Iceberg deployments. PyIceberg 0.10 has a narrower Python 3.9 patch-level
-requirement than the base package.
+Iceberg deployments.
 
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
 
@@ -85,7 +81,7 @@ leader election, quorum, multi-FE failover, or an external load balancer's backe
 
 ## Review Python and Flight limits
 
-The core package requires Python 3.9 or newer. Python 3.9 reached end of life on October 31, 2025, so it is retained only as a legacy compatibility target. It isn't part of a stable or production profile. Use a Python line that still receives upstream security fixes for production deployments.
+The core package requires Python 3.11 or newer. Use a Python line that still receives upstream security fixes for production deployments.
 
 Python 3.11 is covered by unit, public Datasink contract, base and Flight wheel installation,
 dependency checks, and import tests. It doesn't have a separate real-Doris deployment
@@ -95,7 +91,7 @@ Python 3.13 is covered by unit, public Datasink contract, package installation, 
 The required Doris integration suite continues to use Python 3.12, so Python 3.13 is not a separate
 real-Doris deployment certification.
 
-The Flight extra is conditional on Python 3.10 or newer because the supported Arrow Database Connectivity (ADBC) Flight SQL dependency doesn't install on Python 3.9. Python 3.9 can use the MySQL transport. Explicit Flight and TLS-required automatic Flight fail early when the dependency isn't available.
+Flight SQL requires the optional Arrow Database Connectivity (ADBC) Flight SQL dependency. Explicit Flight and TLS-required automatic Flight fail early when the dependency isn't available.
 
 ## Review the Ray API boundary
 
@@ -109,23 +105,18 @@ does not narrow the installation range. Native empty projections use the
 documented `BlockAccessor` DeveloperAPI, whose compatibility is tested alongside
 the datasource hooks. No private Ray module is imported.
 
-Writes use the documented `Datasink` and `Dataset.write_datasink()` interfaces. The compatibility
-layer explicitly models the Datasink generation split:
-
-| Ray version | `on_write_start` | Empty non-file Dataset | Schema source |
-| --- | --- | --- | --- |
-| 2.49.2–2.52.x | `on_write_start()` with no argument, called before execution | Callback still runs; metadata setup is observable | Worker blocks |
-| 2.53.0–2.59.x | `on_write_start(schema)` may receive the first bundle schema | No callback when no input bundle exists | First input bundle, with worker validation |
+Writes use the documented `Datasink` and `Dataset.write_datasink()` interfaces. In the supported
+Ray window, `on_write_start(schema)` may receive the first bundle schema and does not run when
+there is no input bundle. The first input bundle provides the schema, with worker validation.
 
 The public contract tests also assert one-row task summaries in `write_returns`, the separation
 between Doris counters and Ray `WriteResult.num_rows`/`size_bytes`, and the zero-bundle behavior of
-`ray.data.range(0)` on the current generation. The old-generation callback is kept compatible by
-the sink's optional schema parameter and is covered by the explicit `_compat.py` matrix.
+`ray.data.range(0)` on the current generation.
 
-The compatibility layer requires the `ReadTask` constructor to accept a schema, and the package dependency starts at Ray 2.49.2. It passes `per_task_row_limit` only when the installed constructor supports that argument.
+The compatibility layer requires the `ReadTask` constructor to accept a schema, and the package dependency starts at Ray 2.57.0. It passes `per_task_row_limit` only when the installed constructor supports that argument.
 
 Datasource construction also checks the installed Ray release before any Doris network request.
-It accepts final releases in `>=2.49.2,<2.60` and local rebuild suffixes such as
+It accepts final releases in `>=2.57.0,<2.60` and local rebuild suffixes such as
 `2.59.0+vendor.1`. Release candidates, development builds, and post-release builds aren't
 supported.
 

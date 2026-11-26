@@ -262,7 +262,7 @@ def test_driver_metadata_never_sets_internal_default_database(monkeypatch, code)
     assert connect.call_args.kwargs["read_timeout"] > 0
 
 
-@pytest.mark.parametrize("version", ["2.49.2", "2.58.0"])
+@pytest.mark.parametrize("version", ["2.57.0", "2.58.0"])
 def test_native_ray_capabilities_are_independent_of_patch_whitelist(monkeypatch, version):
     monkeypatch.setattr("ray_doris._compat._RAY_VERSION", version)
     discover = Mock(side_effect=RuntimeError("metadata reached"))

@@ -18,7 +18,7 @@ import pytest
 from ray.data.datasource import WriteResult
 
 from ray_doris import _compat
-from ray_doris._compat import datasink_compatibility, prepare_write_remote_args
+from ray_doris._compat import prepare_write_remote_args
 from ray_doris._errors import (
     DorisAmbiguousWriteError,
     DorisConfigurationError,
@@ -164,22 +164,21 @@ def test_options_enforce_operation_format_and_fixed_label_contract() -> None:
         DorisWriteOptions(load_properties=(("timezone", "UTC"), ("timezone", "PST")))
 
 
-def test_ray_datasink_compatibility_matrix_is_explicit() -> None:
-    old = datasink_compatibility("2.52.4")
-    new = datasink_compatibility("2.53.0")
-    assert not old.on_write_start_has_schema
-    assert old.on_write_start_on_empty_dataset
-    assert old.schema_source == "worker_blocks"
-    assert new.on_write_start_has_schema
-    assert not new.on_write_start_on_empty_dataset
-    assert new.schema_source == "first_input_bundle"
+def test_datasink_rejects_signature_without_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    class IncompatibleDatasink:
+        def on_write_start(self) -> None:
+            pass
+
+    monkeypatch.setattr(_compat, "Datasink", IncompatibleDatasink)
+    with pytest.raises(DorisConfigurationError, match="on_write_start signature"):
+        DorisDatasink(_connection(), DorisTable("db", "table"))
 
 
 def test_datasink_rejects_unsupported_ray_before_empty_write_can_skip_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_compat, "_RAY_VERSION", "2.60.0")
-    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.60"):
+    with pytest.raises(DorisConfigurationError, match=r">=2\.57\.0,<2\.60"):
         DorisDatasink(_connection(), DorisTable("db", "table"))
 
 

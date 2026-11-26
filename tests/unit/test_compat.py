@@ -16,8 +16,6 @@ def metadata() -> BlockMetadata:
 @pytest.mark.parametrize(
     "version, supported",
     [
-        ("2.49.2", False),
-        ("2.56.1", False),
         ("2.57.0", True),
         ("2.58.0", True),
         ("2.59.0+vendor.1", True),
@@ -34,7 +32,7 @@ def read_fn() -> Iterable[pa.Table]:
 
 @pytest.mark.parametrize(
     "version",
-    ["2.49.2", "2.57.0", "2.58.0", "2.58.99", "2.59.0", "2.59.0+vendor.1", "2.58.0+vendor.1"],
+    ["2.57.0", "2.58.0", "2.58.99", "2.59.0", "2.59.0+vendor.1", "2.58.0+vendor.1"],
 )
 def test_supported_ray_version_window(monkeypatch, version) -> None:
     monkeypatch.setattr(_compat, "_RAY_VERSION", version)
@@ -44,7 +42,9 @@ def test_supported_ray_version_window(monkeypatch, version) -> None:
 @pytest.mark.parametrize(
     "version",
     [
-        "2.49.1",
+        "2.49.2",
+        "2.56.1",
+        "2.56.99",
         "2.49.2rc1",
         "2.58.0.dev0",
         "2.58.0.post1",
@@ -56,7 +56,7 @@ def test_supported_ray_version_window(monkeypatch, version) -> None:
 )
 def test_unsupported_ray_version_fails_fast(monkeypatch, version) -> None:
     monkeypatch.setattr(_compat, "_RAY_VERSION", version)
-    with pytest.raises(DorisConfigurationError, match=r">=2\.49\.2,<2\.60"):
+    with pytest.raises(DorisConfigurationError, match=r">=2\.57\.0,<2\.60"):
         _compat.ensure_supported_ray_version()
 
 
@@ -108,7 +108,7 @@ def test_make_read_task_rejects_signature_without_schema(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(_compat, "ReadTask", read_task)
-    with pytest.raises(DorisConfigurationError, match=r"ReadTask.*>=2\.49\.2,<2\.60"):
+    with pytest.raises(DorisConfigurationError, match=r"ReadTask.*>=2\.57\.0,<2\.60"):
         _compat.make_read_task(read_fn, metadata(), pa.schema([]), None)
 
 
