@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Callable
 
-from ray_doris._errors import DorisPlanningError, _UnsafeIcebergFallbackError
+from ray_doris._errors import DorisPlanningError, _diagnostic_suffix, _UnsafeIcebergFallbackError
 from ray_doris._iceberg_metadata import (
     iceberg_access_error,
     iceberg_schema_fingerprint,
@@ -28,7 +28,9 @@ def _safe_catalog_call(operation: Callable[..., Any], *args: Any, **kwargs: Any)
         access_error = iceberg_access_error(error)
         if access_error is not None:
             raise access_error from None
-        raise DorisPlanningError("deferred Iceberg REST catalog request failed") from None
+        raise DorisPlanningError(
+            f"deferred Iceberg REST catalog request failed{_diagnostic_suffix(error)}"
+        ) from None
 
 
 class PinnedRestCatalog(_RestCatalog):

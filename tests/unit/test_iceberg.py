@@ -1,3 +1,4 @@
+import traceback
 from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
@@ -637,6 +638,49 @@ def test_stream_fallback_keeps_snapshot_and_redacts_error(monkeypatch, caplog):
     )[0].to_pylist() == [{"id": 7}]
     assert fallback.call_count == 1 and fallback.call_args.args[0].snapshot_id == 123
     assert "sensitive" not in caplog.text
+
+
+def test_stream_failure_after_output_is_diagnostic_and_does_not_fallback(monkeypatch, caplog):
+    from ray_doris._iceberg_stream import _stream_iceberg_or_doris
+
+    def batches():
+        yield pa.table({"id": [7]})
+        raise TimeoutError("private-file private-token")
+
+    config = DorisReadConfig.from_options(host="fe", user="reader", table=parse_table("db.t"))
+    dataset = Mock()
+    dataset.iter_batches.return_value = batches()
+    fallback = Mock()
+    monkeypatch.setattr("ray_doris._iceberg_stream.read_split", fallback)
+    stream = _stream_iceberg_or_doris(
+        dataset, config, pa.schema([("id", pa.int64())]), lambda: None
+    )
+    assert next(stream).to_pylist() == [{"id": 7}]
+    with pytest.raises(DorisReadError, match="after output.*timeout") as captured:
+        next(stream)
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value), captured.value, captured.value.__traceback__
+        )
+    )
+    assert "private-file" not in formatted + caplog.text
+    assert "private-token" not in formatted + caplog.text
+    fallback.assert_not_called()
+
+
+def test_deferred_iceberg_catalog_reports_safe_category(caplog):
+    from ray_doris._iceberg_catalog import _safe_catalog_call
+
+    sentinel = "private-token"
+    operation = Mock(side_effect=TimeoutError(sentinel))
+    with pytest.raises(DorisPlanningError, match="catalog request failed.*timeout") as captured:
+        _safe_catalog_call(operation)
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value), captured.value, captured.value.__traceback__
+        )
+    )
+    assert sentinel not in formatted + caplog.text
 
 
 def test_stream_coordinator_options_are_preserved(monkeypatch):

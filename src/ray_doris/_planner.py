@@ -22,6 +22,7 @@ from ray_doris._errors import (
     DorisPermissionError,
     DorisPlanningError,
     DorisSchemaError,
+    _diagnostic_suffix,
 )
 from ray_doris._metadata import ExternalMetadataReader
 from ray_doris._models import (
@@ -223,6 +224,7 @@ class QueryPlanClient:
                 ) from None
             raise DorisPlanningError(
                 f"Doris query-plan endpoint is unavailable for {_table_context(config)}"
+                f"{_diagnostic_suffix(exc)}"
             ) from None
         try:
             payload = json.loads(payload_bytes.decode("utf-8"))
@@ -233,11 +235,14 @@ class QueryPlanClient:
         try:
             return self._parse_response(payload)
         except DorisAuthenticationError as exc:
-            raise DorisAuthenticationError(f"{exc} for {_table_context(config)}") from None
+            exc.__suppress_context__ = True
+            raise DorisAuthenticationError(f"{exc} for {_table_context(config)}") from exc
         except DorisPermissionError as exc:
-            raise DorisPermissionError(f"{exc} for {_table_context(config)}") from None
+            exc.__suppress_context__ = True
+            raise DorisPermissionError(f"{exc} for {_table_context(config)}") from exc
         except DorisPlanningError as exc:
-            raise DorisPlanningError(f"{exc} for {_table_context(config)}") from None
+            exc.__suppress_context__ = True
+            raise DorisPlanningError(f"{exc} for {_table_context(config)}") from exc
 
     @staticmethod
     def _parse_response(payload: Any) -> Tuple[int, ...]:
@@ -413,13 +418,15 @@ class DorisPlanner:
             raise DorisSchemaError(
                 f"failed to build Arrow schema for {_table_context(self._config)}: {exc}"
             ) from exc
-        except OSError:
+        except OSError as exc:
             context = _table_context(self._config)
             if _mysql_tls_is_configured(self._config):
                 raise DorisConfigurationError(
                     f"Doris MySQL TLS configuration is invalid for {context}"
                 ) from None
-            raise DorisPlanningError(f"failed to discover Doris schema for {context}") from None
+            raise DorisPlanningError(
+                f"failed to discover Doris schema for {context}{_diagnostic_suffix(exc)}"
+            ) from None
         except pymysql.MySQLError as exc:
             code = _mysql_error_code(exc)
             context = _table_context(self._config)

@@ -12,7 +12,9 @@ from ray_doris._errors import (
     DorisConfigurationError,
     DorisError,
     DorisPlanningError,
+    _diagnostic_suffix,
     _NativeReadNotApplicableError,
+    _with_native_diagnostic,
 )
 
 
@@ -53,20 +55,37 @@ def storage_descriptor(sd: Any) -> HiveStorage:
     )
 
 
+def _hms_diagnostic_suffix(error: BaseException, transport_error: Any) -> str:
+    if transport_error is not None and type(error) is transport_error:
+        if getattr(error, "type", None) == transport_error.TIMED_OUT:
+            return " (timeout)"
+        inner = getattr(error, "inner", None)
+        if isinstance(inner, BaseException):
+            error = inner
+    return _diagnostic_suffix(error)
+
+
 class HiveMetadataClient:
     """Use generated SDK methods without serializing its connection to Ray."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, transport_error: Any = None) -> None:
         self._client = client
+        self._transport_error = transport_error
 
     def _call(self, method: str, *args: Any) -> Any:
         try:
             return getattr(self._client, method)(*args)
         except DorisError:
             raise
-        except Exception:
-            raise DorisPlanningError(
-                f"HMS metadata request failed during {method}; verify access and service state"
+        except Exception as error:
+            suffix = _hms_diagnostic_suffix(error, self._transport_error)
+            raise _with_native_diagnostic(
+                DorisPlanningError(
+                    f"HMS metadata request failed during {method}{suffix}; "
+                    "verify access and service state"
+                ),
+                "HMS metadata",
+                suffix,
             ) from None
 
     def table(self, database: str, table: str) -> HiveTable:
@@ -147,10 +166,17 @@ def open_hms(uri: str, timeout: float) -> Iterator[HiveMetadataClient]:
     transport = transports.TBufferedTransport(socket)
     try:
         transport.open()
-        client = HiveMetadataClient(sdk.Client(protocols.TBinaryProtocol(transport)))
-    except Exception:
+        client = HiveMetadataClient(
+            sdk.Client(protocols.TBinaryProtocol(transport)), transports.TTransportException
+        )
+    except Exception as error:
         transport.close()
-        raise DorisPlanningError("HMS connection failed; verify access and service state") from None
+        suffix = _hms_diagnostic_suffix(error, transports.TTransportException)
+        raise _with_native_diagnostic(
+            DorisPlanningError(f"HMS connection failed{suffix}; verify access and service state"),
+            "HMS connection",
+            suffix,
+        ) from None
     try:
         yield client
     finally:

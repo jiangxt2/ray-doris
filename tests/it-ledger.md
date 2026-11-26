@@ -1,5 +1,25 @@
 # Integration test ledger
 
+## Safe failure diagnostics
+
+Issue #29: sanitized planning, read and write diagnostics. The pending follow-up
+is based on `9bc1ebe3e9e6a814b1475665f7fb91daa5709f3a`; its diff excluding this
+ledger has SHA-256 `7c7d32f75ca7f2d9bf0b7d3e9427a71c747dd65d647b424ed3fa292c6e6b9c53`.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Unit / static | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff and mypy | 759 passed, 15 warnings; static checks passed |
+| Contract | Ray 2.59.0, local Ray workers | 91 passed |
+| Doris IT | Doris 4.0.6; FE 3 GiB, BE 4 GiB; Ray 2.59.0 | 65 passed |
+| HMS protocol | `apache/gravitino-ci:hive-0.1.20`, image ID `sha256:703efa424af7006f63ebd989ae23c89410665ded27ea0d2e6762fa11e3de454b`; real Thrift client | Metadata, redaction and connection-failure checks passed; timeout classification used a constructed Thrift exception |
+
+Doris images: FE `sha256:830863e9ff8af4b354df5303b1235c11b2f822fa3125b83a1627e498c5c251cf`;
+BE `sha256:72e58021c2fa110350269e587d6c74a28579d3c1ed563023cb784a3824f4ad87`.
+The service and contract results use commit `9bc1ebe`; the follow-up removes a
+redundant internal check for fixed valid inputs and consolidates tests. Logging
+still validates those inputs. Logs: `/private/tmp/ray-doris-simplify-diagnostics/`
+and `/private/tmp/ray-doris-thrift-diagnostics-fix/`.
+
 ## Internal STRING display alias
 
 Issue #22: internal-table schema discovery recognizes the `TEXT` display alias
