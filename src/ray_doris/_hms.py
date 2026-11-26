@@ -12,7 +12,9 @@ from ray_doris._errors import (
     DorisConfigurationError,
     DorisError,
     DorisPlanningError,
+    _diagnostic_suffix,
     _NativeReadNotApplicableError,
+    _with_native_diagnostic,
 )
 
 
@@ -64,9 +66,14 @@ class HiveMetadataClient:
             return getattr(self._client, method)(*args)
         except DorisError:
             raise
-        except Exception:
-            raise DorisPlanningError(
-                f"HMS metadata request failed during {method}; verify access and service state"
+        except Exception as error:
+            raise _with_native_diagnostic(
+                DorisPlanningError(
+                    f"HMS metadata request failed during {method}{_diagnostic_suffix(error)}; "
+                    "verify access and service state"
+                ),
+                "HMS metadata",
+                error,
             ) from None
 
     def table(self, database: str, table: str) -> HiveTable:
@@ -148,9 +155,15 @@ def open_hms(uri: str, timeout: float) -> Iterator[HiveMetadataClient]:
     try:
         transport.open()
         client = HiveMetadataClient(sdk.Client(protocols.TBinaryProtocol(transport)))
-    except Exception:
+    except Exception as error:
         transport.close()
-        raise DorisPlanningError("HMS connection failed; verify access and service state") from None
+        raise _with_native_diagnostic(
+            DorisPlanningError(
+                f"HMS connection failed{_diagnostic_suffix(error)}; verify access and service state"
+            ),
+            "HMS connection",
+            error,
+        ) from None
     try:
         yield client
     finally:

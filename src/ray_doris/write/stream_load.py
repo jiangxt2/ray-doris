@@ -18,6 +18,7 @@ from ray_doris._errors import (
     DorisAmbiguousWriteError,
     DorisLabelExistsError,
     DorisWriteError,
+    _diagnostic_suffix,
 )
 from ray_doris.write.connection import DorisConnection, DorisTable
 from ray_doris.write.options import DorisWriteOptions
@@ -250,11 +251,16 @@ class StreamLoadClient:
                         urllib.error.URLError,
                         OSError,
                         http.client.HTTPException,
-                    ):
-                        self._raise_transport_error(redirected_transmission)
+                    ) as error:
+                        self._raise_transport_error(redirected_transmission, error)
                 self._raise_http_error(exc, rows=rows, transmission=transmission)
-            except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException):
-                self._raise_transport_error(transmission)
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                OSError,
+                http.client.HTTPException,
+            ) as error:
+                self._raise_transport_error(transmission, error)
         except Exception as error:
             logger.warning(
                 "Doris Stream Load failed label=%s error_type=%s "
@@ -280,13 +286,16 @@ class StreamLoadClient:
         return urllib.request.build_opener(*handlers)
 
     @staticmethod
-    def _raise_transport_error(transmission: _RequestTransmission) -> NoReturn:
+    def _raise_transport_error(
+        transmission: _RequestTransmission, error: BaseException
+    ) -> NoReturn:
+        detail = _diagnostic_suffix(error)
         if transmission.body_started:
             raise DorisAmbiguousWriteError(
-                "Doris Stream Load request status is unknown; automatic replay is disabled"
+                f"Doris Stream Load request status is unknown{detail}; automatic replay is disabled"
             ) from None
         raise DorisWriteError(
-            "Doris Stream Load request failed before request body transmission"
+            f"Doris Stream Load request failed before request body transmission{detail}"
         ) from None
 
     def _raise_http_error(

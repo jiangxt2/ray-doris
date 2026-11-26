@@ -16,6 +16,7 @@ from ray.data.datasource import Datasource, ReadTask
 from ray_doris._compat import ensure_iceberg_stream_context, make_read_task
 from ray_doris._errors import (
     DorisReadError,
+    _diagnostic_suffix,
     _UnsafeIcebergFallbackError,
 )
 from ray_doris._models import DorisInputSplit, DorisReadConfig
@@ -55,7 +56,8 @@ def _stream_iceberg_or_doris(
     except Exception as error:
         if emitted:
             raise DorisReadError(
-                "Iceberg native read failed after output; disable auto_native_read and retry"
+                f"Iceberg native read failed after output{_diagnostic_suffix(error)}; "
+                "disable auto_native_read and retry"
             ) from None
         if isinstance(error, _UnsafeIcebergFallbackError):
             raise

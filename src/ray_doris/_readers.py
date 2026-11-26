@@ -11,7 +11,7 @@ from typing import Any, Iterable, Iterator, Optional, Sequence
 import pyarrow as pa
 import pymysql
 
-from ray_doris._errors import DorisConfigurationError, DorisReadError
+from ray_doris._errors import DorisConfigurationError, DorisReadError, _diagnostic_suffix
 from ray_doris._models import (
     _ADBC_CONNECT_TIMEOUT_OPTION,
     DorisInputSplit,
@@ -220,12 +220,14 @@ def read_mysql(
             f"failed to read Doris {context} through the "
             f"MySQL protocol (MySQL error {_mysql_error_code(exc)!r})"
         ) from None
-    except OSError:
+    except OSError as exc:
         if _mysql_tls_is_configured(config):
             raise DorisReadError(
                 f"Doris MySQL TLS configuration is invalid for {context}"
             ) from None
-        raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
+        raise DorisReadError(
+            f"failed to read Doris {context} through the MySQL protocol{_diagnostic_suffix(exc)}"
+        ) from None
     except Exception:
         raise DorisReadError(f"failed to read Doris {context} through the MySQL protocol") from None
 

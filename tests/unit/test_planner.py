@@ -162,6 +162,42 @@ def test_query_plan_http_client_classifies_transport_and_invalid_json(monkeypatc
         QueryPlanClient(config).fetch_tablet_ids("SELECT 1")
 
 
+def test_query_plan_transport_timeout_keeps_sensitive_context_out(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        _planner,
+        "_open_query_plan_request",
+        Mock(side_effect=urllib.error.URLError(TimeoutError("private-password"))),
+    )
+    with pytest.raises(DorisPlanningError, match="unavailable.*timeout") as captured:
+        QueryPlanClient(make_config()).fetch_tablet_ids("SELECT 1")
+    _assert_redacted_exception(captured.value, caplog, "private-password")
+
+
+def test_schema_discovery_timeout_reports_safe_category(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(_planner.pymysql, "connect", Mock(side_effect=TimeoutError("private-host")))
+    with pytest.raises(DorisPlanningError, match="discover Doris schema.*timeout") as captured:
+        DorisPlanner(make_config()).describe_schema()
+    _assert_redacted_exception(captured.value, caplog, "private-host")
+
+
+def test_query_plan_preserves_safe_parse_cause_without_ambient_context(monkeypatch, caplog) -> None:
+    response = FakeResponse(json.dumps(success_payload({"private-tablet": {}})).encode())
+    monkeypatch.setattr(_planner, "_open_query_plan_request", Mock(return_value=response))
+    try:
+        raise RuntimeError("private-ambient-context")
+    except RuntimeError:
+        with pytest.raises(DorisPlanningError, match="invalid tablet id") as captured:
+            QueryPlanClient(make_config()).fetch_tablet_ids("SELECT 1")
+    assert isinstance(captured.value.__cause__, DorisPlanningError)
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value), captured.value, captured.value.__traceback__
+        )
+    )
+    assert "private-tablet" not in formatted + caplog.text
+    assert "private-ambient-context" not in formatted + caplog.text
+
+
 @pytest.mark.parametrize(
     ("status", "error_type"),
     [(401, DorisAuthenticationError), (403, DorisPermissionError)],

@@ -1,6 +1,40 @@
 """Public exceptions raised by ray-doris."""
 
+import urllib.error
+from importlib import import_module
+
 import pyarrow as pa
+
+
+def _diagnostic_suffix(error: BaseException) -> str:
+    """Describe selected failure types without rendering exception text or paths."""
+    if type(error) is urllib.error.URLError and isinstance(error.reason, BaseException):
+        error = error.reason
+    try:
+        transport_error = import_module("thrift.transport.TTransport").TTransportException
+    except ImportError:
+        transport_error = None
+    if transport_error is not None and type(error) is transport_error:
+        if getattr(error, "type", None) == transport_error.TIMED_OUT:
+            return " (timeout)"
+        inner = getattr(error, "inner", None)
+        if isinstance(inner, BaseException):
+            error = inner
+    if isinstance(error, TimeoutError):
+        category = "timeout"
+    elif isinstance(error, PermissionError):
+        category = "permission denied"
+    elif isinstance(error, FileNotFoundError):
+        category = "not found"
+    elif isinstance(error, ConnectionError):
+        category = "connection failure"
+    elif isinstance(error, pa.ArrowInvalid):
+        category = "invalid data"
+    elif isinstance(error, OSError):
+        category = "I/O failure"
+    else:
+        return ""
+    return f" ({category})"
 
 
 class DorisError(Exception):
@@ -17,6 +51,52 @@ class DorisSchemaError(DorisError):
 
 class DorisPlanningError(DorisError):
     """Raised when tablet planning fails."""
+
+    _native_diagnostic: tuple[str, str]
+
+
+_NATIVE_DIAGNOSTIC_STAGES = frozenset(
+    {"HMS connection", "HMS metadata", "storage metadata", "Parquet footer"}
+)
+_DIAGNOSTIC_SUFFIXES = frozenset(
+    {
+        "",
+        " (timeout)",
+        " (permission denied)",
+        " (not found)",
+        " (connection failure)",
+        " (invalid data)",
+        " (I/O failure)",
+    }
+)
+
+
+def _with_native_diagnostic(
+    error: DorisPlanningError, stage: str, cause: BaseException
+) -> DorisPlanningError:
+    """Attach fixed diagnostic fields without changing the public error class."""
+    if stage not in _NATIVE_DIAGNOSTIC_STAGES:
+        raise ValueError("unsupported native diagnostic stage")
+    error._native_diagnostic = (stage, _diagnostic_suffix(cause))
+    return error
+
+
+def _native_diagnostic(error: BaseException) -> str:
+    """Return only explicitly allowed fields for the native fallback warning."""
+    if type(error) is not DorisPlanningError:
+        return ""
+    value = getattr(error, "_native_diagnostic", None)
+    if type(value) is not tuple or len(value) != 2:
+        return ""
+    stage, suffix = value
+    if (
+        type(stage) is not str
+        or stage not in _NATIVE_DIAGNOSTIC_STAGES
+        or type(suffix) is not str
+        or suffix not in _DIAGNOSTIC_SUFFIXES
+    ):
+        return ""
+    return f"; stage={stage}{suffix}"
 
 
 class _NativeReadNotApplicableError(DorisPlanningError):

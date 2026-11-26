@@ -1,5 +1,35 @@
 # Integration test ledger
 
+## Safe failure diagnostics
+
+Issue #29 improves sanitized planning, read, and write diagnostics and retains
+safe connector-generated causes. The tested worktree is based on
+`7a801cfba1ff6d0e108bf1799909ce8bba44510c`; its cumulative diff excluding this
+ledger has SHA-256 `6062a03cd4efe407e1b8558659c9a3d8a278a26558d24709b9222306c66cee7c`.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Unit | Python 3.12.12, Ray 2.59.1, PyArrow 26.0.1 | 755 passed; one further HMS test added and passed separately |
+| Contract | Python 3.12.12, Ray 2.59.1, local Ray workers | 91 passed |
+| Doris IT, initial | Doris 4.0.6, FE 3 GiB, BE 2 GiB; Python 3.12.12, Ray 2.59.1 | Interrupted after 9 passed and 9 failed; BE reached its memory limit and cancelled queries |
+| Doris IT, retry | Doris 4.0.6, FE 3 GiB, BE 4 GiB; Python 3.12.12, Ray 2.59.1 | 52 passed, 13 failed; failures include projection and limit SQL assertions. Ray 2.59.1 does not enable the connector's version-gated projection pushdown. |
+| Doris IT, documented baseline | Doris 4.0.6, FE 3 GiB, BE 4 GiB; Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1 | 65 passed, 8 warnings, no skips, 1029.39s |
+
+The final Doris run uses the documented Ray 2.59.0 integration baseline. Logs
+for the earlier attempts are retained in
+`/private/tmp/ray-doris-safe-failure-diagnostics/` and
+`/private/tmp/ray-doris-safe-failure-diagnostics-retry/`; final logs are in
+`/private/tmp/ray-doris-safe-failure-diagnostics-baseline/`. The isolated test
+containers, networks, volumes and custom image tags were removed after each run;
+shared Doris base images were retained. The final dangling-image listing was
+unchanged after sorting.
+
+After the Doris run, a unit test was changed to avoid requiring the optional
+Thrift dependency in the base CI environment; tests were also added for the
+missing dependency, storage discovery and schema-discovery failure paths. Four
+focused tests pass with Ray 2.59.0. These test-only changes do not alter the
+production code or invalidate the recorded Doris result.
+
 ## Internal STRING display alias
 
 Issue #22: internal-table schema discovery recognizes the `TEXT` display alias

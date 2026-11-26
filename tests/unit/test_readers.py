@@ -116,6 +116,17 @@ def test_mysql_reader_streams_fetchmany_batches_and_closes_resources(monkeypatch
     assert cursor.close_calls == connection.close_calls == 1
 
 
+def test_mysql_connection_timeout_reports_category_without_driver_text(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(_readers.pymysql, "connect", Mock(side_effect=TimeoutError("private-path")))
+    with pytest.raises(DorisReadError, match="MySQL protocol.*timeout") as captured:
+        list(
+            _readers.read_mysql(
+                make_config(), DorisInputSplit(None), pa.schema([("id", pa.int64())])
+            )
+        )
+    _assert_redacted_exception(captured.value, caplog, "private-path")
+
+
 @pytest.mark.parametrize("transport", ["mysql", "auto"])
 def test_mysql_and_auto_fallback_keep_the_split_budget(monkeypatch, transport) -> None:
     cursor = FakeCursor()

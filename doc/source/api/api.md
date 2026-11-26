@@ -83,6 +83,8 @@ automatic-read scope and independent HMS/filesystem authorization.
 
 All connector exceptions derive from `DorisError`. Configuration errors also derive from `ValueError`, while authentication and permission errors derive from `DorisPlanningError`.
 
+Some failures include a diagnostic category such as timeout or invalid data. Connector-generated causes may appear in the traceback when safe; external error text can contain credentials, SQL, values, or paths and is suppressed at these translation boundaries.
+
 (ray-doris-api-error)=
 
 ```{autoexception} ray_doris.DorisError

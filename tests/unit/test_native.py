@@ -1,3 +1,5 @@
+import traceback
+import urllib.error
 from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
@@ -16,7 +18,11 @@ from ray_doris import (
     NativeReadOptions,
     read_doris,
 )
-from ray_doris._errors import _NativeCatalogTypeMismatchError, _NativeReadNotApplicableError
+from ray_doris._errors import (
+    _diagnostic_suffix,
+    _NativeCatalogTypeMismatchError,
+    _NativeReadNotApplicableError,
+)
 from ray_doris._external_metadata import (
     discover_external,
     doris_build_version,
@@ -27,7 +33,12 @@ from ray_doris._external_metadata import (
 )
 from ray_doris._hms import HiveMetadataClient, HivePartition, HiveStorage, HiveTable, open_hms
 from ray_doris._models import DorisReadConfig
-from ray_doris._native import NativeReadPlan, _canonicalize_batch, _validate_file_schemas
+from ray_doris._native import (
+    NativeReadPlan,
+    _canonicalize_batch,
+    _validate_file_schemas,
+    plan_files,
+)
 from ray_doris._schema import doris_type_to_arrow, information_schema_type
 from ray_doris._sql import parse_table
 
@@ -251,6 +262,104 @@ def test_hms_connection_closes_and_redacts_failure(monkeypatch):
     modules["thrift.transport.TSocket"].TSocket.return_value.setTimeout.assert_called_with(1)
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(TimeoutError("private"), "timeout", id="timeout"),
+        pytest.param(PermissionError("private"), "permission denied", id="permission"),
+        pytest.param(FileNotFoundError("private"), "not found", id="missing"),
+        pytest.param(ConnectionResetError("private"), "connection failure", id="connection"),
+        pytest.param(pa.ArrowInvalid("private"), "invalid data", id="arrow"),
+        pytest.param(OSError("private"), "I/O failure", id="io"),
+        pytest.param(urllib.error.URLError(TimeoutError("private")), "timeout", id="url-timeout"),
+        pytest.param(RuntimeError("private"), "", id="unknown"),
+    ],
+)
+def test_diagnostic_categories_never_render_exception_text(error, expected):
+    assert _diagnostic_suffix(error) == (f" ({expected})" if expected else "")
+
+
+def test_hms_thrift_transport_error_exposes_only_safe_inner_category(monkeypatch):
+    class FakeTransportError(Exception):
+        NOT_OPEN = 1
+        TIMED_OUT = 3
+
+        def __init__(self, type, message, inner=None):
+            super().__init__(message)
+            self.type = type
+            self.inner = inner
+
+    monkeypatch.setattr(
+        "ray_doris._errors.import_module",
+        Mock(return_value=SimpleNamespace(TTransportException=FakeTransportError)),
+    )
+
+    refused = FakeTransportError(
+        type=FakeTransportError.NOT_OPEN,
+        message="private-host",
+        inner=ConnectionRefusedError("private-path"),
+    )
+    timed_out = FakeTransportError(type=FakeTransportError.TIMED_OUT, message="private-host")
+    assert _diagnostic_suffix(refused) == " (connection failure)"
+    assert _diagnostic_suffix(timed_out) == " (timeout)"
+
+
+def test_diagnostics_work_without_optional_thrift(monkeypatch):
+    monkeypatch.setattr(
+        "ray_doris._errors.import_module", Mock(side_effect=ModuleNotFoundError("thrift"))
+    )
+    assert _diagnostic_suffix(TimeoutError("private")) == " (timeout)"
+
+
+def test_hms_request_reports_safe_category_and_closes_transport(monkeypatch, caplog):
+    transport = Mock()
+    sdk = Mock()
+    modules = {
+        "pymetastore.hive_metastore.ThriftHiveMetastore": sdk,
+        "thrift.transport.TSocket": Mock(),
+        "thrift.transport.TTransport": SimpleNamespace(
+            TBufferedTransport=Mock(return_value=transport)
+        ),
+        "thrift.protocol.TBinaryProtocol": Mock(),
+    }
+    monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
+    sdk.Client.return_value.get_table.side_effect = TimeoutError("password-secret /private/path")
+    with pytest.raises(DorisPlanningError, match="get_table.*timeout") as error:
+        with open_hms("thrift://hms:9083", 1) as client:
+            client.table("db", "t")
+    formatted = "".join(
+        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
+    )
+    assert "password-secret" not in formatted + caplog.text
+    assert "/private/path" not in formatted + caplog.text
+    assert error.value.__cause__ is None
+    transport.close.assert_called_once()
+
+
+def test_hms_open_failure_reports_safe_category_and_closes_transport(monkeypatch, caplog):
+    transport = Mock()
+    transport.open.side_effect = ConnectionRefusedError("private-host")
+    modules = {
+        "pymetastore.hive_metastore.ThriftHiveMetastore": Mock(),
+        "thrift.transport.TSocket": Mock(),
+        "thrift.transport.TTransport": SimpleNamespace(
+            TBufferedTransport=Mock(return_value=transport)
+        ),
+        "thrift.protocol.TBinaryProtocol": Mock(),
+    }
+    monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
+    with pytest.raises(
+        DorisPlanningError, match="HMS connection failed.*connection failure"
+    ) as error:
+        with open_hms("thrift://hms:9083", 1):
+            pass
+    formatted = "".join(
+        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
+    )
+    assert "private-host" not in formatted + caplog.text
+    transport.close.assert_called_once()
+
+
 @pytest.mark.parametrize("code", [1045, 1221, 5087])
 def test_driver_metadata_never_sets_internal_default_database(monkeypatch, code):
     connect = Mock(side_effect=__import__("pymysql").err.OperationalError(code, "secret"))
@@ -340,6 +449,47 @@ def test_native_planning_errors_fall_back_to_doris(monkeypatch, caplog, error):
     read.assert_called_once()
     assert "falling back to Doris" in caplog.text
     assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["hms", "footer"])
+def test_native_fallback_logs_safe_source_diagnostic(monkeypatch, caplog, failure):
+    monkeypatch.setattr("ray_doris._native.ensure_native_ray_version", Mock())
+    read = Mock(return_value="doris")
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", read)
+    if failure == "hms":
+        client = Mock()
+        client.get_table.side_effect = TimeoutError("private-password")
+        monkeypatch.setattr(
+            "ray_doris._native.discover_external",
+            lambda *args: HiveMetadataClient(client).table("db", "t"),
+        )
+        stage, category = "HMS metadata", "timeout"
+    else:
+        metadata = SimpleNamespace(schema=pa.schema([("id", pa.int32())]))
+        filesystem = Mock()
+        filesystem.open_input_file.return_value = pa.BufferReader(b"invalid parquet")
+        plan = NativeReadPlan(metadata.schema, ("private-path.parquet",), filesystem, "", ())
+        monkeypatch.setattr("ray_doris._native.discover_external", Mock(return_value=metadata))
+        monkeypatch.setattr("ray_doris._native.plan_files", Mock(return_value=plan))
+        monkeypatch.setattr("ray_doris._native.native_uses_datasource_v2", Mock(return_value=False))
+        stage, category = "Parquet footer", "invalid data"
+    assert read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True) == "doris"
+    assert f"stage={stage}" in caplog.text
+    assert category in caplog.text
+    assert "private-password" not in caplog.text
+    assert "private-path" not in caplog.text
+    read.assert_called_once()
+
+
+def test_native_fallback_rejects_untrusted_diagnostic_fields(monkeypatch, caplog):
+    error = DorisPlanningError("private-message")
+    error._native_diagnostic = ("private-stage", " (timeout)")
+    monkeypatch.setattr("ray_doris._native.read_native", Mock(side_effect=error))
+    monkeypatch.setattr("ray_doris._api.ray.data.read_datasource", Mock(return_value="doris"))
+    assert read_doris(host="fe", table="db.t", catalog="hive", auto_native_read=True) == "doris"
+    assert "falling back to Doris" in caplog.text
+    assert "private-stage" not in caplog.text
+    assert "private-message" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -812,3 +962,22 @@ def test_bad_footer_closes_input_and_redacts_storage_details():
         _validate_file_schemas(plan)
     assert source.closed
     assert "secret-source" not in str(error.value)
+    assert "invalid data" in str(error.value)
+    assert "secret-source" not in "".join(
+        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
+    )
+
+
+def test_storage_discovery_reports_category_without_path(caplog):
+    filesystem = Mock(type_name="s3")
+    filesystem.normalize_path.side_effect = PermissionError("private-storage-path")
+    metadata = SimpleNamespace(storage=storage(), partition_keys=())
+    options = SimpleNamespace(filesystem=filesystem)
+    with pytest.raises(
+        DorisPlanningError, match="storage metadata discovery failed.*permission"
+    ) as error:
+        plan_files(metadata, options)
+    formatted = "".join(
+        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
+    )
+    assert "private-storage-path" not in formatted + caplog.text

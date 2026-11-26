@@ -11,6 +11,7 @@ from ray.data import Dataset
 
 from ray_doris._errors import (
     DorisConfigurationError,
+    _native_diagnostic,
     _NativeCatalogTypeMismatchError,
     _NativeReadNotApplicableError,
     _PinnedNativeFallbackError,
@@ -198,8 +199,9 @@ def read_doris(
                 logger.info("Doris read path=doris reason=native_profile_not_applicable")
             else:
                 logger.warning(
-                    "Native read optimization failed during planning (%s); falling back to Doris",
+                    "Native read optimization failed during planning (%s%s); falling back to Doris",
                     type(error).__name__,
+                    _native_diagnostic(error),
                 )
     else:
         logger.info("Doris read path=doris reason=automatic native reads disabled")

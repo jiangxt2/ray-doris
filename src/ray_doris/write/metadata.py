@@ -17,6 +17,7 @@ from ray_doris._errors import (
     DorisPermissionError,
     DorisSchemaError,
     DorisTableCompatibilityError,
+    _diagnostic_suffix,
 )
 from ray_doris._schema import DorisColumn, doris_type_to_arrow, parse_describe_rows
 from ray_doris.write.connection import DorisConnection, DorisTable
@@ -271,7 +272,9 @@ def discover_table_metadata(connection: DorisConnection, table: DorisTable) -> D
         translated = _metadata_error(exc)
         if translated is not None:
             raise translated from None
-        raise DorisMetadataError("Doris table metadata discovery failed") from None
+        raise DorisMetadataError(
+            f"Doris table metadata discovery failed{_diagnostic_suffix(exc)}"
+        ) from None
     finally:
         if client is not None:
             with suppress(Exception):

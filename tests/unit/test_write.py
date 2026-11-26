@@ -5,6 +5,7 @@ import io
 import json
 import math
 import ssl
+import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from ray_doris.write.connection import DorisConnection, DorisTable
 from ray_doris.write.datasink import DorisDatasink
 from ray_doris.write.metadata import (
     DorisTableMetadata,
+    discover_table_metadata,
     parse_create_table,
     validate_write_table,
 )
@@ -418,6 +420,45 @@ def test_stream_load_post_send_transport_failure_is_ambiguous_and_redacted(
         ).load(b"payload-secret", rows=1, columns=("id",))
     assert "password-secret" not in str(captured.value)
     assert "payload-secret" not in str(captured.value)
+
+
+@pytest.mark.parametrize("body_started", [False, True], ids=["before-send", "after-send"])
+def test_stream_load_timeout_preserves_send_boundary_and_redacts_traceback(
+    monkeypatch, caplog, body_started
+) -> None:
+    class FailingOpener:
+        def open(self, request: Any, **kwargs: object) -> object:
+            request.transmission.body_started = body_started
+            raise urllib.error.URLError(TimeoutError("private-password private-payload"))
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: FailingOpener())
+    expected = DorisAmbiguousWriteError if body_started else DorisWriteError
+    with pytest.raises(expected, match="timeout") as captured:
+        StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions()).load(
+            b"payload", rows=1, columns=("id",)
+        )
+    assert type(captured.value) is expected
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value), captured.value, captured.value.__traceback__
+        )
+    )
+    assert "private-password" not in formatted + caplog.text
+    assert "private-payload" not in formatted + caplog.text
+
+
+def test_write_metadata_timeout_is_safe(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        "ray_doris.write.metadata.pymysql.connect", Mock(side_effect=TimeoutError("private-secret"))
+    )
+    with pytest.raises(DorisMetadataError, match="discovery failed.*timeout") as captured:
+        discover_table_metadata(_connection(), DorisTable("db", "table"))
+    formatted = "".join(
+        traceback.format_exception(
+            type(captured.value), captured.value, captured.value.__traceback__
+        )
+    )
+    assert "private-secret" not in formatted + caplog.text
 
 
 @pytest.mark.parametrize(

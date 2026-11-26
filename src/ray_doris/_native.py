@@ -26,7 +26,9 @@ from ray_doris._errors import (
     DorisConfigurationError,
     DorisPlanningError,
     DorisSchemaError,
+    _diagnostic_suffix,
     _NativeReadNotApplicableError,
+    _with_native_diagnostic,
 )
 from ray_doris._external_metadata import ExternalMetadata, discover_external, partition_value
 from ray_doris._hdfs_proxy import HdfsKerberosHandler
@@ -144,9 +146,14 @@ def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> Native
         )
     except (DorisPlanningError, DorisConfigurationError):
         raise
-    except Exception:
-        raise DorisPlanningError(
-            "storage metadata discovery failed; verify source access"
+    except Exception as error:
+        raise _with_native_diagnostic(
+            DorisPlanningError(
+                f"storage metadata discovery failed{_diagnostic_suffix(error)}; "
+                "verify source access"
+            ),
+            "storage metadata",
+            error,
         ) from None
 
 
@@ -163,9 +170,14 @@ def _validate_file_schemas(plan: NativeReadPlan) -> int:
                 parquet = pq.ParquetFile(source)
                 physical = parquet.schema_arrow
                 rows += parquet.metadata.num_rows
-        except Exception:
-            raise DorisPlanningError(
-                "Parquet footer discovery failed; verify source access"
+        except Exception as error:
+            raise _with_native_diagnostic(
+                DorisPlanningError(
+                    f"Parquet footer discovery failed{_diagnostic_suffix(error)}; "
+                    "verify source access"
+                ),
+                "Parquet footer",
+                error,
             ) from None
         if len(physical.names) != len(set(physical.names)) or set(physical.names) != set(expected):
             raise DorisSchemaError("Parquet data column identities differ from Doris/HMS")
