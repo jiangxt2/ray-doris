@@ -18,7 +18,7 @@ import pyarrow as pa
 import pytest
 from ray.data.datasource import WriteResult
 
-from ray_doris import _compat
+from ray_doris import _compat, _errors
 from ray_doris._compat import prepare_write_remote_args
 from ray_doris._errors import (
     DorisAmbiguousWriteError,
@@ -430,6 +430,8 @@ def test_stream_load_timeout_preserves_send_boundary_and_redacts_traceback(
             request.transmission.body_started = body_started
             raise urllib.error.URLError(TimeoutError("private-password private-payload"))
 
+    failed_import = Mock(side_effect=RuntimeError("private-thrift-initialization"))
+    monkeypatch.setattr(_errors, "import_module", failed_import, raising=False)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: FailingOpener())
     expected = DorisAmbiguousWriteError if body_started else DorisWriteError
     with pytest.raises(expected, match="timeout") as captured:
@@ -444,6 +446,7 @@ def test_stream_load_timeout_preserves_send_boundary_and_redacts_traceback(
     )
     assert "private-password" not in formatted + caplog.text
     assert "private-payload" not in formatted + caplog.text
+    failed_import.assert_not_called()
 
 
 def test_write_metadata_timeout_is_safe(monkeypatch, caplog) -> None:

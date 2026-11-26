@@ -1,7 +1,6 @@
 """Public exceptions raised by ray-doris."""
 
 import urllib.error
-from importlib import import_module
 
 import pyarrow as pa
 
@@ -10,16 +9,6 @@ def _diagnostic_suffix(error: BaseException) -> str:
     """Describe selected failure types without rendering exception text or paths."""
     if type(error) is urllib.error.URLError and isinstance(error.reason, BaseException):
         error = error.reason
-    try:
-        transport_error = import_module("thrift.transport.TTransport").TTransportException
-    except ImportError:
-        transport_error = None
-    if transport_error is not None and type(error) is transport_error:
-        if getattr(error, "type", None) == transport_error.TIMED_OUT:
-            return " (timeout)"
-        inner = getattr(error, "inner", None)
-        if isinstance(inner, BaseException):
-            error = inner
     if isinstance(error, TimeoutError):
         category = "timeout"
     elif isinstance(error, PermissionError):
@@ -72,12 +61,12 @@ _DIAGNOSTIC_SUFFIXES = frozenset(
 
 
 def _with_native_diagnostic(
-    error: DorisPlanningError, stage: str, cause: BaseException
+    error: DorisPlanningError, stage: str, suffix: str
 ) -> DorisPlanningError:
     """Attach fixed diagnostic fields without changing the public error class."""
-    if stage not in _NATIVE_DIAGNOSTIC_STAGES:
-        raise ValueError("unsupported native diagnostic stage")
-    error._native_diagnostic = (stage, _diagnostic_suffix(cause))
+    if stage not in _NATIVE_DIAGNOSTIC_STAGES or suffix not in _DIAGNOSTIC_SUFFIXES:
+        raise ValueError("unsupported native diagnostic")
+    error._native_diagnostic = (stage, suffix)
     return error
 
 

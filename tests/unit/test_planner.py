@@ -10,7 +10,7 @@ import pyarrow as pa
 import pymysql
 import pytest
 
-from ray_doris import _planner
+from ray_doris import _errors, _planner
 from ray_doris._errors import (
     DorisAuthenticationError,
     DorisConfigurationError,
@@ -163,6 +163,8 @@ def test_query_plan_http_client_classifies_transport_and_invalid_json(monkeypatc
 
 
 def test_query_plan_transport_timeout_keeps_sensitive_context_out(monkeypatch, caplog) -> None:
+    failed_import = Mock(side_effect=RuntimeError("private-thrift-initialization"))
+    monkeypatch.setattr(_errors, "import_module", failed_import, raising=False)
     monkeypatch.setattr(
         _planner,
         "_open_query_plan_request",
@@ -171,6 +173,7 @@ def test_query_plan_transport_timeout_keeps_sensitive_context_out(monkeypatch, c
     with pytest.raises(DorisPlanningError, match="unavailable.*timeout") as captured:
         QueryPlanClient(make_config()).fetch_tablet_ids("SELECT 1")
     _assert_redacted_exception(captured.value, caplog, "private-password")
+    failed_import.assert_not_called()
 
 
 def test_schema_discovery_timeout_reports_safe_category(monkeypatch, caplog) -> None:

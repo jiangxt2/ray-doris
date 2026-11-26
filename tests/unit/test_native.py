@@ -16,6 +16,7 @@ from ray_doris import (
     DorisPlanningError,
     DorisSchemaError,
     NativeReadOptions,
+    _errors,
     read_doris,
 )
 from ray_doris._errors import (
@@ -41,6 +42,14 @@ from ray_doris._native import (
 )
 from ray_doris._schema import doris_type_to_arrow, information_schema_type
 from ray_doris._sql import parse_table
+
+
+def _assert_redacted_exception(error, caplog, sentinel):
+    formatted = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    assert sentinel not in str(error)
+    assert sentinel not in formatted
+    assert sentinel not in caplog.text
+    assert error.__cause__ is None
 
 
 @pytest.mark.parametrize(
@@ -241,23 +250,61 @@ def test_partition_overflow_fails_before_descriptor_requests():
     client.get_partitions_by_names.assert_not_called()
 
 
-def test_hms_connection_closes_and_redacts_failure(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        pytest.param("request", "", id="request"),
+        pytest.param("thrift-timeout", "timeout", id="thrift-timeout"),
+        pytest.param("thrift-inner", "connection failure", id="thrift-inner"),
+        pytest.param("open", "connection failure", id="open"),
+    ],
+)
+def test_hms_connection_closes_and_redacts_failure(monkeypatch, caplog, failure, category):
+    class FakeTransportError(Exception):
+        NOT_OPEN = 1
+        TIMED_OUT = 3
+
+        def __init__(self, type, message, inner=None):
+            super().__init__(message)
+            self.type = type
+            self.inner = inner
+
     transport = Mock()
     sdk = Mock()
     modules = {
         "pymetastore.hive_metastore.ThriftHiveMetastore": sdk,
         "thrift.transport.TSocket": Mock(),
         "thrift.transport.TTransport": SimpleNamespace(
-            TBufferedTransport=Mock(return_value=transport)
+            TBufferedTransport=Mock(return_value=transport), TTransportException=FakeTransportError
         ),
         "thrift.protocol.TBinaryProtocol": Mock(),
     }
     monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
-    sdk.Client.return_value.get_table.side_effect = RuntimeError("secret-storage-key")
-    with pytest.raises(DorisPlanningError, match="HMS metadata request failed") as error:
+    if failure == "open":
+        transport.open.side_effect = ConnectionRefusedError("secret-storage-key")
+    elif failure == "thrift-timeout":
+        sdk.Client.return_value.get_table.side_effect = FakeTransportError(
+            FakeTransportError.TIMED_OUT, "secret-storage-key"
+        )
+    elif failure == "thrift-inner":
+        sdk.Client.return_value.get_table.side_effect = FakeTransportError(
+            FakeTransportError.NOT_OPEN,
+            "secret-storage-key",
+            ConnectionRefusedError("secret-storage-key"),
+        )
+    else:
+        sdk.Client.return_value.get_table.side_effect = RuntimeError("secret-storage-key")
+    expected = (
+        "HMS connection failed"
+        if failure == "open"
+        else "HMS metadata request failed during get_table"
+    )
+    with pytest.raises(DorisPlanningError, match=expected) as error:
         with open_hms("thrift://hms:9083", 0.0001) as client:
             client.table("db", "t")
-    assert "secret" not in str(error.value)
+    _assert_redacted_exception(error.value, caplog, "secret-storage-key")
+    if category:
+        assert category in str(error.value)
     transport.close.assert_called_once()
     modules["thrift.transport.TSocket"].TSocket.return_value.setTimeout.assert_called_with(1)
 
@@ -279,85 +326,11 @@ def test_diagnostic_categories_never_render_exception_text(error, expected):
     assert _diagnostic_suffix(error) == (f" ({expected})" if expected else "")
 
 
-def test_hms_thrift_transport_error_exposes_only_safe_inner_category(monkeypatch):
-    class FakeTransportError(Exception):
-        NOT_OPEN = 1
-        TIMED_OUT = 3
-
-        def __init__(self, type, message, inner=None):
-            super().__init__(message)
-            self.type = type
-            self.inner = inner
-
-    monkeypatch.setattr(
-        "ray_doris._errors.import_module",
-        Mock(return_value=SimpleNamespace(TTransportException=FakeTransportError)),
-    )
-
-    refused = FakeTransportError(
-        type=FakeTransportError.NOT_OPEN,
-        message="private-host",
-        inner=ConnectionRefusedError("private-path"),
-    )
-    timed_out = FakeTransportError(type=FakeTransportError.TIMED_OUT, message="private-host")
-    assert _diagnostic_suffix(refused) == " (connection failure)"
-    assert _diagnostic_suffix(timed_out) == " (timeout)"
-
-
-def test_diagnostics_work_without_optional_thrift(monkeypatch):
-    monkeypatch.setattr(
-        "ray_doris._errors.import_module", Mock(side_effect=ModuleNotFoundError("thrift"))
-    )
+def test_diagnostics_do_not_initialize_optional_thrift(monkeypatch):
+    failed_import = Mock(side_effect=RuntimeError("private-thrift-initialization"))
+    monkeypatch.setattr(_errors, "import_module", failed_import, raising=False)
     assert _diagnostic_suffix(TimeoutError("private")) == " (timeout)"
-
-
-def test_hms_request_reports_safe_category_and_closes_transport(monkeypatch, caplog):
-    transport = Mock()
-    sdk = Mock()
-    modules = {
-        "pymetastore.hive_metastore.ThriftHiveMetastore": sdk,
-        "thrift.transport.TSocket": Mock(),
-        "thrift.transport.TTransport": SimpleNamespace(
-            TBufferedTransport=Mock(return_value=transport)
-        ),
-        "thrift.protocol.TBinaryProtocol": Mock(),
-    }
-    monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
-    sdk.Client.return_value.get_table.side_effect = TimeoutError("password-secret /private/path")
-    with pytest.raises(DorisPlanningError, match="get_table.*timeout") as error:
-        with open_hms("thrift://hms:9083", 1) as client:
-            client.table("db", "t")
-    formatted = "".join(
-        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
-    )
-    assert "password-secret" not in formatted + caplog.text
-    assert "/private/path" not in formatted + caplog.text
-    assert error.value.__cause__ is None
-    transport.close.assert_called_once()
-
-
-def test_hms_open_failure_reports_safe_category_and_closes_transport(monkeypatch, caplog):
-    transport = Mock()
-    transport.open.side_effect = ConnectionRefusedError("private-host")
-    modules = {
-        "pymetastore.hive_metastore.ThriftHiveMetastore": Mock(),
-        "thrift.transport.TSocket": Mock(),
-        "thrift.transport.TTransport": SimpleNamespace(
-            TBufferedTransport=Mock(return_value=transport)
-        ),
-        "thrift.protocol.TBinaryProtocol": Mock(),
-    }
-    monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
-    with pytest.raises(
-        DorisPlanningError, match="HMS connection failed.*connection failure"
-    ) as error:
-        with open_hms("thrift://hms:9083", 1):
-            pass
-    formatted = "".join(
-        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
-    )
-    assert "private-host" not in formatted + caplog.text
-    transport.close.assert_called_once()
+    failed_import.assert_not_called()
 
 
 @pytest.mark.parametrize("code", [1045, 1221, 5087])
@@ -953,7 +926,7 @@ def test_canonical_timestamp_cast_never_truncates_submicrosecond_values():
         _canonicalize_batch(batch, schema=pa.schema([("ts", pa.timestamp("us"))]))
 
 
-def test_bad_footer_closes_input_and_redacts_storage_details():
+def test_bad_footer_closes_input_and_redacts_storage_details(caplog):
     source = pa.BufferReader(b"not parquet")
     filesystem = Mock()
     filesystem.open_input_file.return_value = source
@@ -961,11 +934,8 @@ def test_bad_footer_closes_input_and_redacts_storage_details():
     with pytest.raises(DorisPlanningError, match="footer discovery") as error:
         _validate_file_schemas(plan)
     assert source.closed
-    assert "secret-source" not in str(error.value)
     assert "invalid data" in str(error.value)
-    assert "secret-source" not in "".join(
-        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
-    )
+    _assert_redacted_exception(error.value, caplog, "secret-source")
 
 
 def test_storage_discovery_reports_category_without_path(caplog):
@@ -977,7 +947,4 @@ def test_storage_discovery_reports_category_without_path(caplog):
         DorisPlanningError, match="storage metadata discovery failed.*permission"
     ) as error:
         plan_files(metadata, options)
-    formatted = "".join(
-        traceback.format_exception(type(error.value), error.value, error.value.__traceback__)
-    )
-    assert "private-storage-path" not in formatted + caplog.text
+    _assert_redacted_exception(error.value, caplog, "private-storage-path")

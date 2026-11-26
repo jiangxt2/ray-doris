@@ -147,13 +147,11 @@ def plan_files(metadata: ExternalMetadata, options: NativeReadOptions) -> Native
     except (DorisPlanningError, DorisConfigurationError):
         raise
     except Exception as error:
+        suffix = _diagnostic_suffix(error)
         raise _with_native_diagnostic(
-            DorisPlanningError(
-                f"storage metadata discovery failed{_diagnostic_suffix(error)}; "
-                "verify source access"
-            ),
+            DorisPlanningError(f"storage metadata discovery failed{suffix}; verify source access"),
             "storage metadata",
-            error,
+            suffix,
         ) from None
 
 
@@ -171,13 +169,13 @@ def _validate_file_schemas(plan: NativeReadPlan) -> int:
                 physical = parquet.schema_arrow
                 rows += parquet.metadata.num_rows
         except Exception as error:
+            suffix = _diagnostic_suffix(error)
             raise _with_native_diagnostic(
                 DorisPlanningError(
-                    f"Parquet footer discovery failed{_diagnostic_suffix(error)}; "
-                    "verify source access"
+                    f"Parquet footer discovery failed{suffix}; verify source access"
                 ),
                 "Parquet footer",
-                error,
+                suffix,
             ) from None
         if len(physical.names) != len(set(physical.names)) or set(physical.names) != set(expected):
             raise DorisSchemaError("Parquet data column identities differ from Doris/HMS")

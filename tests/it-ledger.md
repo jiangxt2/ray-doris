@@ -1,5 +1,30 @@
 # Integration test ledger
 
+## Optional Thrift import failure isolation
+
+The pending follow-up to issue #29 is based on
+`26abaa5452775756e213676a258a21f5badbfe5a`; its source/test diff excluding this
+ledger has SHA-256 `f0efc6e49d0866ea5c4fe95c72b2e1bf25d8c64a530373a1b6ae87ded15b8268`.
+Generic diagnostics no longer load Thrift; HMS classifies errors using the
+transport exception type already loaded for that connection.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Unit and static | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff and mypy | 760 passed, 15 warnings; static checks passed |
+| Doris IT | Doris 4.0.6 FE 3 GiB / BE 4 GiB; Python 3.12.12 / Ray 2.59.0 | 65 passed, 8 warnings, no skips, 1024.59s |
+| HMS protocol | Isolated Hive HMS and real Thrift client | Metadata request, missing-table redaction, real connection-failure classification and constructed Thrift timeout classification passed |
+
+Logs and scoped cleanup evidence are retained in
+`/private/tmp/ray-doris-thrift-diagnostics-fix/`. Test-created containers,
+networks, volumes and custom Doris image tags were removed; shared base images
+were retained.
+
+An initial HMS run passed metadata and redaction checks but failed its
+connection-failure assertion because the host reported a timeout rather than a
+refusal. The corrected probe checks the actual Thrift failure category against
+the connector result. The timeout-category check constructs the Thrift
+exception; it does not induce a timeout from the running HMS service.
+
 ## Safe failure diagnostics
 
 Issue #29 improves sanitized planning, read, and write diagnostics and retains
