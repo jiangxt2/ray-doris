@@ -64,8 +64,6 @@ def _with_native_diagnostic(
     error: DorisPlanningError, stage: str, suffix: str
 ) -> DorisPlanningError:
     """Attach fixed diagnostic fields without changing the public error class."""
-    if stage not in _NATIVE_DIAGNOSTIC_STAGES or suffix not in _DIAGNOSTIC_SUFFIXES:
-        raise ValueError("unsupported native diagnostic")
     error._native_diagnostic = (stage, suffix)
     return error
 

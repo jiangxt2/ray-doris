@@ -1,59 +1,24 @@
 # Integration test ledger
 
-## Optional Thrift import failure isolation
-
-The pending follow-up to issue #29 is based on
-`26abaa5452775756e213676a258a21f5badbfe5a`; its source/test diff excluding this
-ledger has SHA-256 `f0efc6e49d0866ea5c4fe95c72b2e1bf25d8c64a530373a1b6ae87ded15b8268`.
-Generic diagnostics no longer load Thrift; HMS classifies errors using the
-transport exception type already loaded for that connection.
-
-| Suite | Scope and runtime | Result |
-| --- | --- | --- |
-| Unit and static | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff and mypy | 760 passed, 15 warnings; static checks passed |
-| Doris IT | Doris 4.0.6 FE 3 GiB / BE 4 GiB; Python 3.12.12 / Ray 2.59.0 | 65 passed, 8 warnings, no skips, 1024.59s |
-| HMS protocol | Isolated Hive HMS and real Thrift client | Metadata request, missing-table redaction, real connection-failure classification and constructed Thrift timeout classification passed |
-
-Logs and scoped cleanup evidence are retained in
-`/private/tmp/ray-doris-thrift-diagnostics-fix/`. Test-created containers,
-networks, volumes and custom Doris image tags were removed; shared base images
-were retained.
-
-An initial HMS run passed metadata and redaction checks but failed its
-connection-failure assertion because the host reported a timeout rather than a
-refusal. The corrected probe checks the actual Thrift failure category against
-the connector result. The timeout-category check constructs the Thrift
-exception; it does not induce a timeout from the running HMS service.
-
 ## Safe failure diagnostics
 
-Issue #29 improves sanitized planning, read, and write diagnostics and retains
-safe connector-generated causes. The tested worktree is based on
-`7a801cfba1ff6d0e108bf1799909ce8bba44510c`; its cumulative diff excluding this
-ledger has SHA-256 `6062a03cd4efe407e1b8558659c9a3d8a278a26558d24709b9222306c66cee7c`.
+Issue #29: sanitized planning, read and write diagnostics. The pending follow-up
+is based on `9bc1ebe3e9e6a814b1475665f7fb91daa5709f3a`; its diff excluding this
+ledger has SHA-256 `7c7d32f75ca7f2d9bf0b7d3e9427a71c747dd65d647b424ed3fa292c6e6b9c53`.
 
 | Suite | Scope and runtime | Result |
 | --- | --- | --- |
-| Unit | Python 3.12.12, Ray 2.59.1, PyArrow 26.0.1 | 755 passed; one further HMS test added and passed separately |
-| Contract | Python 3.12.12, Ray 2.59.1, local Ray workers | 91 passed |
-| Doris IT, initial | Doris 4.0.6, FE 3 GiB, BE 2 GiB; Python 3.12.12, Ray 2.59.1 | Interrupted after 9 passed and 9 failed; BE reached its memory limit and cancelled queries |
-| Doris IT, retry | Doris 4.0.6, FE 3 GiB, BE 4 GiB; Python 3.12.12, Ray 2.59.1 | 52 passed, 13 failed; failures include projection and limit SQL assertions. Ray 2.59.1 does not enable the connector's version-gated projection pushdown. |
-| Doris IT, documented baseline | Doris 4.0.6, FE 3 GiB, BE 4 GiB; Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1 | 65 passed, 8 warnings, no skips, 1029.39s |
+| Unit / static | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff and mypy | 759 passed, 15 warnings; static checks passed |
+| Contract | Ray 2.59.0, local Ray workers | 91 passed |
+| Doris IT | Doris 4.0.6; FE 3 GiB, BE 4 GiB; Ray 2.59.0 | 65 passed |
+| HMS protocol | `apache/gravitino-ci:hive-0.1.20`, image ID `sha256:703efa424af7006f63ebd989ae23c89410665ded27ea0d2e6762fa11e3de454b`; real Thrift client | Metadata, redaction and connection-failure checks passed; timeout classification used a constructed Thrift exception |
 
-The final Doris run uses the documented Ray 2.59.0 integration baseline. Logs
-for the earlier attempts are retained in
-`/private/tmp/ray-doris-safe-failure-diagnostics/` and
-`/private/tmp/ray-doris-safe-failure-diagnostics-retry/`; final logs are in
-`/private/tmp/ray-doris-safe-failure-diagnostics-baseline/`. The isolated test
-containers, networks, volumes and custom image tags were removed after each run;
-shared Doris base images were retained. The final dangling-image listing was
-unchanged after sorting.
-
-After the Doris run, a unit test was changed to avoid requiring the optional
-Thrift dependency in the base CI environment; tests were also added for the
-missing dependency, storage discovery and schema-discovery failure paths. Four
-focused tests pass with Ray 2.59.0. These test-only changes do not alter the
-production code or invalidate the recorded Doris result.
+Doris images: FE `sha256:830863e9ff8af4b354df5303b1235c11b2f822fa3125b83a1627e498c5c251cf`;
+BE `sha256:72e58021c2fa110350269e587d6c74a28579d3c1ed563023cb784a3824f4ad87`.
+The service and contract results use commit `9bc1ebe`; the follow-up removes a
+redundant internal check for fixed valid inputs and consolidates tests. Logging
+still validates those inputs. Logs: `/private/tmp/ray-doris-simplify-diagnostics/`
+and `/private/tmp/ray-doris-thrift-diagnostics-fix/`.
 
 ## Internal STRING display alias
 

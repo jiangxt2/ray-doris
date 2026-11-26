@@ -388,64 +388,49 @@ def test_stream_load_response_parser_fails_closed_on_labels_counts_and_payloads(
         StreamLoadClient._parse_response(b'{"Status":"Fail"}', rows=1)
 
 
-def test_stream_load_pre_send_transport_failure_is_known(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FailingOpener:
-        def open(self, request: object, **kwargs: object) -> object:
-            del request, kwargs
-            raise urllib.error.URLError("secret payload")
-
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: FailingOpener())
-    with pytest.raises(DorisWriteError, match="before request body"):
-        StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions()).load(
-            b"payload", rows=1, columns=("id",)
-        )
-
-
-def test_stream_load_post_send_transport_failure_is_ambiguous_and_redacted(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("body_started", "timeout"),
+    [
+        pytest.param(False, False, id="before-send-transport"),
+        pytest.param(True, False, id="after-send-transport"),
+        pytest.param(False, True, id="before-send-timeout"),
+        pytest.param(True, True, id="after-send-timeout"),
+    ],
+)
+def test_stream_load_transport_failure_preserves_send_boundary_and_redacts_traceback(
+    monkeypatch, caplog, body_started, timeout
 ) -> None:
-    class FailingOpener:
-        def open(self, request: Any, **kwargs: object) -> object:
-            del kwargs
-            request.transmission.body_started = True
-            raise urllib.error.URLError("password-secret payload-secret")
+    password, payload = "password-secret", b"payload-secret"
+    reason = (
+        TimeoutError("password-secret payload-secret")
+        if timeout
+        else "password-secret payload-secret"
+    )
 
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: FailingOpener())
-    with pytest.raises(DorisAmbiguousWriteError, match="status is unknown") as captured:
-        StreamLoadClient(
-            _connection(password="password-secret"),
-            DorisTable("db", "table"),
-            DorisWriteOptions(),
-        ).load(b"payload-secret", rows=1, columns=("id",))
-    assert "password-secret" not in str(captured.value)
-    assert "payload-secret" not in str(captured.value)
-
-
-@pytest.mark.parametrize("body_started", [False, True], ids=["before-send", "after-send"])
-def test_stream_load_timeout_preserves_send_boundary_and_redacts_traceback(
-    monkeypatch, caplog, body_started
-) -> None:
     class FailingOpener:
         def open(self, request: Any, **kwargs: object) -> object:
             request.transmission.body_started = body_started
-            raise urllib.error.URLError(TimeoutError("private-password private-payload"))
+            raise urllib.error.URLError(reason)
 
     failed_import = Mock(side_effect=RuntimeError("private-thrift-initialization"))
     monkeypatch.setattr(_errors, "import_module", failed_import, raising=False)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: FailingOpener())
     expected = DorisAmbiguousWriteError if body_started else DorisWriteError
-    with pytest.raises(expected, match="timeout") as captured:
-        StreamLoadClient(_connection(), DorisTable("db", "table"), DorisWriteOptions()).load(
-            b"payload", rows=1, columns=("id",)
-        )
+    message = "status is unknown" if body_started else "before request body"
+    client = StreamLoadClient(
+        _connection(password=password), DorisTable("db", "table"), DorisWriteOptions()
+    )
+    with pytest.raises(expected, match=message) as captured:
+        client.load(payload, rows=1, columns=("id",))
     assert type(captured.value) is expected
+    assert ("timeout" in str(captured.value)) is timeout
     formatted = "".join(
         traceback.format_exception(
             type(captured.value), captured.value, captured.value.__traceback__
         )
     )
-    assert "private-password" not in formatted + caplog.text
-    assert "private-payload" not in formatted + caplog.text
+    assert "password-secret" not in formatted + caplog.text
+    assert "payload-secret" not in formatted + caplog.text
     failed_import.assert_not_called()
 
 

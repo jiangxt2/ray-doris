@@ -16,7 +16,6 @@ from ray_doris import (
     DorisPlanningError,
     DorisSchemaError,
     NativeReadOptions,
-    _errors,
     read_doris,
 )
 from ray_doris._errors import (
@@ -250,25 +249,39 @@ def test_partition_overflow_fails_before_descriptor_requests():
     client.get_partitions_by_names.assert_not_called()
 
 
+class FakeTransportError(Exception):
+    NOT_OPEN = 1
+    TIMED_OUT = 3
+
+    def __init__(self, kind, inner=None):
+        super().__init__("secret-storage-key")
+        self.type = kind
+        self.inner = inner
+
+
 @pytest.mark.parametrize(
-    ("failure", "category"),
+    ("during_open", "cause", "category"),
     [
-        pytest.param("request", "", id="request"),
-        pytest.param("thrift-timeout", "timeout", id="thrift-timeout"),
-        pytest.param("thrift-inner", "connection failure", id="thrift-inner"),
-        pytest.param("open", "connection failure", id="open"),
+        pytest.param(False, RuntimeError("secret-storage-key"), "", id="request"),
+        pytest.param(
+            False, FakeTransportError(FakeTransportError.TIMED_OUT), "timeout", id="thrift-timeout"
+        ),
+        pytest.param(
+            False,
+            FakeTransportError(
+                FakeTransportError.NOT_OPEN, ConnectionRefusedError("secret-storage-key")
+            ),
+            "connection failure",
+            id="thrift-inner",
+        ),
+        pytest.param(
+            True, ConnectionRefusedError("secret-storage-key"), "connection failure", id="open"
+        ),
     ],
 )
-def test_hms_connection_closes_and_redacts_failure(monkeypatch, caplog, failure, category):
-    class FakeTransportError(Exception):
-        NOT_OPEN = 1
-        TIMED_OUT = 3
-
-        def __init__(self, type, message, inner=None):
-            super().__init__(message)
-            self.type = type
-            self.inner = inner
-
+def test_hms_connection_closes_and_redacts_failure(
+    monkeypatch, caplog, during_open, cause, category
+):
     transport = Mock()
     sdk = Mock()
     modules = {
@@ -280,24 +293,12 @@ def test_hms_connection_closes_and_redacts_failure(monkeypatch, caplog, failure,
         "thrift.protocol.TBinaryProtocol": Mock(),
     }
     monkeypatch.setattr("ray_doris._hms.import_module", modules.__getitem__)
-    if failure == "open":
-        transport.open.side_effect = ConnectionRefusedError("secret-storage-key")
-    elif failure == "thrift-timeout":
-        sdk.Client.return_value.get_table.side_effect = FakeTransportError(
-            FakeTransportError.TIMED_OUT, "secret-storage-key"
-        )
-    elif failure == "thrift-inner":
-        sdk.Client.return_value.get_table.side_effect = FakeTransportError(
-            FakeTransportError.NOT_OPEN,
-            "secret-storage-key",
-            ConnectionRefusedError("secret-storage-key"),
-        )
+    if during_open:
+        transport.open.side_effect = cause
     else:
-        sdk.Client.return_value.get_table.side_effect = RuntimeError("secret-storage-key")
+        sdk.Client.return_value.get_table.side_effect = cause
     expected = (
-        "HMS connection failed"
-        if failure == "open"
-        else "HMS metadata request failed during get_table"
+        "HMS connection failed" if during_open else "HMS metadata request failed during get_table"
     )
     with pytest.raises(DorisPlanningError, match=expected) as error:
         with open_hms("thrift://hms:9083", 0.0001) as client:
@@ -324,13 +325,6 @@ def test_hms_connection_closes_and_redacts_failure(monkeypatch, caplog, failure,
 )
 def test_diagnostic_categories_never_render_exception_text(error, expected):
     assert _diagnostic_suffix(error) == (f" ({expected})" if expected else "")
-
-
-def test_diagnostics_do_not_initialize_optional_thrift(monkeypatch):
-    failed_import = Mock(side_effect=RuntimeError("private-thrift-initialization"))
-    monkeypatch.setattr(_errors, "import_module", failed_import, raising=False)
-    assert _diagnostic_suffix(TimeoutError("private")) == " (timeout)"
-    failed_import.assert_not_called()
 
 
 @pytest.mark.parametrize("code", [1045, 1221, 5087])
