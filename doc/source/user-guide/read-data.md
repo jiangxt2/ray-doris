@@ -54,8 +54,8 @@ dataset = read_doris(
 Use fully qualified table names and unique result column names. The SQL is trusted input, sent to
 Doris as supplied, without classification or statement-count checks. Put projection, filters,
 ordering and limits in the query. Table-specific options, native reads and Flight transport aren't
-available in query mode. The connector reads the result exposed by the MySQL driver; handling of
-additional result sets follows Doris and driver behavior.
+available in query mode. The connector returns the first result set exposed by the MySQL driver;
+the driver may process additional result sets during cleanup.
 
 The result schema defaults to MySQL protocol metadata. Doris reports `VARCHAR`, `LARGEINT` and some
 complex types using indistinguishable text metadata, so those values are returned as strings.
@@ -63,6 +63,8 @@ Provide an Arrow `schema` to request supported logical types, such as `pa.decima
 `LARGEINT`; its field names must match the result columns. Unsupported metadata or incompatible
 values raise an error. Inferred fields are nullable because MySQL result nullability flags are not
 reliable for Doris expressions.
+With an explicit schema, numeric conversions must preserve the value, including when narrowing
+floating-point types. MySQL `FLOAT` results use their native `float32` precision.
 
 For example, when `event_id` is a Doris `LARGEINT`:
 
@@ -78,7 +80,8 @@ dataset = read_doris(
 )
 ```
 
-One MySQL read task streams at most `batch_size` rows per output block. Ray operations that execute
+One MySQL read task fetches at most `batch_size` rows per batch; Ray may combine batches into
+larger Dataset blocks. Ray operations that execute
 the Dataset, including schema discovery or task retries, can execute the SQL again. SQL without a
 result set raises an error after execution and may already have had effects. The caller is
 responsible for the SQL and database permissions. Query reads ignore `override_num_blocks` with a

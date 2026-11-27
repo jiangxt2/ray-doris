@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from functools import partial
+from math import isfinite, isnan
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence, cast
 
 import pyarrow as pa
@@ -123,6 +125,41 @@ def _query_error(exc: pymysql.MySQLError) -> Exception:
     return DorisReadError("Doris query read failed")
 
 
+def _validate_numeric_values(
+    rows: Sequence[Sequence[object]],
+    table: pa.Table,
+    schema: pa.Schema,
+    description: Sequence[Sequence[Any]],
+) -> None:
+    for index, arrow_field in enumerate(schema):
+        for row, converted in zip(rows, table.column(index).to_pylist()):
+            original = row[index]
+            if isinstance(original, (int, float, Decimal)) and isinstance(
+                converted, (int, float, Decimal)
+            ):
+                if (
+                    description[index][1] == FIELD_TYPE.FLOAT
+                    and pa.types.is_float32(arrow_field.type)
+                    and isinstance(original, float)
+                    and isinstance(converted, float)
+                    and isfinite(original)
+                    and isfinite(converted)
+                    and (original == 0 or converted != 0)
+                ):
+                    continue
+                both_nan = (
+                    isinstance(original, (float, Decimal))
+                    and isinstance(converted, (float, Decimal))
+                    and isnan(original)
+                    and isnan(converted)
+                )
+                if not both_nan and original != converted:
+                    raise DorisReadError(
+                        f"lossy conversion of Doris column {arrow_field.name!r} "
+                        f"to {arrow_field.type}"
+                    )
+
+
 def _read_query(config: QueryReadConfig) -> Iterator[pa.Table]:
     """Execute the caller's SQL once per task attempt and stream its result."""
     connection: Any = None
@@ -153,6 +190,8 @@ def _read_query(config: QueryReadConfig) -> Iterator[pa.Table]:
                             f"MySQL returned non-text values for text column {field.name!r}"
                         )
             table = _rows_to_table(rows, names, schema)
+            if config.schema is not None:
+                _validate_numeric_values(rows, table, schema, cursor.description)
             del rows
             emitted = True
             yield table

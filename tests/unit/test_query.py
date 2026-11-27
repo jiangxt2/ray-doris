@@ -201,6 +201,45 @@ def test_explicit_schema_converts_largeint_without_loss(monkeypatch) -> None:
     assert block.to_pylist() == [{"large": Decimal("170141183460469231731687303715884105727")}]
 
 
+@pytest.mark.parametrize(
+    "value,target",
+    [
+        (1.9, pa.int32()),
+        (-1.9, pa.int32()),
+        (1e100, pa.float32()),
+        (0.1, pa.float32()),
+        (2**53 + 1, pa.float64()),
+    ],
+)
+def test_explicit_schema_rejects_lossy_numeric_conversion(monkeypatch, value, target) -> None:
+    _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.DOUBLE)], [[(value,)]])
+    with pytest.raises(DorisReadError, match="conversion|convert"):
+        list(_read_query(_query_source(schema=pa.schema([("v", target)]))._config))
+
+
+@pytest.mark.parametrize("value,target", [(2.0, pa.int32()), (1.5, pa.float32())])
+def test_explicit_schema_accepts_exact_numeric_conversion(monkeypatch, value, target) -> None:
+    _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.DOUBLE)], [[(value,)], []])
+    block = list(_read_query(_query_source(schema=pa.schema([("v", target)]))._config))[0]
+    assert block.to_pylist() == [{"v": value}]
+
+
+def test_explicit_float32_accepts_mysql_float_precision(monkeypatch) -> None:
+    _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.FLOAT)], [[(0.1,)], []])
+    schema = pa.schema([("v", pa.float32())])
+    block = list(_read_query(_query_source(schema=schema)._config))[0]
+    assert block.schema == schema
+    assert block.to_pylist() == [{"v": pa.scalar(0.1, type=pa.float32()).as_py()}]
+
+
+@pytest.mark.parametrize("value", [1e100, 1e-100])
+def test_explicit_float32_rejects_mysql_float_out_of_range(monkeypatch, value) -> None:
+    _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.FLOAT)], [[(value,)]])
+    schema = pa.schema([("v", pa.float32())])
+    with pytest.raises(DorisReadError, match="lossy conversion"):
+        list(_read_query(_query_source(schema=schema)._config))
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 def test_empty_result_preserves_schema(monkeypatch, explicit: bool) -> None:
     schema = pa.schema([("id", pa.int64())]) if explicit else None

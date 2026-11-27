@@ -137,14 +137,16 @@ dataset = read_doris(
 
 The query is trusted input, sent to Doris without SQL classification or statement-count checks.
 Use fully qualified table names and unique result column names. Table-specific options and Flight
-transport do not apply. The worker reads the result exposed by the MySQL driver; handling of
-additional result sets is determined by Doris and the driver.
+transport do not apply. The worker returns the first result set exposed by the MySQL driver; the
+driver may process additional result sets during cleanup.
 
 By default, result types come from MySQL protocol metadata. Doris reports `VARCHAR`, `LARGEINT`
 and some complex types using the same text metadata, so those values are returned as strings.
 Pass an Arrow `schema` for supported types when exact logical types are needed, for example a
 `decimal256(39, 0)` field for `LARGEINT`. Unsupported metadata or incompatible values fail rather
-than being inferred from rows. Batches are bounded by `batch_size` rows.
+than being inferred from rows. Explicit numeric conversions must preserve the value; MySQL `FLOAT`
+results use their native `float32` precision.
+MySQL fetches at most `batch_size` rows per batch; Ray may combine batches into larger Dataset blocks.
 
 The query runs when Ray executes the Dataset. Schema discovery or a Ray retry can execute it again.
 SQL that produces no result set raises an error after execution and may already have had effects.
