@@ -34,7 +34,7 @@ implementation details, and the [FAQ](doc/source/faq.md) records explicit scope 
 
 ## Installation
 
-This source builds `ray-doris` 1.3. Package-index installations use the latest
+This source builds `ray-doris` 2.0. Package-index installations use the latest
 published distribution; source checkouts use the compatibility matrix and package
 version declared in this repository.
 
