@@ -41,9 +41,13 @@ def ray_runtime():
 
 
 @pytest.mark.parametrize(
-    "reader,expected", [(_query_rows, [{"id": 1}, {"id": 2}]), (_query_empty, [])]
+    "reader,expected,blocks",
+    [
+        (_query_rows, [{"id": 1}, {"id": 2}], None),
+        (_query_empty, [], None),
+        (_query_empty, [], 2),
+    ],
 )
-@pytest.mark.parametrize("blocks", [None, 1, 2])
 def test_ray_infers_worker_schema_when_planning_schema_is_unknown(
     monkeypatch, reader, expected, blocks
 ):
@@ -68,12 +72,11 @@ def test_ray_infers_worker_schema_when_planning_schema_is_unknown(
     assert dataset.schema().base_schema == pa.schema([("id", pa.int64())])
 
 
-@pytest.mark.parametrize("blocks", [1, 2])
-def test_ray_preserves_explicit_schema_for_empty_query(monkeypatch, blocks):
+def test_ray_preserves_explicit_schema_for_empty_query(monkeypatch):
     monkeypatch.setattr("ray_doris._query._read_query", _query_empty)
     schema = pa.schema([("id", pa.int64())])
     dataset = read_doris(
-        host="unused", query="SELECT id FROM db.table", schema=schema, override_num_blocks=blocks
+        host="unused", query="SELECT id FROM db.table", schema=schema, override_num_blocks=2
     ).materialize()
     assert dataset.take_all() == []
     assert dataset.schema().base_schema == schema

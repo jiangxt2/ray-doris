@@ -139,7 +139,10 @@ def _validate_numeric_values(
             ):
                 if (
                     description[index][1] == FIELD_TYPE.FLOAT
-                    and pa.types.is_float32(arrow_field.type)
+                    and (
+                        pa.types.is_float32(arrow_field.type)
+                        or pa.types.is_float64(arrow_field.type)
+                    )
                     and isinstance(original, float)
                     and isinstance(converted, float)
                     and isfinite(original)
@@ -191,6 +194,13 @@ def _read_query(config: QueryReadConfig) -> Iterator[pa.Table]:
                         )
             table = _rows_to_table(rows, names, schema)
             if config.schema is not None:
+                for index, arrow_field in enumerate(schema):
+                    if cursor.description[index][1] == FIELD_TYPE.FLOAT and pa.types.is_float64(
+                        arrow_field.type
+                    ):
+                        # Restore the protocol's FLOAT precision before widening.
+                        values = table.column(index).cast(pa.float32()).cast(pa.float64())
+                        table = table.set_column(index, arrow_field, values)
                 _validate_numeric_values(rows, table, schema, cursor.description)
             del rows
             emitted = True

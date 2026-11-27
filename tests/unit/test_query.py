@@ -224,18 +224,20 @@ def test_explicit_schema_accepts_exact_numeric_conversion(monkeypatch, value, ta
     assert block.to_pylist() == [{"v": value}]
 
 
-def test_explicit_float32_accepts_mysql_float_precision(monkeypatch) -> None:
+@pytest.mark.parametrize("target", [None, pa.float32(), pa.float64()])
+def test_mysql_float_preserves_precision_for_each_schema(monkeypatch, target) -> None:
     _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.FLOAT)], [[(0.1,)], []])
-    schema = pa.schema([("v", pa.float32())])
+    schema = pa.schema([("v", target)]) if target is not None else None
     block = list(_read_query(_query_source(schema=schema)._config))[0]
-    assert block.schema == schema
+    assert block.schema == pa.schema([("v", target or pa.float32())])
     assert block.to_pylist() == [{"v": pa.scalar(0.1, type=pa.float32()).as_py()}]
 
 
+@pytest.mark.parametrize("target", [pa.float32(), pa.float64()])
 @pytest.mark.parametrize("value", [1e100, 1e-100])
-def test_explicit_float32_rejects_mysql_float_out_of_range(monkeypatch, value) -> None:
+def test_explicit_float_rejects_mysql_float_out_of_range(monkeypatch, value, target) -> None:
     _mock_connection(monkeypatch, [_description("v", FIELD_TYPE.FLOAT)], [[(value,)]])
-    schema = pa.schema([("v", pa.float32())])
+    schema = pa.schema([("v", target)])
     with pytest.raises(DorisReadError, match="lossy conversion"):
         list(_read_query(_query_source(schema=schema)._config))
 
