@@ -16,6 +16,8 @@ import ray
 import ray.data
 from _cluster import (
     BUCKET_COUNT,
+    READER_PASSWORD_ENV,
+    READER_USER,
     SlowITConfig,
     alive_backends,
     flight_proxy_backend_stats,
@@ -418,6 +420,33 @@ def test_mysql_read_executes_on_all_ray_workers(
     slow_config: SlowITConfig,
 ) -> None:
     _assert_read_executes_on_all_ray_workers(slow_config, transport="mysql")
+
+
+def test_sql_query_executes_on_selected_ray_worker(slow_config: SlowITConfig) -> None:
+    worker = _ray_worker_nodes(slow_config)[0]
+    dataset = read_doris(
+        host=slow_config.host,
+        mysql_port=slow_config.mysql_port,
+        user=READER_USER,
+        password_env=READER_PASSWORD_ENV,
+        query=(
+            f"SELECT id FROM `{slow_config.database}`.`{slow_config.distributed_table}` "
+            "WHERE id < 10"
+        ),
+        client_kwargs={
+            "ssl": {"ca": slow_config.tls_ca, "check_hostname": True},
+            "read_timeout": 180,
+            "write_timeout": 180,
+        },
+        override_num_blocks=4,
+        ray_remote_args={
+            "num_cpus": 1,
+            "scheduling_strategy": NodeAffinitySchedulingStrategy(
+                node_id=worker["NodeID"], soft=False
+            ),
+        },
+    )
+    assert sorted(row["id"] for row in dataset.take_all()) == list(range(10))
 
 
 def test_flight_read_executes_on_all_ray_workers(

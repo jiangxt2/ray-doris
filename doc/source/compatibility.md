@@ -60,6 +60,7 @@ Iceberg deployments.
 
 Doris 4.0.6 is the fixed real-infrastructure target for required and distributed integration tests. Those tests verify these behaviors:
 
+- Single-task MySQL query-result reads, including joins, aggregation and empty results.
 - Internal-catalog table reads through MySQL and explicit Flight SQL.
 - Column projection, trusted filters, empty results, and tablet planning.
 - `BOOLEAN`, decimal, `LARGEINT`, JSON string, date, and microsecond timestamp conversion.

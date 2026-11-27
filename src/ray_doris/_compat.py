@@ -162,7 +162,7 @@ def ensure_native_partitioning() -> None:
 def make_read_task(
     read_fn: Callable[[], Iterable[pa.Table]],
     metadata: BlockMetadata,
-    schema: pa.Schema,
+    schema: Optional[pa.Schema],
     per_task_row_limit: Optional[int],
 ) -> ReadTask:
     """Construct a ReadTask without hiding version or read-function TypeErrors."""

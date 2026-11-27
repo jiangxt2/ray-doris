@@ -24,11 +24,11 @@ Experimental external-table reads use `catalog="hive_catalog"` with an exact
 `auto_native_read=True` permits native Hive Parquet reading when the supported
 profile applies. See [shared-storage reads](user-guide/native-read.md) for version,
 metadata and authorization requirements. A three-part value in `table` still fails
-local validation; joins and arbitrary SQL remain unsupported.
+local validation. Query reads use the separate `query` input.
 
-## Can it execute arbitrary SQL?
+## Can it read SQL query results?
 
-No. The connector generates `SELECT <projection> FROM <table>` and optionally adds a trusted `WHERE` expression and Doris `TABLET(...)` hint. It doesn't accept a full query string, join, or multi-table plan.
+Yes. `read_doris(query=...)` passes trusted SQL to Doris and reads the driver's result through one MySQL task. The connector does not classify statements or restrict their count. See [query result reads](user-guide/read-data.md#read-a-query-result).
 
 A trusted complex filter can execute through the single-task planning fallback when Doris accepts the complete generated statement but `_query_plan` can't produce tablet splits.
 

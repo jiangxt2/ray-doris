@@ -1,5 +1,25 @@
 # Integration test ledger
 
+## SQL query result reads
+
+Issue #32 is implemented in an uncommitted worktree based on `dd8c50452769db2ff069bf65614e702380140254`. The approved direction executes trusted SQL directly in one MySQL read task and derives result types from MySQL metadata or an optional Arrow schema.
+
+The earlier source/test fingerprint `d6b1e8745a5cc87a8746deffa5aec050d90381f87961957a856f9f18d0c44fe1` describes the superseded EXPLAIN-based implementation. The following historical integration results do not validate the current direct-query source. A targeted Ray 2.59.0 diagnosis found that automatic or two-block planning loses an empty result schema; after query mode fixed its output hint at one, all eight focused contract cases passed. See `/private/tmp/ray-doris-sql-schema-contract-diagnostic-v3.log` and `/private/tmp/ray-doris-sql-query-contract-direct.log`.
+
+The current direct-query source/test fingerprint is `c720614054c9050cdec842e4a513ceb8a621b318dc77963daeda3137e2e52b80`, using the same sorted-path, NUL, length and contents method and excluding this ledger. In this state, Python 3.12.12 / Ray 2.59.0 passed 809 unit, 99 contract and 71 Doris 4.0.6 integration tests; the latter took 1011.80 seconds with FE 3 GiB and BE 4 GiB. The three-worker distributed run passed the core selectors and direct-query test: 4 passed, 10 warnings, 46.53 seconds. Ray 2.57.0 and 2.58.0 each passed a minimal empty/non-empty schema compatibility check. Logs are `/private/tmp/ray-doris-direct-unit-final.log`, `/private/tmp/ray-doris-direct-contract-final.log`, `/private/tmp/ray-doris-direct-full-it.log`, `/private/tmp/ray-doris-direct-slow-pytest.log`, `/private/tmp/ray-doris-query-ray257-compat.log` and `/private/tmp/ray-doris-query-ray258-compat.log`.
+
+| Suite | Scope and runtime | Result |
+| --- | --- | --- |
+| Unit / static | Python 3.12.12, Ray 2.59.0, PyArrow 26.0.1; Ruff and mypy | 799 unit tests passed; static checks passed |
+| Contract | Ray 2.59.0, existing read/write paths | 91 passed before later query-only validation changes |
+| Focused Doris diagnosis | Doris 4.0.6, local Ray; JOIN, aggregation, `LARGEINT`, empty output and rejection | Two passed; an unsupported-type test initially expected an exception at the wrong phase and passed after its assertion was corrected. These results predate later query-validation changes. |
+| Full Doris IT | Doris 4.0.6, isolated FE 3 GiB / BE 4 GiB | 71 passed, 8 warnings, 1018.03 seconds. A prior attempt at BE 2 GiB failed during fixture setup with `MEM_ALLOC_FAILED` before any test body ran. |
+| Distributed query | Doris 4.0.6, three Ray workers, single query task; Ray 2.59.0 | 1 passed, 7 warnings, 2.92 seconds. The first offline runtime-image build failed before services or tests started; the final image used cached base images and a domestic Python package index. |
+
+The full-suite FE image ID was `sha256:641d83d94668f6d3a69b6fa4b0ab89a47b6630ff8a74b738daa6693aa37d6506` and the BE image ID was `sha256:48bf29a9d096f02288a1b5f470956d7240ba0b3ff9a766cb87dc3d1d12e4f9fc`. The distributed suite's Ray base image digest was `sha256:0ffca209fb4c984d648db550b8dbe7879bdba3bbb5d96ee5894843cf6ac12eb5`.
+
+Logs: `/private/tmp/ray-doris-sql-query-unit-final.log`, `/private/tmp/ray-doris-sql-query-contract.log`, `/private/tmp/ray-doris-sql-query-focused-it.log`, `/private/tmp/ray-doris-sql-query-rejection-it.log`, `/private/tmp/ray-doris-sql-query-full-it.log`, `/private/tmp/ray-doris-sql-query-full-it-rerun.log`, and `/private/tmp/ray-doris-sql-query-slow-pytest.log`. The current working tree is not a release-validation result.
+
 ## Safe failure diagnostics
 
 Issue #29: sanitized planning, read and write diagnostics. The pending follow-up

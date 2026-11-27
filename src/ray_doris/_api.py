@@ -6,6 +6,7 @@ import logging
 from importlib import import_module
 from typing import Any, Mapping, Optional, Sequence, cast
 
+import pyarrow as pa
 import ray.data
 from ray.data import Dataset
 
@@ -42,8 +43,10 @@ _NATIVE_MYSQL_OPTIONS = {
 
 def read_doris(
     *,
-    table: str,
+    table: Optional[str] = None,
     host: str,
+    query: Optional[str] = None,
+    schema: Optional[pa.Schema] = None,
     auto_native_read: bool = False,
     catalog: Optional[str] = None,
     native_options: Optional[NativeReadOptions] = None,
@@ -76,8 +79,10 @@ def read_doris(
     table can use Ray's public Parquet reader with independent HMS/storage access
     and immutable published files. Unsupported cases and native planning failures
     retain Doris reading, which applies its own authentication and authorization.
-    This API accepts a table identifier, not a complete SQL statement. A selected
-    native read does not replay through Doris once Ray's reader is called.
+    Supply exactly one of ``table`` or a trusted ``query``. Query reads use one
+    MySQL task and may specify an Arrow ``schema`` for the result. Query reads
+    ignore ``override_num_blocks`` values greater than one.
+    A selected native read does not replay through Doris once Ray's reader is called.
 
     The separate Iceberg REST profile fixes a snapshot for native reading and
     any eligible Doris fallback. Before its first block is yielded to Ray, an
@@ -94,6 +99,64 @@ def read_doris(
     snapshot is selected, Doris fallback must read it or fail; an unpinned Doris
     query may return different data.
     """
+    if (table is None) == (query is None):
+        raise DorisConfigurationError("specify exactly one of table or query")
+    if query is not None:
+        if override_num_blocks is not None and (
+            isinstance(override_num_blocks, bool)
+            or not isinstance(override_num_blocks, int)
+            or override_num_blocks <= 0
+        ):
+            raise DorisConfigurationError("override_num_blocks must be a positive integer")
+        if (
+            auto_native_read is not False
+            or native_options is not None
+            or catalog is not None
+            or columns is not None
+            or filter is not None
+            or transport != "mysql"
+            or on_query_plan_error != "single_task"
+            or tablet_size != 1
+            or http_port != 8030
+            or flight_port != 8070
+            or http_scheme != "http"
+            or flight_scheme != "grpc"
+            or query_plan_timeout is not None
+            or http_ca_file is not None
+            or flight_options is not None
+        ):
+            raise DorisConfigurationError("query reads do not accept table-specific options")
+        from ray_doris._query import DorisQueryDatasource
+
+        query_source = DorisQueryDatasource(
+            query=query,
+            host=host,
+            mysql_port=mysql_port,
+            user=user,
+            password=password,
+            password_env=password_env,
+            batch_size=batch_size,
+            connect_timeout=connect_timeout,
+            client_kwargs=client_kwargs,
+            schema=schema,
+        )
+        if override_num_blocks not in (None, 1):
+            logger.warning(
+                "Query reads ignore override_num_blocks to preserve empty-result schemas"
+            )
+        return cast(
+            Dataset,
+            ray.data.read_datasource(
+                query_source,
+                concurrency=concurrency,
+                override_num_blocks=1,
+                ray_remote_args=dict(ray_remote_args) if ray_remote_args is not None else None,
+            ),
+        )
+    if table is None:
+        raise DorisConfigurationError("table is required for a table read")
+    if schema is not None:
+        raise DorisConfigurationError("schema is only supported for query reads")
     if not isinstance(auto_native_read, bool):
         raise DorisConfigurationError("auto_native_read must be a boolean")
     if native_options is not None and not isinstance(native_options, NativeReadOptions):
