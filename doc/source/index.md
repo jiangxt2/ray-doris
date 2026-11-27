@@ -8,7 +8,7 @@ myst:
 
 # ray-doris: Apache Doris reads and writes for Ray Data
 
-`ray-doris` is an independent, community-maintained Apache Doris connector for Ray Data. It plans reads with the Doris frontend query-plan endpoint, assigns tablet groups to Ray read tasks, streams rows through MySQL or Arrow Flight SQL, and writes bounded Parquet or line-delimited JSON batches through HTTP Stream Load without importing Ray Data internals.
+`ray-doris` is an independent, community-maintained Apache Doris connector for Ray Data. For internal tables it plans tablet groups through the Doris frontend and streams them through MySQL or Arrow Flight SQL. Trusted SQL results are read through one MySQL task. Writes use bounded Parquet or line-delimited JSON batches through HTTP Stream Load. The connector doesn't import Ray Data internals.
 
 The project isn't maintained or endorsed by the Ray or Apache Doris projects. See [Compatibility](compatibility.md) for the tested version matrix and [Key concepts](key-concepts.md) for the execution model.
 

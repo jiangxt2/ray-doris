@@ -37,7 +37,8 @@ and enable `auto_native_read=True` to select Ray's native reader when the shared
 Hive Parquet or Iceberg REST profile applies. Known unsupported contexts retain
 Doris reading. Iceberg native failures before the first block is yielded to Ray
 can fall back to a snapshot-pinned Doris read; later failures do not replay.
-The API accepts a table identifier; complete SQL statements and SQL rewriting are unsupported.
+Use `query` instead of `table` to read a trusted SQL result through one
+MySQL task. See [query result reads](../user-guide/read-data.md#read-a-query-result) for boundaries.
 
 See [shared-storage reads](../user-guide/native-read.md) for the experimental
 automatic-read scope and independent HMS/filesystem authorization.

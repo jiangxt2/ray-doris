@@ -1,5 +1,14 @@
 # Integration test ledger
 
+## SQL query result reads
+
+The initial implementation was validated at `a17c26db592a7b21300e53fb900abebe3e4760cc`.
+The [CI run](https://github.com/jiangxt2/ray-doris/actions/runs/45992665944) passed the
+Python/Ray unit and contract matrix, static and documentation checks, and the Doris 4.0.6
+integration suite (71 tests). A separate three-worker run of the core selectors and SQL query
+case passed four tests. The SQL query path uses a single MySQL task; its result schema comes
+from protocol metadata or an optional Arrow schema.
+
 ## Safe failure diagnostics
 
 Issue #29: sanitized planning, read and write diagnostics. The pending follow-up

@@ -10,7 +10,7 @@ The experimental `auto_native_read=True` identifies an ordinary Hive table throu
 Doris and selects Ray's public Parquet reader when its metadata and storage fit
 the supported profile. The flag defaults to `False`: reads go through Doris and
 do not probe HMS or native storage. Supply `catalog` for an external table.
-The API accepts a table identifier; complete SQL statements and SQL rewriting are
+The native-read path accepts a table identifier; complete SQL statements and SQL rewriting are
 unsupported. There is no `read_mode` parameter or force-native public mode.
 
 From a source checkout containing this experimental feature, install the optional

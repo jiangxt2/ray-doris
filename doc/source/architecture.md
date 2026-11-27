@@ -26,6 +26,7 @@ src/ray_doris/
 ├── datasource.py  Ray Datasource and ReadTask construction
 ├── _models.py     immutable configuration, plans, and splits
 ├── _planner.py    MySQL schema discovery and HTTP tablet planning
+├── _query.py      trusted SQL result schema and single-task streaming
 ├── _predicate.py  restricted native expression compilation
 ├── _readers.py    streaming MySQL and Flight SQL worker readers
 ├── _schema.py     Doris-to-Arrow schema mapping and conversion
@@ -52,6 +53,10 @@ modules can change without a public compatibility promise.
 {ref}`read_doris <ray-doris-api-read-doris>` builds a datasource and calls `ray.data.read_datasource()` with `concurrency`, `override_num_blocks`, and a copied `ray_remote_args` mapping.
 
 {ref}`DorisDatasource <ray-doris-api-datasource>` subclasses Ray's documented `Datasource` extension class. It returns DeveloperAPI `ReadTask` objects that yield PyArrow tables. `_compat.py` inspects the `ReadTask` constructor so it can reject unsupported Ray signatures without catching an unrelated `TypeError` from the read function.
+
+The trusted `query` path constructs one task without planning SQL. Its worker sends the supplied SQL
+to Doris, derives the result schema from MySQL metadata unless supplied by the caller, and streams
+bounded batches. It ignores the Ray output block-count hint to retain empty-result schemas.
 
 On the verified Ray 2.57/2.58/2.59 minors, the V1 predicate hooks accept a type-checked subset of
 public expression nodes. The compiler produces immutable MySQL templates and bound values plus

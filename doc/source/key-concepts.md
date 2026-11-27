@@ -8,11 +8,11 @@ myst:
 
 # Key concepts
 
-`ray-doris` separates driver-side metadata planning from worker-side data movement. This boundary keeps Doris connections out of Ray's private APIs and makes each read task serializable. `ReadTask` is a Ray DeveloperAPI, so support is limited to the tested Ray minor window.
+For table reads, `ray-doris` separates driver-side metadata planning from worker-side data movement. This boundary keeps Doris connections out of Ray's private APIs and makes each read task serializable. `ReadTask` is a Ray DeveloperAPI, so support is limited to the tested Ray minor window.
 
 ## How does a read work?
 
-One datasource instance follows this sequence:
+One internal-table datasource instance follows this sequence:
 
 ```text
 read_doris()
@@ -30,14 +30,17 @@ The driver validates configuration without network access, discovers the project
 
 Each worker opens its own transport connection and executes a `SELECT` with a Doris `TABLET(...)` hint. The worker yields PyArrow tables instead of collecting the split into one in-memory result.
 
+For a trusted `query`, the driver creates one task without sending planning SQL. The worker executes
+the supplied SQL and builds bounded Arrow batches using MySQL result metadata or a supplied schema.
+
 ## Driver and worker responsibilities
 
 The two execution locations have distinct responsibilities:
 
 | Location | Responsibility |
 | --- | --- |
-| Driver | Validate identifiers and options, discover schema, request the tablet plan, group tablets, and construct serializable tasks |
-| Worker | Open the selected transport, execute one split query, convert values to the planned Arrow schema, and close protocol resources |
+| Driver | Validate options and construct serializable tasks; table reads also discover schema and plan tablets |
+| Worker | Open the selected transport, execute a split or trusted SQL query, convert values to Arrow, and close protocol resources |
 
 The driver doesn't run a count or sample query for Ray auto-parallelism. `estimate_inmemory_data_size()` returns `None` because an extra data query would add cost and could observe a different table state.
 
@@ -53,16 +56,16 @@ These settings control different layers:
 | Ray `parallelism` hint | Datasource planning | Caps the number of tablet groups returned to Ray |
 | `concurrency` | Ray execution | Limits the number of read tasks that execute at the same time |
 | `batch_size` | Worker output | Bounds MySQL `fetchmany()` batches and slices Flight results into Ray blocks |
-| `override_num_blocks` | Ray output planning | Requests an output block count independently of the source tablet count |
+| `override_num_blocks` | Ray output planning | Requests an output block count for table reads; query reads ignore values greater than one |
 | `query_plan_timeout` | Driver planning | Bounds query-plan HTTP request I/O; defaults to `connect_timeout` |
 
 See [Tune parallelism](user-guide/tune-parallelism.md) before changing more than one setting.
 
 ## Canonical schema
 
-Schema discovery always uses the frontend MySQL port, even when workers read through Flight SQL. This produces one explicit Arrow schema for every split and transport. Workers reject result-column drift, unsafe casts, and nulls in fields planned as non-nullable.
+For table reads, schema discovery uses the frontend MySQL port, even when workers read through Flight SQL. This produces one explicit Arrow schema for every split and transport. Workers reject result-column drift, unsafe casts, and nulls in fields planned as non-nullable.
 
-Supported Doris scalar types map without inference. Unsupported nested, aggregate-state, and unknown types raise {ref}`DorisSchemaError <ray-doris-api-schema-error>` during planning. See [Work with schemas](user-guide/work-with-schemas.md) for the type matrix.
+Supported table scalar types map without inference. Unsupported nested, aggregate-state, and unknown types raise {ref}`DorisSchemaError <ray-doris-api-schema-error>` during planning. Query reads instead use MySQL result metadata or a caller-supplied schema. See [Work with schemas](user-guide/work-with-schemas.md) for the type matrix.
 
 ## Planning fallback
 

@@ -63,7 +63,7 @@ Doris/Ray patch versions; the documented test baselines describe validation cove
 Native planning failures before invoking Ray's reader fall back to Doris, which
 still applies its own authentication and authorization. Errors after invoking
 Ray's reader propagate without fallback.
-The API accepts a table identifier; complete SQL statements are unsupported.
+The automatic native-read path accepts a table identifier.
 Native reads do not guarantee a performance improvement.
 
 The package requires Python 3.11 or newer. Flight SQL requires the optional Flight extra.
@@ -104,7 +104,7 @@ clone, and empty-projection behavior.
 `table` must be an exact `database.table` reference and defaults to Doris's internal catalog.
 Experimental external-table reads use the separate `catalog` parameter; see the
 [shared-storage guide](doc/source/user-guide/native-read.md) for the optional automatic native path
-and its support boundaries. Joins and multi-table query planning are not supported.
+and its support boundaries. Table reads do not plan joins across multiple tables.
 `filter` is a trusted SQL scalar expression: do not pass untrusted user input. For internal
 tables, Doris uses the `WHERE` expression for tablet pruning, so the number of splits can change
 with the filter. A complex expression such as
@@ -121,6 +121,38 @@ and experimental Flight use validated integer and boolean literals. See the
 `tablet_size=1` provides the finest split granularity. Tables with thousands of tablets should
 start with a larger value such as `tablet_size=32` and use `override_num_blocks` to tune Ray's
 output blocks without creating one scheduling task per tablet.
+
+## Read a query result
+
+Supply `query` instead of `table` to read one trusted Doris query through a single MySQL read task:
+
+```python
+dataset = read_doris(
+    host="doris-fe.example.com",
+    user="ray_reader",
+    password_env="DORIS_PASSWORD",
+    query="SELECT category, SUM(amount) AS total FROM analytics.events GROUP BY category",
+)
+```
+
+The query is trusted input, sent to Doris without SQL classification or statement-count checks.
+Use fully qualified table names and unique result column names. Table-specific options and Flight
+transport do not apply. The worker returns the first result set exposed by the MySQL driver; the
+driver may process additional result sets during cleanup.
+
+By default, result types come from MySQL protocol metadata. Doris reports `VARCHAR`, `LARGEINT`
+and some complex types using the same text metadata, so those values are returned as strings.
+Pass an Arrow `schema` for supported types when exact logical types are needed, for example a
+`decimal256(39, 0)` field for `LARGEINT`. Unsupported metadata or incompatible values fail rather
+than being inferred from rows. Explicit numeric conversions must preserve the value; MySQL `FLOAT`
+results use their native `float32` precision.
+MySQL fetches at most `batch_size` rows per batch; Ray may combine batches into larger Dataset blocks.
+
+The query runs when Ray executes the Dataset. Schema discovery or a Ray retry can execute it again.
+SQL that produces no result set raises an error after execution and may already have had effects.
+The caller is responsible for the trusted SQL and database permissions. Query reads ignore
+`override_num_blocks` with a warning when it requests more than one block; Ray still applies its
+normal block sizing to the streamed result.
 
 ## Write a Dataset
 
@@ -169,8 +201,13 @@ automatically.
 ```python
 read_doris(
     *,
-    table,
+    table=None,
     host,
+    query=None,
+    schema=None,
+    auto_native_read=False,
+    catalog=None,
+    native_options=None,
     mysql_port=9030,
     http_port=8030,
     flight_port=8070,

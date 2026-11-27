@@ -1,7 +1,7 @@
 ---
 myst:
   html_meta:
-    description: "Read one Apache Doris internal-catalog table with ray-doris, including projection, trusted filters, empty results, and planning fallback."
+    description: "Read Doris tables and trusted SQL query results with ray-doris."
 ---
 
 (ray-doris-read-data)=
@@ -35,8 +35,57 @@ For experimental external-table reads, supply `catalog` separately and retain th
 two-part `table` name. The optional `auto_native_read=True` switch selects native
 Hive Parquet reading only when its profile applies; see
 [shared-storage reads](native-read.md) for the source-selection and authorization
-boundaries. Joins, subqueries in the table argument and arbitrary `SELECT`
-statements aren't supported.
+boundaries. The `table` argument doesn't accept joins, subqueries or SQL statements.
+
+## Read a query result
+
+Pass one trusted query instead of `table`:
+
+```python
+dataset = read_doris(
+    host="doris-fe.example.com",
+    user="ray_reader",
+    password_env="DORIS_PASSWORD",
+    query="SELECT category, SUM(amount) AS total FROM analytics.events GROUP BY category",
+    batch_size=10_000,
+)
+```
+
+Use fully qualified table names and unique result column names. The SQL is trusted input, sent to
+Doris as supplied, without classification or statement-count checks. Put projection, filters,
+ordering and limits in the query. Table-specific options, native reads and Flight transport aren't
+available in query mode. The connector returns the first result set exposed by the MySQL driver;
+the driver may process additional result sets during cleanup.
+
+The result schema defaults to MySQL protocol metadata. Doris reports `VARCHAR`, `LARGEINT` and some
+complex types using indistinguishable text metadata, so those values are returned as strings.
+Provide an Arrow `schema` to request supported logical types, such as `pa.decimal256(39, 0)` for
+`LARGEINT`; its field names must match the result columns. Unsupported metadata or incompatible
+values raise an error. Inferred fields are nullable because MySQL result nullability flags are not
+reliable for Doris expressions.
+With an explicit schema, numeric conversions must preserve the value, including when narrowing
+floating-point types. MySQL `FLOAT` results use their native `float32` precision.
+
+For example, when `event_id` is a Doris `LARGEINT`:
+
+```python
+import pyarrow as pa
+
+dataset = read_doris(
+    host="doris-fe.example.com",
+    user="ray_reader",
+    password_env="DORIS_PASSWORD",
+    query="SELECT event_id FROM analytics.events",
+    schema=pa.schema([("event_id", pa.decimal256(39, 0))]),
+)
+```
+
+One MySQL read task fetches at most `batch_size` rows per batch; Ray may combine batches into
+larger Dataset blocks. Ray operations that execute
+the Dataset, including schema discovery or task retries, can execute the SQL again. SQL without a
+result set raises an error after execution and may already have had effects. The caller is
+responsible for the SQL and database permissions. Query reads ignore `override_num_blocks` with a
+warning when it requests more than one block; Ray still applies its normal block sizing.
 
 ## Project columns
 
